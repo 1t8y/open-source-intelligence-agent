@@ -51,6 +51,24 @@ def test_missing_required_settings_are_rejected(monkeypatch: pytest.MonkeyPatch)
         Settings(_env_file=None)
 
 
+def test_production_rejects_example_secret() -> None:
+    """Non-local environments must not use the documented example secret."""
+    values = {
+        **VALID_SETTINGS,
+        "app_env": "production",
+        "secret_key": "change-me-to-a-random-secret-of-at-least-32-characters",
+    }
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **values)
+
+
+def test_unknown_explicit_setting_is_rejected() -> None:
+    """Configuration typos must fail instead of being silently ignored."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **VALID_SETTINGS, unknown_setting=True)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

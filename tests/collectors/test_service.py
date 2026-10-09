@@ -21,6 +21,7 @@ class FakeCollector:
     """Test collector returning deterministic normalized repositories."""
 
     provider = "github"
+    display_name = "GitHub"
     base_url = "https://api.github.com"
 
     def __init__(self, stars: int, *, fail: bool = False) -> None:

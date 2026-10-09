@@ -77,6 +77,8 @@ users --< audit_logs
 | `created_at` | DATETIME(6) | NOT NULL | UTC |
 | `updated_at` | DATETIME(6) | NOT NULL | UTC |
 
+唯一约束：`data_sources.source_type` 唯一，保证每个外部供应商只有一条数据源配置。
+
 ### `topics`
 
 | 字段 | 类型 | 约束 | 说明 |

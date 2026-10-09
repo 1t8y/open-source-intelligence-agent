@@ -11,6 +11,8 @@ from open_source_intelligence.core.config import Settings
 from open_source_intelligence.persistence.models.identity import User
 
 _ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRES_MINUTES = 60
+ACCESS_TOKEN_EXPIRES_SECONDS = ACCESS_TOKEN_EXPIRES_MINUTES * 60
 
 
 class AccessTokenClaims(BaseModel):
@@ -28,7 +30,7 @@ def create_access_token(
     user: User,
     settings: Settings,
     *,
-    expires_minutes: int = 60,
+    expires_minutes: int = ACCESS_TOKEN_EXPIRES_MINUTES,
 ) -> str:
     """Create a signed access token for an active user."""
     now = datetime.now(UTC)

@@ -9,6 +9,7 @@ from open_source_intelligence.collectors.http import RetryingHttpClient
 from open_source_intelligence.collectors.types import (
     CollectedRepository,
     SourceUnavailableError,
+    nonnegative_int,
 )
 
 
@@ -16,6 +17,7 @@ class GitHubCollector:
     """Collect repositories through the GitHub Search API."""
 
     provider = "github"
+    display_name = "GitHub"
     base_url = "https://api.github.com"
 
     def __init__(
@@ -84,7 +86,7 @@ class GitHubCollector:
             topics=tuple(topic for topic in topics if isinstance(topic, str))
             if isinstance(topics, list)
             else (),
-            stars=int(item.get("stargazers_count", 0)),
-            forks=int(item.get("forks_count", 0)),
+            stars=nonnegative_int(item.get("stargazers_count", 0), "stargazers_count"),
+            forks=nonnegative_int(item.get("forks_count", 0), "forks_count"),
             observed_at=observed_at,
         )

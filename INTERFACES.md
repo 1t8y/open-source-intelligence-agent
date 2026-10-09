@@ -123,6 +123,8 @@ upsert_repository(session, source, item) -> Repository
 
 默认 API 地址为 `https://api.github.com` 和 `https://hf-mirror.com/api`，可通过 `GITHUB_API_BASE`、`HUGGINGFACE_API_BASE` 覆盖。API Token 可选，空白 Token 会规范化为未配置。
 
+MySQL 写入路径使用原生 Upsert，`data_sources.source_type` 和 `repositories(source_id, provider_repo_id)` 均由数据库唯一约束保证并发幂等。
+
 Compose 运行接口：
 
 ```text

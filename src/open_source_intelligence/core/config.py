@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",
+        extra="forbid",
         case_sensitive=False,
     )
 
@@ -75,6 +75,15 @@ class Settings(BaseSettings):
         if value is None or not value.get_secret_value().strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def validate_production_secret(self) -> "Settings":
+        """Reject the documented placeholder outside local and test use."""
+        if self.app_env not in {"local", "test"}:
+            placeholder = "change-me-to-a-random-secret-of-at-least-32-characters"
+            if self.secret_key.get_secret_value() == placeholder:
+                raise ValueError("production secret_key must not use the example placeholder")
+        return self
 
 
 @lru_cache(maxsize=1)

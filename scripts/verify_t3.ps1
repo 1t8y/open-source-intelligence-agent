@@ -65,38 +65,43 @@ $randomBytes = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24
 $password = [Convert]::ToBase64String($randomBytes)
 $username = 't3-verify-admin'
 
-Write-Host '==> Bootstrap verification administrator'
-docker @composeArgs exec -T -e "BOOTSTRAP_ADMIN_PASSWORD=$password" api python -m open_source_intelligence.security.bootstrap --username $username --display-name 'T3 Verify Admin'
-Assert-LastCommandSucceeded 'bootstrap admin'
-
-Write-Host '==> Login and retrieve current user'
-$loginBody = @{ username = $username; password = $password } | ConvertTo-Json -Compress
-$login = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/v1/auth/login' -ContentType 'application/json' -Body $loginBody
-$me = Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8000/api/v1/auth/me' -Headers @{ Authorization = "Bearer $($login.access_token)" }
-if ($me.username -ne $username -or $me.roles -notcontains 'ADMIN') {
-    throw 'Authenticated user response did not contain the expected identity and role'
-}
-
-Write-Host '==> Verify unauthenticated access is rejected'
 try {
-    Invoke-WebRequest -Uri 'http://127.0.0.1:8000/api/v1/auth/me' -UseBasicParsing -ErrorAction Stop | Out-Null
-    throw 'Unauthenticated request was accepted unexpectedly'
-}
-catch {
-    if ([int]$_.Exception.Response.StatusCode -ne 401) {
-        throw
+    Write-Host '==> Bootstrap verification administrator'
+    docker @composeArgs exec -T -e "BOOTSTRAP_ADMIN_PASSWORD=$password" api python -m open_source_intelligence.security.bootstrap --username $username --display-name 'T3 Verify Admin'
+    Assert-LastCommandSucceeded 'bootstrap admin'
+
+    Write-Host '==> Login and retrieve current user'
+    $loginBody = @{ username = $username; password = $password } | ConvertTo-Json -Compress
+    $login = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/v1/auth/login' -ContentType 'application/json' -Body $loginBody
+    $me = Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8000/api/v1/auth/me' -Headers @{ Authorization = "Bearer $($login.access_token)" }
+    if ($me.username -ne $username -or $me.roles -notcontains 'ADMIN') {
+        throw 'Authenticated user response did not contain the expected identity and role'
+    }
+
+    Write-Host '==> Verify unauthenticated access is rejected'
+    try {
+        Invoke-WebRequest -Uri 'http://127.0.0.1:8000/api/v1/auth/me' -UseBasicParsing -ErrorAction Stop | Out-Null
+        throw 'Unauthenticated request was accepted unexpectedly'
+    }
+    catch {
+        if ([int]$_.Exception.Response.StatusCode -ne 401) {
+            throw
+        }
+    }
+
+    Write-Host '==> Verify audit events were persisted'
+    $auditCount = docker @composeArgs exec -T mysql sh -lc "mysql -uroot -p`"`$MYSQL_ROOT_PASSWORD`" -N -e `"SELECT COUNT(*) FROM open_source_intelligence.audit_logs WHERE action LIKE 'auth.%';`""
+    Assert-LastCommandSucceeded 'audit count'
+    if ([int]$auditCount.Trim() -lt 3) {
+        throw "Expected at least 3 authentication audit events, found $auditCount"
     }
 }
-
-Write-Host '==> Verify audit events were persisted'
-$auditCount = docker @composeArgs exec -T mysql sh -lc "mysql -uroot -p`"`$MYSQL_ROOT_PASSWORD`" -N -e `"SELECT COUNT(*) FROM open_source_intelligence.audit_logs WHERE action LIKE 'auth.%';`""
-Assert-LastCommandSucceeded 'audit count'
-if ([int]$auditCount.Trim() -lt 3) {
-    throw "Expected at least 3 authentication audit events, found $auditCount"
+finally {
+    Write-Host '==> Remove temporary verification user'
+    docker @composeArgs exec -T mysql sh -lc "mysql -uroot -p`"`$MYSQL_ROOT_PASSWORD`" -e `"DELETE FROM open_source_intelligence.users WHERE username='$username';`""
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to remove temporary verification user: $username"
+    }
 }
-
-Write-Host '==> Remove temporary verification user'
-docker @composeArgs exec -T mysql sh -lc "mysql -uroot -p`"`$MYSQL_ROOT_PASSWORD`" -e `"DELETE FROM open_source_intelligence.users WHERE username='$username';`""
-Assert-LastCommandSucceeded 'remove verification user'
 
 Write-Host 'T3 verification passed. Services remain running.'

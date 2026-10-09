@@ -104,3 +104,37 @@ def test_retrying_http_exhausts_attempts() -> None:
 
     with pytest.raises(SourceUnavailableError):
         build_http(httpx.MockTransport(handler)).get_json("https://example.test/api")
+
+
+def test_retrying_http_rejects_invalid_json() -> None:
+    """A successful HTTP status with malformed JSON must fail as a source error."""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not-json")
+
+    with pytest.raises(SourceUnavailableError):
+        build_http(httpx.MockTransport(handler)).get_json("https://example.test/api")
+
+
+def test_github_collector_rejects_invalid_metrics() -> None:
+    """Malformed provider counters must not escape as ValueError or TypeError."""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": 1,
+                        "full_name": "example/repo",
+                        "html_url": "https://github.com/example/repo",
+                        "stargazers_count": "many",
+                        "forks_count": 1,
+                    }
+                ]
+            },
+        )
+
+    collector = GitHubCollector(build_http(httpx.MockTransport(handler)))
+    with pytest.raises(SourceUnavailableError):
+        collector.collect(limit=1)

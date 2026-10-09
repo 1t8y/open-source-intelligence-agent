@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.collectors.types import (
@@ -28,13 +29,35 @@ def ensure_data_source(session: Session, collector: RepositoryCollector) -> Data
     """Return the configured data source row for a collector."""
     source = session.scalar(select(DataSource).where(DataSource.source_type == collector.provider))
     if source is None:
-        source = DataSource(
-            name=collector.provider.title(),
-            source_type=collector.provider,
-            base_url=collector.base_url,
-        )
-        session.add(source)
-        session.flush()
+        if session.get_bind().dialect.name == "mysql":
+            statement = mysql_insert(DataSource).values(
+                name=collector.display_name,
+                source_type=collector.provider,
+                base_url=collector.base_url,
+                enabled=True,
+                rate_limit_per_minute=30,
+            )
+            statement = statement.on_duplicate_key_update(
+                name=statement.inserted.name,
+                base_url=statement.inserted.base_url,
+            )
+            session.execute(statement)
+            source = session.scalar(
+                select(DataSource).where(DataSource.source_type == collector.provider)
+            )
+        else:
+            source = DataSource(
+                name=collector.display_name,
+                source_type=collector.provider,
+                base_url=collector.base_url,
+            )
+            session.add(source)
+            session.flush()
+    elif source.name != collector.display_name or source.base_url != collector.base_url:
+        source.name = collector.display_name
+        source.base_url = collector.base_url
+    if source is None:
+        raise RuntimeError(f"failed to persist data source: {collector.provider}")
     return source
 
 
@@ -45,6 +68,44 @@ def upsert_repository(
     item: CollectedRepository,
 ) -> Repository:
     """Insert or update one repository using its provider identity."""
+    values = {
+        "source_id": source.id,
+        "provider_repo_id": item.provider_repo_id,
+        "full_name": item.full_name,
+        "html_url": item.html_url,
+        "description": item.description,
+        "language": item.language,
+        "license": item.license,
+        "topics_json": list(item.topics),
+        "stars": item.stars,
+        "forks": item.forks,
+        "first_seen_at": item.observed_at,
+        "last_seen_at": item.observed_at,
+    }
+    if session.get_bind().dialect.name == "mysql":
+        statement = mysql_insert(Repository).values(**values)
+        statement = statement.on_duplicate_key_update(
+            full_name=statement.inserted.full_name,
+            html_url=statement.inserted.html_url,
+            description=statement.inserted.description,
+            language=statement.inserted.language,
+            license=statement.inserted.license,
+            topics_json=statement.inserted.topics_json,
+            stars=statement.inserted.stars,
+            forks=statement.inserted.forks,
+            last_seen_at=statement.inserted.last_seen_at,
+        )
+        session.execute(statement)
+        repository = session.scalar(
+            select(Repository).where(
+                Repository.source_id == source.id,
+                Repository.provider_repo_id == item.provider_repo_id,
+            )
+        )
+        if repository is None:
+            raise RuntimeError("failed to persist repository")
+        return repository
+
     repository = session.scalar(
         select(Repository).where(
             Repository.source_id == source.id,
@@ -52,20 +113,7 @@ def upsert_repository(
         )
     )
     if repository is None:
-        repository = Repository(
-            source_id=source.id,
-            provider_repo_id=item.provider_repo_id,
-            full_name=item.full_name,
-            html_url=item.html_url,
-            description=item.description,
-            language=item.language,
-            license=item.license,
-            topics_json=list(item.topics),
-            stars=item.stars,
-            forks=item.forks,
-            first_seen_at=item.observed_at,
-            last_seen_at=item.observed_at,
-        )
+        repository = Repository(**values)
         session.add(repository)
     else:
         repository.full_name = item.full_name

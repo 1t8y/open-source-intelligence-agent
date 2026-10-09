@@ -15,7 +15,10 @@ from open_source_intelligence.security.dependencies import (
     request_id,
 )
 from open_source_intelligence.security.service import authenticate_user, get_role_codes
-from open_source_intelligence.security.tokens import create_access_token
+from open_source_intelligence.security.tokens import (
+    ACCESS_TOKEN_EXPIRES_SECONDS,
+    create_access_token,
+)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -94,7 +97,7 @@ def login(
     session.commit()
     return TokenResponse(
         access_token=token,
-        expires_in=3600,
+        expires_in=ACCESS_TOKEN_EXPIRES_SECONDS,
         user=build_user_response(user),
     )
 

@@ -36,7 +36,10 @@ class DataSource(Base, TimestampMixin):
     """External source such as GitHub or Hugging Face."""
 
     __tablename__ = "data_sources"
-    __table_args__ = (CheckConstraint("rate_limit_per_minute > 0", name="rate_limit_positive"),)
+    __table_args__ = (
+        CheckConstraint("rate_limit_per_minute > 0", name="rate_limit_positive"),
+        UniqueConstraint("source_type"),
+    )
 
     id: Mapped[uint64_pk]
     name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)

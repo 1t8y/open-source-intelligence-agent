@@ -45,7 +45,11 @@ class RetryingHttpClient:
                         continue
                     break
                 response.raise_for_status()
-                return response.json()
+                try:
+                    return response.json()
+                except ValueError as exc:
+                    last_error = SourceUnavailableError("source returned invalid JSON")
+                    raise last_error from exc
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 break

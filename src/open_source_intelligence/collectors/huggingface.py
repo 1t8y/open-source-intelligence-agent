@@ -9,6 +9,7 @@ from open_source_intelligence.collectors.http import RetryingHttpClient
 from open_source_intelligence.collectors.types import (
     CollectedRepository,
     SourceUnavailableError,
+    nonnegative_int,
 )
 
 
@@ -16,6 +17,7 @@ class HuggingFaceCollector:
     """Collect models through the Hugging Face Hub API."""
 
     provider = "huggingface"
+    display_name = "Hugging Face"
     base_url = "https://huggingface.co/api"
 
     def __init__(
@@ -72,7 +74,7 @@ class HuggingFaceCollector:
             topics=tuple(tag for tag in tags if isinstance(tag, str))
             if isinstance(tags, list)
             else (),
-            stars=int(item.get("likes", 0)),
+            stars=nonnegative_int(item.get("likes", 0), "likes"),
             forks=0,
             observed_at=observed_at,
         )
