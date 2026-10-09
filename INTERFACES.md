@@ -76,6 +76,7 @@ api/web
 | `evaluation` | 数据集、Scorer 和回归 | api/workers |
 | `workers` | Celery 应用、周期任务和 Worker 入口 | 部署/调度 |
 | `persistence` | Repository 和事务边界 | 所有业务模块 |
+| `migrations` | Alembic 升级、回滚和 schema drift 检查 | 开发/部署 |
 
 Worker 接口：
 
@@ -85,6 +86,16 @@ healthcheck() -> {"status": "ok", "task": "healthcheck"}
 ```
 
 Celery CLI 入口为 `open_source_intelligence.workers.celery_entry:app`。首期 Beat 每 60 秒执行一次 `open_source_intelligence.workers.tasks.healthcheck`。
+
+Persistence 接口：
+
+```text
+create_database_engine(database_url: str, *, echo: bool = False) -> Engine
+create_session_factory(engine: Engine) -> sessionmaker[Session]
+Base.metadata
+```
+
+首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`。
 
 Compose 运行接口：
 

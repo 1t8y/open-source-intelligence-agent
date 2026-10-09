@@ -12,10 +12,11 @@ RUN groupadd --system app && useradd --system --gid app --create-home app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" .
 
 USER app
 
 EXPOSE 8000
-

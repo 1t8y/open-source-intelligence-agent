@@ -1,8 +1,8 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：前期设计  
-> 文档版本：v0.2  
-> 最后更新：2026-10-08
+> 项目状态：前期设计
+> 文档版本：v0.3
+> 最后更新：2026-10-09
 
 ## 最终版路径
 
@@ -45,7 +45,7 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T1 已完成：API、Worker、Beat、MySQL、Redis 可通过 Docker Compose 启动，统一验证脚本通过。下一步进入 T2 数据库模型与迁移。Docker Desktop 4.94.0 已验证使用 WSL 2，国内镜像加速和 Compose 可用。
+当前 T2 已完成：SQLAlchemy 核心模型、Alembic 迁移、MySQL 升级/回滚和 schema drift 检查均已通过。下一步进入 T3 认证、RBAC 与审计骨架。
 
 T1 验证命令：
 
@@ -54,6 +54,14 @@ T1 验证命令：
 ```
 
 该脚本会强制重建镜像，并执行 pytest、Ruff、mypy、Compose、API、Worker 和 Beat 验证。
+
+T2 验证命令：
+
+```powershell
+.\scripts\verify_t2.ps1
+```
+
+该脚本使用一次性 MySQL 数据库验证迁移升级、回滚、再次升级和模型一致性，不修改正式开发库。
 
 ## 开发原则
 

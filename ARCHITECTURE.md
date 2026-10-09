@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-09 ｜ 文档版本：v0.3.1
+> 最后更新：2026-10-09 ｜ 文档版本：v0.4.0
 
 ## 1. 概述与目标
 
@@ -130,6 +130,8 @@ open-source-intelligence-agent/
 │   ├── workers/                 # Celery Tasks 和调度定义
 │   └── core/                    # 配置、日志、异常和共享类型
 ├── prompts/                     # 版本化 Prompt 和评分 Rubric
+├── alembic.ini                  # Alembic CLI 配置
+├── migrations/                  # 数据库迁移环境和版本脚本
 ├── tests/                       # 单元、集成、端到端、安全与评测测试
 ├── infra/                       # Compose、环境模板和部署配置
 └── scripts/                     # 初始化、回填和运维脚本
@@ -329,7 +331,10 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T1.4 Worker 与 Beat 空服务 — 依赖 T1.2 — 验证：Worker 消费健康任务，Beat 每 60 秒成功调度 Redis 任务
 - [x] T1.5 Docker Compose 与环境模板 — 依赖 T1.3/T1.4 — 验证：五服务健康启动，API、Worker、Beat 容器化闭环通过
 - [x] T1.6 T1 测试与冒烟收口 — 依赖 T1.3-T1.5 — 验证：14 项测试、Ruff、Compose、API、Worker 和 Beat 通过
-- [ ] T2 数据库模型与迁移 — 依赖：T1 — 验证：迁移可升级和回滚，核心约束生效
+- [x] T2 数据库模型与迁移 — 依赖：T1 — 验证：10 张核心表、升级/回滚、schema drift 检查通过
+- [x] T2.1 SQLAlchemy 基础层与水合类型 — 验证：UTC 类型、命名约定和 Session 工厂通过测试
+- [x] T2.2 十个核心 ORM 模型 — 验证：身份、来源、主题、仓库、快照、Pipeline 和审计模型通过约束测试
+- [x] T2.3 Alembic 迁移环境 — 验证：`upgrade head`、`downgrade base`、再次升级和 `alembic check` 通过
 - [ ] T3 认证、RBAC 与审计骨架 — 依赖：T2 — 验证：三种角色权限和审计事件集成测试通过
 - [ ] T4 GitHub/Hugging Face Collector — 依赖：T2 — 验证：真实 API 小批量采集、重试、幂等入库通过
 - [ ] T5 每日快照与候选排序 — 依赖：T4 — 验证：重复运行不重复，按时间窗口可查出趋势
@@ -366,3 +371,4 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-09 | 增加浏览器根路径预览重定向 | 7、10、14 | T1.3 修复 | 根路径 307 到 `/docs`，`/docs` 返回 200，相关测试通过 |
 | 2026-10-09 | 完成 T1.6 测试与冒烟收口 | 9、10、14 | T1.6 | 统一脚本通过 14 项测试、Ruff、Compose、API 健康、Worker 消费和 Beat 运行 |
 | 2026-10-09 | 修复 T1 审查 P1 与验证脚本误报风险 | 4、5、9、14 | T1 复审 | mypy 0 错误、15 项测试、三服务 JSON 日志、URL/JSON 脱敏、强制重建和同任务 ID 生命周期通过 |
+| 2026-10-09 | 完成 T2 SQLAlchemy 核心模型与 Alembic 迁移 | 5、6、14 | T2 | 19 项测试、10 张业务表、MySQL 升级/回滚、二次升级和 `alembic check` 通过 |

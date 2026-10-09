@@ -1,0 +1,68 @@
+"""User, role, and role-assignment models."""
+
+from __future__ import annotations
+
+from sqlalchemy import ForeignKey, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from ..base import (
+    Base,
+    TimestampMixin,
+    uint16_pk,
+    uint64_pk,
+    unsigned_bigint,
+    unsigned_smallint,
+)
+
+
+class User(Base, TimestampMixin):
+    """Application user account."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uint64_pk]
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    data_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="personal")
+
+    role_links: Mapped[list[UserRole]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class Role(Base):
+    """Stable role definition such as ADMIN, EDITOR, or VIEWER."""
+
+    __tablename__ = "roles"
+
+    id: Mapped[uint16_pk]
+    code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    user_links: Mapped[list[UserRole]] = relationship(
+        back_populates="role",
+        cascade="all, delete-orphan",
+    )
+
+
+class UserRole(Base):
+    """Association table assigning roles to users."""
+
+    __tablename__ = "user_roles"
+
+    user_id: Mapped[int] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role_id: Mapped[int] = mapped_column(
+        unsigned_smallint(),
+        ForeignKey("roles.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    user: Mapped[User] = relationship(back_populates="role_links")
+    role: Mapped[Role] = relationship(back_populates="user_links")

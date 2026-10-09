@@ -52,7 +52,7 @@ select = ["B", "E", "F", "I", "UP"]
 python_version = "3.11"
 strict = true
 packages = ["open_source_intelligence"]
-plugins = ["pydantic.mypy"]
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
 
 [[tool.mypy.overrides]]
 module = ["celery", "celery.*"]
