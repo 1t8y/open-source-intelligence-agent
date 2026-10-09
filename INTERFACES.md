@@ -97,6 +97,21 @@ Base.metadata
 
 首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`。
 
+Security 接口：
+
+```text
+hash_password(password: str) -> str
+verify_password(password_hash: str, password: str) -> bool
+create_access_token(user: User, settings: Settings) -> str
+decode_access_token(token: str, settings: Settings) -> AccessTokenClaims
+authenticate_user(session: Session, username: str, password: str) -> User | None
+record_audit_event(session: Session, ...) -> AuditLog
+get_current_user(...) -> User
+require_roles(*allowed_roles: str) -> Callable[..., User]
+```
+
+认证接口：`POST /api/v1/auth/login`、`GET /api/v1/auth/me`。RBAC 每次请求从数据库读取当前角色，不依赖 Token 中的历史角色快照。
+
 Compose 运行接口：
 
 ```text

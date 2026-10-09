@@ -45,7 +45,7 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T2 已完成：SQLAlchemy 核心模型、Alembic 迁移、MySQL 升级/回滚和 schema drift 检查均已通过。下一步进入 T3 认证、RBAC 与审计骨架。
+当前 T3 已完成：Argon2、JWT、登录、当前用户、三角色 RBAC、401/403 和审计事件均已通过。下一步进入 T4 GitHub/Hugging Face Collector。
 
 T1 验证命令：
 
@@ -62,6 +62,14 @@ T2 验证命令：
 ```
 
 该脚本使用一次性 MySQL 数据库验证迁移升级、回滚、再次升级和模型一致性，不修改正式开发库。
+
+T3 验证命令：
+
+```powershell
+.\scripts\verify_t3.ps1
+```
+
+该脚本会重建服务、应用迁移、引导临时管理员、验证登录和当前用户、检查 401，并确认审计记录已持久化。
 
 ## 开发原则
 

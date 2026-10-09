@@ -1,12 +1,21 @@
 """FastAPI application factory."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
 from open_source_intelligence import __version__
 from open_source_intelligence.core.config import Settings, get_settings
 from open_source_intelligence.core.logging import configure_logging
+from open_source_intelligence.persistence.session import (
+    create_database_engine,
+    create_session_factory,
+)
 
+from .middleware import add_request_id_middleware
+from .routes.auth import router as auth_router
 from .routes.health import router as health_router
 
 
@@ -14,15 +23,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Create an application with explicit settings injection."""
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings)
+    engine = create_database_engine(resolved_settings.database_url)
+    session_factory = create_session_factory(engine)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        engine.dispose()
 
     app = FastAPI(
         title=resolved_settings.app_name,
         version=__version__,
         docs_url="/docs" if resolved_settings.docs_enabled else None,
         redoc_url="/redoc" if resolved_settings.docs_enabled else None,
+        lifespan=lifespan,
     )
     app.state.settings = resolved_settings
+    app.state.engine = engine
+    app.state.session_factory = session_factory
+    add_request_id_middleware(app)
     app.include_router(health_router)
+    app.include_router(auth_router)
 
     @app.get("/", include_in_schema=False)
     def index() -> RedirectResponse:

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
-from sqlalchemy import BigInteger, DateTime, MetaData, SmallInteger
+from sqlalchemy import BigInteger, DateTime, Integer, MetaData, SmallInteger
 from sqlalchemy.dialects import mysql
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -21,13 +21,13 @@ NAMING_CONVENTION = {
 def unsigned_bigint() -> BigInteger:
     """Return a portable BIGINT that is unsigned on MySQL."""
     mysql_type = mysql.BIGINT(unsigned=True)  # type: ignore[no-untyped-call]
-    return BigInteger().with_variant(mysql_type, "mysql")
+    return BigInteger().with_variant(mysql_type, "mysql").with_variant(Integer(), "sqlite")
 
 
 def unsigned_smallint() -> SmallInteger:
     """Return a portable SMALLINT that is unsigned on MySQL."""
     mysql_type = mysql.SMALLINT(unsigned=True)  # type: ignore[no-untyped-call]
-    return SmallInteger().with_variant(mysql_type, "mysql")
+    return SmallInteger().with_variant(mysql_type, "mysql").with_variant(Integer(), "sqlite")
 
 
 def utc_now() -> datetime:
