@@ -11,7 +11,11 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import mysql
 
-import open_source_intelligence.persistence.base
+
+def utc_datetime() -> sa.DateTime:
+    """Return the historical MySQL UTC DATETIME type for this migration."""
+    return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
+
 
 revision: str = "45a1c2996181"
 down_revision: str | None = None
@@ -39,15 +43,11 @@ def upgrade() -> None:
         sa.Column("config_json", sa.JSON(), nullable=True),
         sa.Column(
             "last_success_at",
-            open_source_intelligence.persistence.base.UTCDateTime(),
+            utc_datetime(),
             nullable=True,
         ),
-        sa.Column(
-            "created_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
-        sa.Column(
-            "updated_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
+        sa.Column("created_at", utc_datetime(), nullable=False),
+        sa.Column("updated_at", utc_datetime(), nullable=False),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_data_sources")),
         sa.UniqueConstraint("name", name=op.f("uq_data_sources_name")),
     )
@@ -77,12 +77,8 @@ def upgrade() -> None:
         sa.Column("display_name", sa.String(length=128), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("data_scope", sa.String(length=32), nullable=False),
-        sa.Column(
-            "created_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
-        sa.Column(
-            "updated_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
+        sa.Column("created_at", utc_datetime(), nullable=False),
+        sa.Column("updated_at", utc_datetime(), nullable=False),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_users")),
         sa.UniqueConstraint("username", name=op.f("uq_users_username")),
     )
@@ -110,9 +106,7 @@ def upgrade() -> None:
             nullable=True,
         ),
         sa.Column("metadata_json", sa.JSON(), nullable=True),
-        sa.Column(
-            "created_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
+        sa.Column("created_at", utc_datetime(), nullable=False),
         sa.ForeignKeyConstraint(
             ["actor_id"],
             ["users.id"],
@@ -152,12 +146,8 @@ def upgrade() -> None:
         sa.Column("topics_json", sa.JSON(), nullable=True),
         sa.Column("stars", sa.Integer(), nullable=False),
         sa.Column("forks", sa.Integer(), nullable=False),
-        sa.Column(
-            "first_seen_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
-        sa.Column(
-            "last_seen_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
+        sa.Column("first_seen_at", utc_datetime(), nullable=False),
+        sa.Column("last_seen_at", utc_datetime(), nullable=False),
         sa.ForeignKeyConstraint(
             ["source_id"],
             ["data_sources.id"],
@@ -195,12 +185,8 @@ def upgrade() -> None:
             sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql"),
             nullable=False,
         ),
-        sa.Column(
-            "created_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
-        sa.Column(
-            "updated_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
+        sa.Column("created_at", utc_datetime(), nullable=False),
+        sa.Column("updated_at", utc_datetime(), nullable=False),
         sa.ForeignKeyConstraint(
             ["created_by"],
             ["users.id"],
@@ -245,12 +231,8 @@ def upgrade() -> None:
         ),
         sa.Column("run_type", sa.String(length=32), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
-        sa.Column(
-            "started_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=True
-        ),
-        sa.Column(
-            "finished_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=True
-        ),
+        sa.Column("started_at", utc_datetime(), nullable=True),
+        sa.Column("finished_at", utc_datetime(), nullable=True),
         sa.Column("attempt", sa.Integer(), nullable=False),
         sa.Column("metrics_json", sa.JSON(), nullable=True),
         sa.Column("error_code", sa.String(length=64), nullable=True),
@@ -289,9 +271,7 @@ def upgrade() -> None:
         sa.Column("open_issues", sa.Integer(), nullable=True),
         sa.Column("stars_delta", sa.Integer(), nullable=True),
         sa.Column("forks_delta", sa.Integer(), nullable=True),
-        sa.Column(
-            "created_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
+        sa.Column("created_at", utc_datetime(), nullable=False),
         sa.ForeignKeyConstraint(
             ["repository_id"],
             ["repositories.id"],
@@ -324,9 +304,7 @@ def upgrade() -> None:
         sa.Column("score", sa.Numeric(precision=12, scale=6), nullable=False),
         sa.Column("rank", sa.Integer(), nullable=False),
         sa.Column("selected_for_agent", sa.Boolean(), nullable=False),
-        sa.Column(
-            "created_at", open_source_intelligence.persistence.base.UTCDateTime(), nullable=False
-        ),
+        sa.Column("created_at", utc_datetime(), nullable=False),
         sa.ForeignKeyConstraint(
             ["repository_id"],
             ["repositories.id"],

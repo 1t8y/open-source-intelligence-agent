@@ -68,6 +68,10 @@ try {
     docker @composeArgs run --rm --no-deps -e "DATABASE_URL=$temporaryDatabaseUrl" --entrypoint alembic api check
     Assert-LastCommandSucceeded 'alembic check'
 
+    Write-Host '==> Run MySQL ORM CRUD smoke'
+    docker @composeArgs run --rm --no-deps -v "${projectRoot}:/workspace" -w /workspace -e "DATABASE_URL=$temporaryDatabaseUrl" --entrypoint python api /workspace/scripts/t2_mysql_smoke.py
+    Assert-LastCommandSucceeded 'MySQL ORM CRUD smoke'
+
     Write-Host '==> Downgrade temporary database'
     docker @composeArgs run --rm --no-deps -e "DATABASE_URL=$temporaryDatabaseUrl" --entrypoint alembic api downgrade base
     Assert-LastCommandSucceeded 'alembic downgrade base'
@@ -84,6 +88,9 @@ try {
 }
 finally {
     docker @composeArgs exec -T mysql sh -lc "mysql -uroot -p`"`$MYSQL_ROOT_PASSWORD`" -e `"DROP DATABASE IF EXISTS $temporaryDatabase;`""
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Temporary database cleanup failed: $temporaryDatabase"
+    }
 }
 
 Write-Host 'T2 verification passed. Temporary database removed.'

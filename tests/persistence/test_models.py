@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.persistence.base import Base
+from open_source_intelligence.persistence.models.audit import AuditLog
 from open_source_intelligence.persistence.models.identity import Role, User, UserRole
 from open_source_intelligence.persistence.models.intelligence import (
     DataSource,
@@ -125,3 +126,56 @@ def test_utc_datetime_is_persisted_and_restored_as_aware() -> None:
         assert restored is not None
         assert restored.last_success_at == timestamp
         assert restored.last_success_at.tzinfo is UTC
+
+
+def test_created_at_defaults_are_applied() -> None:
+    """Audit records should receive a timezone-aware creation timestamp."""
+    with build_session() as session:
+        audit = AuditLog(id=1, action="login", resource_type="user", result="success")
+        session.add(audit)
+        session.commit()
+
+        assert audit.created_at.tzinfo is UTC
+
+
+def test_invalid_user_status_is_rejected() -> None:
+    """Database constraints must reject unsupported user states."""
+    with build_session() as session:
+        session.add(
+            User(
+                id=2,
+                username="invalid",
+                password_hash="hash",
+                display_name="Invalid",
+                status="unknown",
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+def test_negative_repository_counters_are_rejected() -> None:
+    """Repository counters must not accept negative values."""
+    with build_session() as session:
+        source = DataSource(
+            id=3,
+            name="Invalid Source",
+            source_type="github",
+            base_url="https://api.github.com",
+        )
+        repository = Repository(
+            id=2,
+            source_id=source.id,
+            provider_repo_id="negative",
+            full_name="example/negative",
+            html_url="https://github.com/example/negative",
+            stars=-1,
+            forks=0,
+            first_seen_at=datetime(2026, 10, 9, tzinfo=UTC),
+            last_seen_at=datetime(2026, 10, 9, tzinfo=UTC),
+        )
+        session.add_all([source, repository])
+
+        with pytest.raises(IntegrityError):
+            session.commit()

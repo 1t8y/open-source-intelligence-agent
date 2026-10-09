@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import CheckConstraint, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..base import (
@@ -19,6 +19,10 @@ class User(Base, TimestampMixin):
     """Application user account."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'disabled')", name="status_valid"),
+        CheckConstraint("data_scope IN ('personal', 'team')", name="data_scope_valid"),
+    )
 
     id: Mapped[uint64_pk]
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -37,6 +41,7 @@ class Role(Base):
     """Stable role definition such as ADMIN, EDITOR, or VIEWER."""
 
     __tablename__ = "roles"
+    __table_args__ = (CheckConstraint("code IN ('ADMIN', 'EDITOR', 'VIEWER')", name="code_valid"),)
 
     id: Mapped[uint16_pk]
     code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)

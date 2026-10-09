@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     ForeignKey,
     Index,
@@ -26,6 +27,7 @@ from ..base import (
     UTCDateTime,
     uint64_pk,
     unsigned_bigint,
+    utc_now,
 )
 from .identity import User
 
@@ -34,6 +36,7 @@ class DataSource(Base, TimestampMixin):
     """External source such as GitHub or Hugging Face."""
 
     __tablename__ = "data_sources"
+    __table_args__ = (CheckConstraint("rate_limit_per_minute > 0", name="rate_limit_positive"),)
 
     id: Mapped[uint64_pk]
     name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -52,6 +55,15 @@ class Topic(Base, TimestampMixin):
     """Monitoring topic and candidate-selection policy."""
 
     __tablename__ = "topics"
+    __table_args__ = (
+        CheckConstraint("min_stars >= 0", name="min_stars_nonnegative"),
+        CheckConstraint("window_days > 0", name="window_days_positive"),
+        CheckConstraint("max_candidates > 0", name="max_candidates_positive"),
+        CheckConstraint(
+            "publish_mode IN ('AUTO', 'AUTO_WITH_DELAY', 'MANUAL')",
+            name="publish_mode_valid",
+        ),
+    )
 
     id: Mapped[uint64_pk]
     name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
@@ -82,6 +94,8 @@ class Repository(Base):
 
     __tablename__ = "repositories"
     __table_args__ = (
+        CheckConstraint("stars >= 0", name="stars_nonnegative"),
+        CheckConstraint("forks >= 0", name="forks_nonnegative"),
         UniqueConstraint("source_id", "provider_repo_id"),
         Index("ix_repositories_language_stars", "language", "stars"),
         Index("ix_repositories_last_seen", "last_seen_at"),
@@ -121,6 +135,9 @@ class RepoSnapshot(Base):
 
     __tablename__ = "repo_snapshots"
     __table_args__ = (
+        CheckConstraint("stars >= 0", name="stars_nonnegative"),
+        CheckConstraint("forks >= 0", name="forks_nonnegative"),
+        CheckConstraint("open_issues IS NULL OR open_issues >= 0", name="open_issues_nonnegative"),
         UniqueConstraint("repository_id", "snapshot_date"),
         Index("ix_repo_snapshots_date_stars_delta", "snapshot_date", "stars_delta"),
     )
@@ -137,7 +154,11 @@ class RepoSnapshot(Base):
     open_issues: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stars_delta: Mapped[int | None] = mapped_column(Integer, nullable=True)
     forks_delta: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+    )
 
     repository: Mapped[Repository] = relationship(back_populates="snapshots")
 
@@ -146,7 +167,11 @@ class TopicRepository(Base):
     """Candidate score and Agent selection state for a topic."""
 
     __tablename__ = "topic_repositories"
-    __table_args__ = (Index("ix_topic_repositories_topic_rank", "topic_id", "rank"),)
+    __table_args__ = (
+        CheckConstraint("score >= 0", name="score_nonnegative"),
+        CheckConstraint("rank >= 1", name="rank_positive"),
+        Index("ix_topic_repositories_topic_rank", "topic_id", "rank"),
+    )
 
     topic_id: Mapped[int] = mapped_column(
         unsigned_bigint(),
@@ -161,7 +186,11 @@ class TopicRepository(Base):
     score: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=0)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
     selected_for_agent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+    )
 
     topic: Mapped[Topic] = relationship(back_populates="repository_links")
     repository: Mapped[Repository] = relationship(back_populates="topic_links")
@@ -172,6 +201,19 @@ class PipelineRun(Base):
 
     __tablename__ = "pipeline_runs"
     __table_args__ = (
+        CheckConstraint(
+            "run_type IN ('collect', 'snapshot', 'agent', 'publish')",
+            name="run_type_valid",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', 'partial')",
+            name="status_valid",
+        ),
+        CheckConstraint("attempt >= 1", name="attempt_positive"),
+        CheckConstraint(
+            "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
+            name="time_order_valid",
+        ),
         Index("ix_pipeline_runs_topic_type_status", "topic_id", "run_type", "status"),
         Index("ix_pipeline_runs_started_at", "started_at"),
     )

@@ -327,3 +327,6 @@ users --< audit_logs
 - `MANUAL` 报告没有 `approve` 审核记录时不能发布。
 - `report_sources.report_id` 必须与报告所属主题一致。
 - `audit_logs` 的 `result=denied` 必须保留原始 `request_id`。
+- 用户状态、数据范围、角色代码、审计结果、主题发布模式和 Pipeline 状态由数据库 CHECK 约束限制为文档定义的合法值。
+- 仓库 star/fork、快照 star/fork/open issues、主题 star/window/candidate 阈值、候选 score/rank 和 Pipeline attempt 由数据库 CHECK 约束保证非负或正数范围。
+- 审计日志、仓库快照和主题候选关系的 `created_at` 由 ORM 使用 UTC 时间自动填充；业务明确需要时可显式覆盖。
