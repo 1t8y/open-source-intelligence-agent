@@ -37,3 +37,6 @@ logs/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local project manual (maintained locally, intentionally not committed)
+使用手册.md
