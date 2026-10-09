@@ -30,6 +30,8 @@
 
 | 资源组 | 代表接口 | 权限 | 关键契约 |
 |---|---|---|---|
+| 系统 | `GET /` | 公开 | 浏览器预览重定向到 `/docs` 或 `/health` |
+| 系统 | `GET /health` | 公开 | 进程存活状态、服务名和版本 |
 | 认证 | `POST /auth/login`、`GET /auth/me` | 登录用户 | JWT/Cookie、角色和数据范围 |
 | 数据源 | `/sources` | ADMIN/EDITOR | 不保存明文凭证 |
 | 主题 | `/topics`、`POST /topics/{id}/run` | ADMIN/EDITOR | 过滤条件、候选上限、发布模式 |
@@ -41,6 +43,14 @@
 | 审计 | `/audit-logs` | ADMIN | 只读，不可修改 |
 
 完整请求、响应和错误示例见 [api-contract.md](docs/api-contract.md)。
+
+内部应用入口：
+
+```text
+create_app(settings: Settings | None = None) -> FastAPI
+```
+
+传入 `settings` 时使用显式配置，不读取进程级缓存；未传入时调用 `get_settings()`。该入口供测试和 Uvicorn `--factory` 使用。
 
 ## 4. 内部模块接口
 
@@ -64,7 +74,25 @@ api/web
 | `reports` | 草稿、验证、策略决策和发布 | api/workers |
 | `security` | 登录、授权、脱敏和审计 | 所有模块 |
 | `evaluation` | 数据集、Scorer 和回归 | api/workers |
+| `workers` | Celery 应用、周期任务和 Worker 入口 | 部署/调度 |
 | `persistence` | Repository 和事务边界 | 所有业务模块 |
+
+Worker 接口：
+
+```text
+create_celery_app(settings: Settings | None = None) -> Celery
+healthcheck() -> {"status": "ok", "task": "healthcheck"}
+```
+
+Celery CLI 入口为 `open_source_intelligence.workers.celery_entry:app`。首期 Beat 每 60 秒执行一次 `open_source_intelligence.workers.tasks.healthcheck`。
+
+Compose 运行接口：
+
+```text
+docker compose --env-file .env.example -f infra/docker-compose.yml up -d --build
+```
+
+服务名为 `mysql`、`redis`、`api`、`worker`、`beat`。API 仅绑定 `127.0.0.1:8000`；MySQL 和 Redis 不暴露宿主机端口，只在 Compose 内网访问。
 
 ## 5. 核心跨模块对象
 

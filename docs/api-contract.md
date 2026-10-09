@@ -14,6 +14,25 @@
 - 错误响应使用 RFC 7807 Problem Details。
 - 常用错误码：`AUTH_REQUIRED`、`FORBIDDEN`、`NOT_FOUND`、`VALIDATION_ERROR`、`CONFLICT`、`RATE_LIMITED`、`AGENT_BUDGET_EXCEEDED`、`PUBLISH_POLICY_BLOCKED`。
 
+### `GET /health`
+
+权限：公开。该接口只表示进程存活，不检查 MySQL 或 Redis。
+
+```json
+{
+  "status": "ok",
+  "service": "open-source-intelligence-agent",
+  "version": "0.1.0"
+}
+```
+
+### `GET /`
+
+权限：公开。浏览器访问根路径时返回 `307 Temporary Redirect`：
+
+- 启用文档时跳转到 `/docs`。
+- 关闭文档时跳转到 `/health`。
+
 错误响应示例：
 
 ```json

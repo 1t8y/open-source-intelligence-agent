@@ -45,7 +45,15 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前只完成 S0-S3：需求澄清、架构选型、文档落地和任务拆解。未经用户确认 `ARCHITECTURE.md` 与任务顺序，不进入代码实施。
+当前 T1 已完成：API、Worker、Beat、MySQL、Redis 可通过 Docker Compose 启动，统一验证脚本通过。下一步进入 T2 数据库模型与迁移。Docker Desktop 4.94.0 已验证使用 WSL 2，国内镜像加速和 Compose 可用。
+
+T1 验证命令：
+
+```powershell
+.\scripts\verify_t1.ps1
+```
+
+该脚本会强制重建镜像，并执行 pytest、Ruff、mypy、Compose、API、Worker 和 Beat 验证。
 
 ## 开发原则
 

@@ -1,0 +1,87 @@
+name: open-source-intelligence-agent
+
+x-app-environment: &app-environment
+  APP_ENV: ${APP_ENV:-local}
+  APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  DOCS_ENABLED: ${DOCS_ENABLED:-true}
+  API_HOST: ${API_HOST:-0.0.0.0}
+  API_PORT: ${API_PORT:-8000}
+  DATABASE_URL: ${DATABASE_URL}
+  REDIS_URL: ${REDIS_URL}
+  SECRET_KEY: ${SECRET_KEY}
+
+x-app-image: &app-image
+  build:
+    context: ..
+    args:
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+  image: open-source-intelligence-agent:local
+  restart: unless-stopped
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    <<: *app-image
+    environment: *app-environment
+    command: ["python", "-m", "uvicorn", "open_source_intelligence.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  worker:
+    <<: *app-image
+    environment: *app-environment
+    command: ["python", "-m", "celery", "-A", "open_source_intelligence.workers.celery_entry:app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    <<: *app-image
+    environment: *app-environment
+    command: ["python", "-m", "celery", "-A", "open_source_intelligence.workers.celery_entry:app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
