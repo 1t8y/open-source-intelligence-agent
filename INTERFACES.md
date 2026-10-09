@@ -112,6 +112,17 @@ require_roles(*allowed_roles: str) -> Callable[..., User]
 
 认证接口：`POST /api/v1/auth/login`、`GET /api/v1/auth/me`。RBAC 每次请求从数据库读取当前角色，不依赖 Token 中的历史角色快照。
 
+Collector 接口：
+
+```text
+GitHubCollector.collect(limit: int) -> list[CollectedRepository]
+HuggingFaceCollector.collect(limit: int) -> list[CollectedRepository]
+collect_repositories(session, collectors, limit) -> CollectionSummary
+upsert_repository(session, source, item) -> Repository
+```
+
+默认 API 地址为 `https://api.github.com` 和 `https://hf-mirror.com/api`，可通过 `GITHUB_API_BASE`、`HUGGINGFACE_API_BASE` 覆盖。API Token 可选，空白 Token 会规范化为未配置。
+
 Compose 运行接口：
 
 ```text

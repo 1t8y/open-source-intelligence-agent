@@ -11,6 +11,10 @@ x-app-environment: &app-environment
   DATABASE_URL: ${DATABASE_URL}
   REDIS_URL: ${REDIS_URL}
   SECRET_KEY: ${SECRET_KEY}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+  GITHUB_API_BASE: ${GITHUB_API_BASE:-https://api.github.com}
+  HUGGINGFACE_API_BASE: ${HUGGINGFACE_API_BASE:-https://hf-mirror.com/api}
 
 x-app-image: &app-image
   build:

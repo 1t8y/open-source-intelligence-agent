@@ -45,7 +45,7 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T3 已完成：Argon2、JWT、登录、当前用户、三角色 RBAC、401/403 和审计事件均已通过。下一步进入 T4 GitHub/Hugging Face Collector。
+当前 T4 已完成：真实 GitHub/Hugging Face 小批量采集、重试、幂等入库和采集审计均已通过。下一步进入 T5 每日快照与候选排序。
 
 T1 验证命令：
 
@@ -70,6 +70,14 @@ T3 验证命令：
 ```
 
 该脚本会重建服务、应用迁移、引导临时管理员、验证登录和当前用户、检查 401，并确认审计记录已持久化。
+
+T4 验证命令：
+
+```powershell
+.\scripts\verify_t4.ps1
+```
+
+该脚本执行真实双源采集，并重复采集一次确认仓库数量不变。
 
 ## 开发原则
 

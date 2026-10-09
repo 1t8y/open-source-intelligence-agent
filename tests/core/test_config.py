@@ -29,6 +29,19 @@ def test_secret_value_is_masked_in_repr() -> None:
     assert settings.secret_key.get_secret_value() == "x" * 32
 
 
+def test_blank_optional_tokens_are_normalized_to_none() -> None:
+    """Blank optional source tokens must not create empty auth headers."""
+    settings = Settings(
+        _env_file=None,
+        **VALID_SETTINGS,
+        github_token="",
+        huggingface_token="   ",
+    )
+
+    assert settings.github_token is None
+    assert settings.huggingface_token is None
+
+
 def test_missing_required_settings_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     """Missing database, Redis, and secret configuration must fail fast."""
     for name in ("DATABASE_URL", "REDIS_URL", "SECRET_KEY"):

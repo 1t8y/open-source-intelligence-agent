@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str
     secret_key: SecretStr = Field(min_length=32)
+    github_token: SecretStr | None = None
+    huggingface_token: SecretStr | None = None
+    github_api_base: str = "https://api.github.com"
+    huggingface_api_base: str = "https://hf-mirror.com/api"
     docs_enabled: bool = True
 
     @field_validator("app_timezone")
@@ -54,6 +58,22 @@ class Settings(BaseSettings):
         """Accept only Redis TLS or plain connections."""
         if not value.startswith(("redis://", "rediss://")):
             raise ValueError("redis_url must use redis:// or rediss://")
+        return value
+
+    @field_validator("github_api_base", "huggingface_api_base")
+    @classmethod
+    def validate_api_base(cls, value: str) -> str:
+        """Require HTTPS endpoints for external API credentials and data."""
+        if not value.startswith("https://"):
+            raise ValueError("external API base URLs must use https://")
+        return value.rstrip("/")
+
+    @field_validator("github_token", "huggingface_token", mode="after")
+    @classmethod
+    def normalize_optional_token(cls, value: SecretStr | None) -> SecretStr | None:
+        """Treat blank environment tokens as unconfigured credentials."""
+        if value is None or not value.get_secret_value().strip():
+            return None
         return value
 
 

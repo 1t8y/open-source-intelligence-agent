@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-09 ｜ 文档版本：v0.5.0
+> 最后更新：2026-10-09 ｜ 文档版本：v0.6.0
 
 ## 1. 概述与目标
 
@@ -336,7 +336,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T2.2 十个核心 ORM 模型 — 验证：身份、来源、主题、仓库、快照、Pipeline 和审计模型通过约束测试
 - [x] T2.3 Alembic 迁移环境 — 验证：`upgrade head`、`downgrade base`、再次升级和 `alembic check` 通过
 - [x] T3 认证、RBAC 与审计骨架 — 依赖：T2 — 验证：Argon2、JWT、三角色权限、401/403 和审计事件通过
-- [ ] T4 GitHub/Hugging Face Collector — 依赖：T2 — 验证：真实 API 小批量采集、重试、幂等入库通过
+- [x] T4 GitHub/Hugging Face Collector — 依赖：T2 — 验证：真实双源采集、重试、幂等入库和采集审计通过
 - [ ] T5 每日快照与候选排序 — 依赖：T4 — 验证：重复运行不重复，按时间窗口可查出趋势
 - [ ] T6 Celery 调度与 PipelineRun — 依赖：T3/T5 — 验证：定时任务可执行、失败可重试、状态可查询
 - [ ] T7 Tool Layer 与数据契约 — 依赖：T2/T5 — 验证：工具 Schema、ACL、截断和只读限制测试通过
@@ -374,3 +374,4 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-09 | 完成 T2 SQLAlchemy 核心模型与 Alembic 迁移 | 5、6、14 | T2 | 19 项测试、10 张业务表、MySQL 升级/回滚、二次升级和 `alembic check` 通过 |
 | 2026-10-09 | 修复 T2 审查问题并强化数据库验证 | 5、6、9、14 | T2 复审 | 22 项测试、时间默认值、CHECK 约束、自包含迁移和 MySQL CRUD 冒烟通过 |
 | 2026-10-09 | 完成 T3 认证、RBAC 与审计骨架 | 5、7、8、14 | T3 | 29 项测试、真实登录、当前用户、401 拒绝和 auth.* 审计持久化通过 |
+| 2026-10-09 | 完成 T4 GitHub/Hugging Face Collector | 4、5、9、14 | T4 | 36 项测试、真实双源采集、重复采集幂等、来源和成功审计验证通过 |
