@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-12 ｜ 文档版本：v0.8.3
+> 最后更新：2026-10-12 ｜ 文档版本：v0.8.4
 
 ## 1. 概述与目标
 
@@ -150,7 +150,7 @@ open-source-intelligence-agent/
 | `repositories`, `repo_snapshots` | 仓库主数据和每日时间序列 |
 | `pipeline_runs` | 采集、筛选、报告任务的运行记录 |
 | `agent_configs`, `agent_runs`, `agent_steps`, `tool_calls` | Agent 版本、状态、轨迹和工具调用 |
-| `reports`, `report_sources`, `report_reviews` | 报告、证据引用、审核和版本 |
+| `reports`, `report_versions`, `report_sources`, `report_reviews` | 报告、当前版本、不可变版本、证据引用和审核 |
 | `eval_datasets`, `eval_cases`, `eval_runs`, `eval_results` | 评测集、执行和指标 |
 | `feedback` | 人工反馈和 Bad Case |
 | `audit_logs` | 权限、配置、审核、发布和导出审计 |
@@ -375,6 +375,18 @@ T9 已实现以下能力：
 - 达到 80% 时 `budget_degraded=true`，不再调用模型继续研究，但允许用剩余预算完成草稿；达到 100% 时在任何新模型调用前停止并标记 `AGENT_BUDGET_EXCEEDED`。
 - `AGENT_MAX_TOKENS` 默认 12000，随 `AGENT_MAX_LOOPS`、`AGENT_MAX_MODEL_CALLS` 和 `AGENT_MAX_TOOL_CALLS` 一起进入 Agent 配置与环境模板。
 
+### 9.7 T10 报告生成与引用
+
+T10 已实现以下能力：
+
+- `reports/composition.py` 只读取指定 `agent_run` 的 `report_drafts` 与最新章节版本，按固定顺序合成 Markdown，不重新调用模型自由写作。
+- 六个章节必须齐全且每节至少有一个引用；章节正文包含数字时至少需要一条已解析的 `metric` 引用。
+- `reports/citations.py` 解析 `repo_snapshots:<repo_id>:<date>`、`repository_contents:<repo_id>:readme`、`reports:<report_id>` 三类引用，并验证来源行确实存在。
+- 指标引用解析到 `metric_snapshot_id`；readme 和指标引用补全 HTTPS 来源链接；未发布的 `prior_report` 不能作为正式引用。
+- 报告内容首次生成版本 1；草稿内容未变化时重复执行幂等，不增加版本；内容变化时 `reports.current_version` 递增，并写入不可变的 `report_versions`。
+- 每次生成替换该报告的 `report_sources` 当前集合，保证引用与当前版本一致；成功后将 `report_drafts.status` 置为 `promoted`。
+- `python -m open_source_intelligence.reports.cli --agent-run-id <id>` 提供手动生成入口。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -454,7 +466,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T7 Tool Layer 与数据契约 — 依赖：T2/T5 — 验证：工具 Schema、ACL、截断和只读限制测试通过
 - [x] T8 LangGraph Research Agent — 依赖：T7 — 验证：完成一条 Research→Tool→Observe→Verify→Write 轨迹，17 步、13 次工具调用、6 个草稿章节，两条降级路径均干净收敛
 - [x] T9 Prompt Guard 与运行预算 — 依赖：T8 — 验证：循环、工具、Token 超限时安全停止
-- [ ] T10 报告生成与引用 — 依赖：T8 — 验证：关键数字可追溯，引用链接有效
+- [x] T10 报告生成与引用 — 依赖：T8 — 验证：关键数字可追溯，引用链接有效
 - [ ] T11 Verifier 与发布策略 — 依赖：T10 — 验证：`AUTO`、`AUTO_WITH_DELAY`、`MANUAL` 状态机测试通过
 - [ ] T12 报告 API 与管理界面 — 依赖：T3/T11 — 验证：可查看、编辑、审核、发布和回退报告
 - [ ] T13 邮件/Webhook 推送 — 依赖：T11/T12 — 验证：仅已批准报告可推送，失败可重试
@@ -499,3 +511,4 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-12 | 修复两处验证脚本缺陷：`verify_t5.ps1` / `verify_t6.ps1` 新增默认关闭的 `-Offline` 开关；`verify_t6.ps1` 的运行查询断言改为按 attempt 排序 | 9.5、15 | T5–T8 复查 | T5 离线端到端通过（repositories=22, candidates=22）；T6 离线端到端通过（run_rows=6, attempts=1,3, retry_attempts=1,2）；不带 `-Offline` 的默认行为与原先一致 |
 | 2026-10-12 | 完成 T9 Prompt Guard、80%/100% Token 预算与 Token 计数持久化 | 8.4、9.6、14 | T9 | 184 项测试、Ruff、mypy；迁移 `c4a9e2f1d6b8` 升级和 drift 检查通过；MySQL 冒烟验证正常 Token 持久化、80% 降级撰写、100% 硬停止和注入风险复核均通过 |
 | 2026-10-12 | 修复 T6 迁移回滚的 MySQL 外键顺序，并让 T2 验证脚本按 ORM 元数据动态计算表数量 | 9.2、14、15 | T2/T6 回归 | `verify_t2.ps1` 完成升级、回滚 base、再次升级；19 张 ORM 表加 `alembic_version` 共 20 张，临时库已清理 |
+| 2026-10-12 | 完成 T10 报告合成、不可变版本和引用校验 | 7、9.7、14 | T10 | 191 项测试、Ruff、mypy 80 文件；迁移 `d9e4b7c1a2f3` 升级/回滚/再次升级和 drift 检查通过；MySQL 冒烟生成 16 条可追溯引用，幂等、版本递增和伪造引用拒绝均通过 |

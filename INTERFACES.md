@@ -1,7 +1,7 @@
 # 项目接口基线
 
 > 文档状态：实施基线（T1-T9 已对齐）
-> 文档版本：v0.7
+> 文档版本：v0.8
 > 最后更新：2026-10-12
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -152,6 +152,15 @@ guard_tool_payload(payload: Any) -> tuple[Any, GuardDecision]
 ```
 
 `AGENT_MAX_TOKENS` 是单次 Agent 运行的 Token 上限；达到 80% 时停止新增研究规划调用，达到 100% 时不再发起任何模型调用。不可信内容命中指令模式时，工具结果中的命中行替换为 `[BLOCKED_UNTRUSTED_INSTRUCTION]`，运行写 `AGENT_PROMPT_INJECTION` 并进入人工复核。
+
+Report 接口：
+
+```text
+resolve_citation(session, citation: CitationRef) -> ResolvedCitation
+generate_report(session, *, agent_run_id: int, title: str | None = None, now: datetime | None = None) -> ReportGenerationResult
+```
+
+CLI 入口为 `python -m open_source_intelligence.reports.cli --agent-run-id <id>`。报告只从最新章节草稿合成；六个章节必须齐全且每节至少一条引用，含数字的章节至少一条 `metric` 引用。引用必须解析到 `repo_snapshots`、`repository_contents` 或已发布 `reports`。重复生成相同内容不新增版本，内容变化时递增 `reports.current_version` 并写入 `report_versions`。
 
 Pipeline 运行记录接口：
 
@@ -364,6 +373,7 @@ Agent 只能调用以下白名单工具：
 - `repository_contents` 唯一键为 `(repository_id, content_type)`。
 - `tool_calls` 必须关联 `agent_run_id`，只保存脱敏且截断后的参数与结果摘要；工具预算与白名单由 `agent_configs.tool_policy_json` 提供，运行时再收敛为 `ToolContext.allowed_tools`。
 - 五个工具中只有 `save_report_section` 写数据且只写当前运行草稿；其余四个工具不得产生任何领域写入，由注册表的只读写保护强制并在冒烟中验证。
+- `report_versions` 按 `(report_id, version)` 唯一，保存每次正式报告内容的不可变快照；`report_sources` 始终描述 `reports.current_version` 的引用集合。
 - `MANUAL` 报告缺少 `approve` 审核记录时不能发布。
 
 ## 8. 错误码与状态机

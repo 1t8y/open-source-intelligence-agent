@@ -23,7 +23,8 @@ topics --< pipeline_runs（collect/snapshot/rank 为全局运行，topic_id 为 
 agent_configs --< agent_runs --< agent_steps --< tool_calls
 pipeline_runs --< agent_runs；topics --< agent_runs
 agent_runs --< report_drafts --< report_sections
-agent_runs --< reports --< report_sources
+agent_runs --< reports --< report_versions
+reports --< report_sources
 reports --< report_reviews
 eval_datasets --< eval_cases --< eval_results >-- eval_runs
 users --< feedback
@@ -277,6 +278,8 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 ### `report_versions`
 
 字段：`id`、`report_id`、`version`、`content_markdown`、`created_by`、`change_reason`、`created_at`。唯一约束：`UNIQUE(report_id, version)`。
+
+T10 已实现该表：相同草稿内容重复生成不新增版本；章节内容变化时 `reports.current_version` 递增，并写入对应不可变版本。`report_sources` 在每次生成时替换为当前版本的引用集合。
 
 ### `report_sources`
 

@@ -92,6 +92,37 @@ class Report(Base):
     approved_by: Mapped[int | None] = mapped_column(unsigned_bigint(), nullable=True)
 
 
+class ReportVersion(Base):
+    """Immutable snapshot of a report at one promoted version."""
+
+    __tablename__ = "report_versions"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint("report_id", "version"),
+        Index("ix_report_versions_report_created", "report_id", "created_at"),
+    )
+
+    id: Mapped[uint64_pk]
+    report_id: Mapped[int] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_markdown: Mapped[str] = mapped_column(medium_text(), nullable=False)
+    created_by: Mapped[int | None] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    change_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+    )
+
+
 class ReportSource(Base):
     """One traceable evidence reference backing a report section."""
 

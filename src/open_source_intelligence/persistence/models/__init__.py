@@ -12,7 +12,7 @@ from .intelligence import (
     Topic,
     TopicRepository,
 )
-from .reporting import Report, ReportDraft, ReportSection, ReportSource
+from .reporting import Report, ReportDraft, ReportSection, ReportSource, ReportVersion
 
 __all__ = [
     "AgentConfig",
@@ -25,6 +25,7 @@ __all__ = [
     "ReportDraft",
     "ReportSection",
     "ReportSource",
+    "ReportVersion",
     "Repository",
     "RepositoryContent",
     "RepoSnapshot",

@@ -37,6 +37,7 @@ def test_metadata_contains_core_tables() -> None:
         "report_drafts",
         "report_sections",
         "report_sources",
+        "report_versions",
         "reports",
         "repositories",
         "repository_contents",
