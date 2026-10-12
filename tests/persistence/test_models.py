@@ -25,14 +25,23 @@ def build_session() -> Session:
 
 
 def test_metadata_contains_core_tables() -> None:
-    """Alembic metadata must expose the ten core T2 tables."""
+    """Alembic metadata must expose every table from T2 and T7."""
     assert set(Base.metadata.tables) == {
+        "agent_configs",
+        "agent_runs",
+        "agent_steps",
         "audit_logs",
         "data_sources",
         "pipeline_runs",
         "repo_snapshots",
+        "report_drafts",
+        "report_sections",
+        "report_sources",
+        "reports",
         "repositories",
+        "repository_contents",
         "roles",
+        "tool_calls",
         "topic_repositories",
         "topics",
         "user_roles",

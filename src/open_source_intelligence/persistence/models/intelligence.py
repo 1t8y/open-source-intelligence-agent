@@ -25,6 +25,7 @@ from ..base import (
     Base,
     TimestampMixin,
     UTCDateTime,
+    medium_text,
     uint64_pk,
     unsigned_bigint,
     utc_now,
@@ -164,6 +165,34 @@ class RepoSnapshot(Base):
     )
 
     repository: Mapped[Repository] = relationship(back_populates="snapshots")
+
+
+class RepositoryContent(Base, TimestampMixin):
+    """Cached, cleaned long-form repository content such as the README."""
+
+    __tablename__ = "repository_contents"
+    __table_args__ = (
+        CheckConstraint("content_type IN ('readme')", name="content_type_valid"),
+        UniqueConstraint("repository_id", "content_type"),
+    )
+
+    id: Mapped[uint64_pk]
+    repository_id: Mapped[int] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    content_type: Mapped[str] = mapped_column(String(32), nullable=False, default="readme")
+    source_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    content: Mapped[str] = mapped_column(medium_text(), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+    )
+
+    repository: Mapped[Repository] = relationship()
 
 
 class TopicRepository(Base):

@@ -17,9 +17,12 @@
 
 ```text
 users --< user_roles >-- roles
-topics --< repositories >-- repo_snapshots
-topics --< pipeline_runs（collect/snapshot 为全局运行，topic_id 为 NULL）
-topics --< agent_configs --< agent_runs --< agent_steps --< tool_calls
+topics --< topic_repositories >-- repositories --< repo_snapshots
+repositories --< repository_contents（content_type=readme）
+topics --< pipeline_runs（collect/snapshot/rank 为全局运行，topic_id 为 NULL）
+agent_configs --< agent_runs --< agent_steps --< tool_calls
+pipeline_runs --< agent_runs；topics --< agent_runs
+agent_runs --< report_drafts --< report_sections
 agent_runs --< reports --< report_sources
 reports --< report_reviews
 eval_datasets --< eval_cases --< eval_results >-- eval_runs
@@ -132,6 +135,24 @@ users --< audit_logs
 | `created_at` | DATETIME(6) | NOT NULL |
 
 唯一约束：`UNIQUE(repository_id, snapshot_date)`。索引：`(snapshot_date, stars_delta)`。
+
+### `repository_contents`
+
+T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `get_repository_content` 读取，工具不访问任意 URL。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 内容 ID |
+| `repository_id` | BIGINT UNSIGNED | FK repositories.id, CASCADE | 所属仓库 |
+| `content_type` | VARCHAR(32) | NOT NULL | 当前仅 `readme` |
+| `source_url` | VARCHAR(512) | NOT NULL | 内容来源地址 |
+| `content` | MEDIUMTEXT | NOT NULL | 清理后的正文 |
+| `content_hash` | VARCHAR(64) | NOT NULL | 入库时的内容摘要 |
+| `fetched_at` | DATETIME(6) | NOT NULL | 抓取时间 UTC |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+| `updated_at` | DATETIME(6) | NOT NULL | UTC |
+
+唯一约束：`UNIQUE(repository_id, content_type)`。CHECK：`content_type IN ('readme')`。
 
 ### `topic_repositories`
 
@@ -271,6 +292,41 @@ users --< audit_logs
 
 索引：`(report_id, section_key)`、`(repository_id)`。
 
+### `report_drafts`
+
+T7 新增。承载 `save_report_section` 契约中的 `report_draft_id`：Agent 在报告定稿前把章节写入草稿，草稿与最终 `reports` 分离，避免未定稿内容提前进入发布流程。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 草稿 ID |
+| `agent_run_id` | BIGINT UNSIGNED | FK agent_runs.id, CASCADE | 生成运行 |
+| `topic_id` | BIGINT UNSIGNED | FK topics.id, RESTRICT | 主题 |
+| `status` | VARCHAR(32) | NOT NULL | `draft`、`superseded`、`promoted` |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+| `updated_at` | DATETIME(6) | NOT NULL | UTC |
+
+唯一约束：`UNIQUE(agent_run_id)`，即每个运行只有一个草稿。
+
+### `report_sections`
+
+T7 新增。草稿内的章节版本，幂等保存与版本递增都在这里落地。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 章节 ID |
+| `report_draft_id` | BIGINT UNSIGNED | FK report_drafts.id, CASCADE | 所属草稿 |
+| `section_key` | VARCHAR(64) | NOT NULL | 报告模板章节 |
+| `version` | INT | NOT NULL | 章节版本，从 1 递增 |
+| `content_markdown` | MEDIUMTEXT | NOT NULL | 章节正文，上限 20000 字符 |
+| `content_digest` | VARCHAR(64) | NOT NULL | 内容摘要，用于幂等判定 |
+| `citations_json` | JSON | NULL | 引用列表 |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+| `updated_at` | DATETIME(6) | NOT NULL | UTC |
+
+唯一约束：`UNIQUE(report_draft_id, section_key, version)`。索引：`(report_draft_id, section_key, content_digest)` 供幂等查询。CHECK：`version >= 1`。
+
+幂等语义：`(report_draft_id, section_key, content_digest)` 已存在时返回原有版本而不新增行；内容变化时 `version` 取该章节当前最大值加一。
+
 ### `report_reviews`
 
 字段：`id`、`report_id`、`reviewer_id`、`decision`、`comment`、`edited_version_id`、`created_at`。`decision` 取值为 `approve`、`reject`、`request_changes`。
@@ -338,3 +394,8 @@ users --< audit_logs
 - Pipeline 运行的 `agent` 和 `publish` 类型必须绑定主题；`collect`、`snapshot`、`rank` 允许全局运行。
 - 仓库 star/fork、快照 star/fork/open issues、主题 star/window/candidate 阈值、候选 score/rank 和 Pipeline attempt 由数据库 CHECK 约束保证非负或正数范围。
 - 审计日志、仓库快照和主题候选关系的 `created_at` 由 ORM 使用 UTC 时间自动填充；业务明确需要时可显式覆盖。
+- Agent 配置唯一键为 `(name, version)`；`agent_runs` 必须绑定 `pipeline_run_id`、`topic_id` 和 `agent_config_id`。
+- 每个 `agent_run` 最多一个 `report_drafts` 行；`report_sections` 在草稿内按 `(report_draft_id, section_key, version)` 唯一，并可用 `(report_draft_id, section_key, content_digest)` 做幂等判定。
+- `repository_contents` 唯一键为 `(repository_id, content_type)`，`content_type` 当前仅允许 `readme`。
+- `tool_calls` 必须关联 `agent_run_id`，只保存脱敏且截断后的 `arguments_json` 与 `result_summary`。
+- 五个 Agent 工具中只有 `save_report_section` 产生领域写入，且只写当前运行草稿；其余四个只读工具不得写入任何领域表（由注册表的只读写保护强制）。

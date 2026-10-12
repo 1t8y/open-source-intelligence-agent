@@ -1,7 +1,7 @@
 # 项目接口基线
 
 > 文档状态：待用户确认  
-> 文档版本：v0.3
+> 文档版本：v0.4
 > 最后更新：2026-10-12
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -99,7 +99,7 @@ create_session_factory(engine: Engine) -> sessionmaker[Session]
 Base.metadata
 ```
 
-首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`。
+首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`，共 19 张表。
 
 Security 接口：
 
@@ -165,6 +165,29 @@ run_daily_pipeline(session, *, business_date, collectors, limit, attempt=1) -> D
 ```
 
 固定顺序为 `collect -> snapshot -> rank`，每个阶段各写一条运行记录。采集阶段只有在所有供应商都失败时才抛 `PipelineStageError`（错误码 `COLLECTOR_FAILED`）并停止批次；部分失败记为 `partial` 后继续。快照失败抛 `PipelineStageError`（`SNAPSHOT_FAILED`）。单个主题的排序失败只把该主题记为 `failed`（`RANK_FAILED`），不阻塞其他主题，整体状态为 `partial`。排序阶段不调用大模型。
+
+Agent Tool 接口：
+
+```text
+ToolContext {
+  agent_run_id: integer
+  topic_id: integer
+  authorized_topic_ids: set<integer>
+  allowed_tools: list<string>
+  max_tool_calls: integer
+  tool_call_count: integer
+}
+
+build_default_registry() -> ToolRegistry
+ToolRegistry.tool_names -> tuple<string, ...>
+ToolRegistry.invoke(name, ctx: ToolContext, session, arguments: Mapping) -> ToolResult<T>
+```
+
+`ToolContext` 由运行时注入，`agent_run_id`、`topic_id`、`authorized_topic_ids`、`allowed_tools` 和工具预算都不接受模型参数伪造。`ToolRegistry.invoke()` 的执行顺序固定为「白名单 → 运行策略 → 工具预算 → Pydantic 严格校验 → handler → 只读工具写保护 → 记录 `tool_calls`」；任一失败分支都会写入一条 `tool_calls` 记录并返回 `ToolResult{ok=false, error, meta}`。
+
+仓库类工具（`query_repo_metrics`、`get_repository_profile`）要求仓库属于 `authorized_topic_ids` 中的主题；`get_repository_content` 只读取已缓存的 `repository_contents`，不访问任意 URL；`search_prior_reports` 只返回授权主题下 `status=published` 的报告，无权限主题不泄露摘要或计数；`save_report_section` 只写当前 `agent_run` 的草稿，每个运行对应一个 `report_drafts` 行。
+
+`repository_contents` 是 T7 新增的数据契约，字段为 `repository_id`、`content_type`（当前仅 `readme`）、`source_url`、`content`、`content_hash`、`fetched_at`，唯一键 `(repository_id, content_type)`。
 
 Compose 运行接口：
 
@@ -242,6 +265,11 @@ Agent 只能调用以下白名单工具：
 - `pipeline_runs.attempt >= 1`，`finished_at` 不早于 `started_at`；`agent` 和 `publish` 运行必须绑定 `topic_id`。
 - 每个阶段每次尝试只写一条 `pipeline_runs` 记录，禁止用同一行覆盖历史尝试。
 - `agent_steps` 在运行内按 `step_index` 唯一递增。
+- `agent_configs` 唯一键为 `(name, version)`；`agent_runs` 必须绑定 `pipeline_run_id`、`topic_id` 和 `agent_config_id`。
+- 每个 `agent_run` 最多一个 `report_drafts` 行（`UNIQUE(agent_run_id)`）；`report_sections` 在草稿内按 `(report_draft_id, section_key, version)` 唯一，幂等键为 `(report_draft_id, section_key, content_digest)`。
+- `repository_contents` 唯一键为 `(repository_id, content_type)`。
+- `tool_calls` 必须关联 `agent_run_id`，只保存脱敏且截断后的参数与结果摘要；工具预算与白名单由 `agent_configs.tool_policy_json` 提供，运行时再收敛为 `ToolContext.allowed_tools`。
+- 五个工具中只有 `save_report_section` 写数据且只写当前运行草稿；其余四个工具不得产生任何领域写入，由注册表的只读写保护强制并在冒烟中验证。
 - `MANUAL` 报告缺少 `approve` 审核记录时不能发布。
 
 ## 8. 错误码与状态机

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
-from sqlalchemy import BigInteger, DateTime, Integer, MetaData, SmallInteger
+from sqlalchemy import BigInteger, DateTime, Integer, MetaData, SmallInteger, Text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -28,6 +28,12 @@ def unsigned_smallint() -> SmallInteger:
     """Return a portable SMALLINT that is unsigned on MySQL."""
     mysql_type = mysql.SMALLINT(unsigned=True)  # type: ignore[no-untyped-call]
     return SmallInteger().with_variant(mysql_type, "mysql").with_variant(Integer(), "sqlite")
+
+
+def medium_text() -> Text:
+    """Return a portable TEXT column that maps to MEDIUMTEXT on MySQL."""
+    mysql_type = mysql.MEDIUMTEXT()  # type: ignore[no-untyped-call]
+    return Text().with_variant(mysql_type, "mysql")
 
 
 def utc_now() -> datetime:

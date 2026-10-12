@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-12 ｜ 文档版本：v0.6.4
+> 最后更新：2026-10-12 ｜ 文档版本：v0.7.0
 
 ## 1. 概述与目标
 
@@ -287,6 +287,20 @@ T6 已实现以下能力：
 - Celery 任务按 `PIPELINE_TASK_MAX_RETRIES` 重试，退避为 `PIPELINE_RETRY_BACKOFF_SECONDS * 2^已重试次数`；参数非法不重试。
 - 状态查询：`python -m open_source_intelligence.pipeline.cli --action runs` 支持按 `run_type`、`status`、`topic_id` 和 `run_id` 查询；`list_pipeline_runs()` 是后续 API 的读取入口。
 
+### 9.3 T7 Tool Layer 与数据契约
+
+T7 已实现以下能力：
+
+- `agent/tools/contracts.py` 用 Pydantic 严格模型固定工具契约（`extra="forbid"`、`strict=True`），字段名、边界和错误码与 `docs/agent-tool-contract.md` 逐字一致；`ToolResult<T>` 是唯一返回信封，`ToolMeta` 携带 `latency_ms`、`truncated` 和 `result_count`。
+- `agent/tools/registry.py` 的 `ToolRegistry.invoke()` 按固定顺序执行「白名单 → 运行策略 → 预算 → Schema 校验 → handler → 只读写保护 → `tool_calls` 记录」，任何分支都留下可审计的调用记录。
+- 授权通过运行时注入的 `ToolContext` 完成，`agent_run_id`、`topic_id`、`authorized_topic_ids`、`allowed_tools` 和工具预算都不接受模型参数伪造；仓库类工具要求仓库属于授权主题。
+- `get_repository_content` 读取缓存的 README，清除 script/style 与控制字符后按 `max_chars`（500-12000，默认 6000）截断，并始终返回 `untrusted=true`；工具不访问任意 URL。
+- `search_prior_reports` 只返回授权主题下已发布的报告摘要，无权限主题返回 `TOOL_ACCESS_DENIED`，不泄露摘要、计数或存在性。
+- `save_report_section` 以 `(report_draft_id, section_key, content_digest)` 幂等保存：同摘要重复保存返回原有版本，内容变化则版本递增，每个 `agent_run` 只对应一个草稿。
+- 支撑工具的数据契约新增 9 张表：`agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections`、`repository_contents`（README 内容缓存，data-model 之外新增）。
+- `repository_contents` 与 `report_drafts`/`report_sections` 是 T7 为落地契约而新增的表：前者承载「缓存命中直接返回」的 README，后者承载契约中的 `report_draft_id` 与章节版本；`report_versions`、`report_reviews` 留待 T10/T11。
+- 发布动作仍不属于 Agent Tool，由 Policy Engine 与 Publishing Service 在 T11 实现。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -363,7 +377,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T4 GitHub/Hugging Face Collector — 依赖：T2 — 验证：真实双源采集、重试、幂等入库和采集审计通过
 - [x] T5 每日快照与候选排序 — 依赖：T4 — 验证：重复运行不重复，按时间窗口可查出趋势
 - [x] T6 Celery 调度与 PipelineRun — 依赖：T3/T5 — 验证：定时任务可执行、失败可重试、状态可查询
-- [ ] T7 Tool Layer 与数据契约 — 依赖：T2/T5 — 验证：工具 Schema、ACL、截断和只读限制测试通过
+- [x] T7 Tool Layer 与数据契约 — 依赖：T2/T5 — 验证：工具 Schema、ACL、截断和只读限制测试通过
 - [ ] T8 LangGraph Research Agent — 依赖：T7 — 验证：至少完成一条 Research→Tool→Verify→Write 轨迹
 - [ ] T9 Prompt Guard 与运行预算 — 依赖：T8 — 验证：循环、工具、Token 超限时安全停止
 - [ ] T10 报告生成与引用 — 依赖：T8 — 验证：关键数字可追溯，引用链接有效
@@ -403,3 +417,5 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-12 | 完成 T5 每日快照、候选排序与 CLI | 9、14 | T5 | 44 项测试、Ruff、mypy、真实 4 仓库 MySQL 冒烟、重复快照和排序幂等、窗口增量与负分保护通过 |
 | 2026-10-12 | `pipeline_runs` 支持全局运行并新增 `rank` 类型 | 7、9.2、14 | T6 | 迁移 `9c1f7b2d4e83`；`alembic upgrade head`、`alembic check` 通过；主题范围 CHECK 约束在 MySQL 上生效 |
 | 2026-10-12 | 完成 T6 Celery 调度、每日 Pipeline 编排与运行状态查询 | 9.2、10、14 | T6 | 62 项测试、Ruff、mypy；MySQL 冒烟验证幂等、attempt 轨迹、错误脱敏和约束；真实 Celery 重试记录两次尝试；Beat 定时触发与 CLI 状态查询通过 |
+| 2026-10-12 | 新增 Agent 运行、工具调用、报告与 README 内容缓存共 9 张表 | 6、7、9.3、14 | T7 | 迁移 `b3f6a1c2d4e7`；`upgrade head`、`downgrade -1`、再次升级和 `alembic check` 通过；元数据共 19 张表 |
+| 2026-10-12 | 完成 T7 工具层、数据契约与五个白名单工具 | 8.3、9.3、10、14 | T7 | 109 项测试（Agent 46 项）、Ruff、mypy 57 文件 0 错误；真实 MySQL 冒烟执行 5 个工具并记录 8 条 tool_calls，ACL 拒绝、截断、不可信标记、草稿幂等与只读限制全部通过 |

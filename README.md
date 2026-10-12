@@ -1,7 +1,7 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：T1-T6 已完成，进入 T7
-> 文档版本：v0.5
+> 项目状态：T1-T7 已完成，进入 T8
+> 文档版本：v0.6
 > 最后更新：2026-10-12
 
 ## 最终版路径
@@ -45,7 +45,7 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T6 已完成：每日确定性 Pipeline 由 Celery Beat 定时触发，`collect -> snapshot -> rank` 每阶段各写一条 `pipeline_runs` 记录，失败按指数退避重试且每次尝试独立留痕，运行状态可用 CLI 查询。下一步进入 T7 Tool Layer 与数据契约。
+当前 T7 已完成：五个白名单工具（`query_repo_metrics`、`get_repository_profile`、`get_repository_content`、`search_prior_reports`、`save_report_section`）的 Pydantic 契约、注册表（白名单 / ACL / 预算 / 只读强制）、截断与不可信标记、草稿幂等保存全部落地，并新增 Agent 运行、报告与 README 内容缓存共 9 张表。下一步进入 T8 LangGraph Research Agent。
 
 T1 验证命令：
 
@@ -94,6 +94,14 @@ T6 验证命令：
 ```
 
 该脚本执行每日 Pipeline 的 MySQL 冒烟（运行记录、attempt 轨迹、错误脱敏、幂等和 CHECK 约束），通过真实 Celery broker 和 Worker 调度任务，用一个专用 Worker 指向不可达数据源以证明失败重试留下两条尝试记录，验证 Beat 定时触发与 CLI 状态查询，最后清理验证数据。
+
+T7 验证命令：
+
+```powershell
+.\scripts\verify_t7.ps1
+```
+
+该脚本执行 pytest、Ruff、mypy，重建服务并检查迁移漂移，然后在真实 MySQL 上调用全部 5 个白名单工具，验证 Schema 严格校验、跨主题 ACL 拒绝、内容清理与截断、不可信标记、草稿幂等与版本递增、只读工具零写入以及 `tool_calls` 记录，最后清理验证数据。
 
 ## 开发原则
 

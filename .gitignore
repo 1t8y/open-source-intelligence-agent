@@ -40,3 +40,6 @@ Thumbs.db
 
 # Local project manual (maintained locally, intentionally not committed)
 使用手册.md
+
+# Local agent memory and session data (kept on disk, not committed)
+.workbuddy/
