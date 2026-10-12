@@ -1,7 +1,7 @@
 # 项目接口基线
 
 > 文档状态：待用户确认  
-> 文档版本：v0.4
+> 文档版本：v0.5
 > 最后更新：2026-10-12
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -69,7 +69,10 @@ api/web
 |---|---|---|
 | `collectors` | `collect_source`、返回标准仓库数据 | pipeline/workers |
 | `pipeline` | 清洗、快照、候选排序、Pipeline 运行记录与编排 | workers/api |
-| `agent.runtime` | `run_research_agent` | workers |
+| `agent.runtime` | `run_research_agent`、运行编排与 `AgentRunResult` | workers |
+| `agent.graph` | 有界状态图 `plan→tool→observe→verify→write` | agent.runtime |
+| `agent.llm` | `ModelClient` 协议与两个 Adapter（离线桩 / OpenAI-compatible）、消息契约 | agent.graph |
+| `agent.prompts` | 版本化 Prompt 资产发现与加载 | agent.graph |
 | `agent.tools` | 白名单工具 | agent.runtime |
 | `reports` | 草稿、验证、策略决策和发布 | api/workers |
 | `security` | 登录、授权、脱敏和审计 | 所有模块 |
@@ -189,6 +192,51 @@ ToolRegistry.invoke(name, ctx: ToolContext, session, arguments: Mapping) -> Tool
 
 `repository_contents` 是 T7 新增的数据契约，字段为 `repository_id`、`content_type`（当前仅 `readme`）、`source_url`、`content`、`content_hash`、`fetched_at`，唯一键 `(repository_id, content_type)`。
 
+Agent 运行时接口（T8）：
+
+```text
+ModelClient {
+  provider: string
+  model: string
+  complete(messages: Sequence<ChatMessage>, tools: Sequence<ToolSchema>) -> ModelTurn
+}
+
+build_model_client(settings: Settings) -> ModelClient          # 按 AGENT_PROVIDER 选择
+run_research_agent(session, *, topic_id: int, settings: Settings,
+                   client: ModelClient | None = None, registry: ToolRegistry | None = None,
+                   pipeline_run_id: int | None = None, window_start: datetime | None = None,
+                   window_end: datetime | None = None, max_candidates: int | None = None,
+                   now: datetime | None = None) -> AgentRunResult
+resolve_allowed_tools(policy: Mapping) -> tuple<string, ...>
+load_or_create_config(session, settings) -> AgentConfig
+load_candidate_repo_ids(session, *, topic_id: int, limit: int) -> list<int>
+resolve_window(topic, *, window_start, window_end, now=None) -> tuple<datetime, datetime>
+build_user_context(*, topic_id, candidate_repo_ids, window_start, window_end) -> string
+```
+
+`ModelClient` 是唯一的模型边界：`OfflineModelClient`（默认，确定性离线桩）与 `OpenAICompatibleClient` 实现同一协议，图不感知具体供应商。`resolve_allowed_tools()` 只能把 `agent_configs.tool_policy_json` 收敛为全量白名单的子集，缺失或畸形时退回全量白名单，永远不会扩大权限。
+
+图与步骤：
+
+```text
+GRAPH_NODES = ("plan", "tool", "observe", "verify", "write")
+agent_steps.step_type ∈ {plan, tool, observe, verify, write}
+```
+
+执行入口：
+
+```text
+python -m open_source_intelligence.agent.cli --action run|runs
+  [--topic-id ID] [--run-id ID] [--status STATUS] [--run-limit N]
+  [--window-start ISO8601] [--window-end ISO8601] [--max-candidates N]
+
+open_source_intelligence.workers.tasks.run_research_agent(
+  topic_id: int, window_start: str | None = None,
+  window_end: str | None = None, max_candidates: int | None = None) -> dict
+```
+
+Celery 任务已登记但**不在** `beat_schedule` 中：Agent 消耗真实模型预算，自动编排留待报告与发布阶段就绪后开启。该任务只在 `AGENT_MODEL_UNAVAILABLE` 且未达重试上限时重试，`needs_review` 作为结果返回而不是错误。
+
 Compose 运行接口：
 
 ```text
@@ -215,26 +263,62 @@ RepositoryRecord {
 }
 
 ResearchTask {
-  task_key: string
-  repository_id: integer
-  objective: string
-  required_evidence: list<string>
-  status: pending | running | completed | failed
+  task_index: integer
+  intent: profile | metrics | prior_reports | content
+  repo_id: integer | null
 }
 
 EvidenceRef {
-  source_type: metric | readme | prior_report
-  source_ref: string
-  repository_id: integer | null
-  source_url: string | null
-  excerpt: string | null
+  tool_name: string
+  repo_id: integer | null
+  ok: boolean
+  result_count: integer
+  truncated: boolean
+  error_code: string | null
+  summary: string
 }
 
+CitationRef {
+  source_type: metric | readme | prior_report
+  source_ref: string
+  source_url: string | null
+}
+
+VerificationResult {
+  sufficient: boolean
+  reason: string
+  covered_repo_ids: list<integer>
+  missing_repo_ids: list<integer>
+  content_repo_ids: list<integer>
+  has_prior_baseline: boolean
+}
+```
+
+`ResearchTask.intent` 使用枚举而非自由文本：`plan` 节点只能把意图映射到白名单工具，模型无法通过任务描述引入新工具。`EvidenceRef` 记录的是**工具观测**（哪个工具、是否成功、返回几条、是否截断），它取代了 T8 前草案中承担引用语义的同名对象；面向读者的可追溯引用是 `CitationRef`，由 `save_report_section` 写入草稿章节。以上对象由 `agent/state.py` 定义，`ARCHITECTURE.md` §8.2 是它们的权威说明。
+
+```text
 PublishDecision {
   mode: AUTO | AUTO_WITH_DELAY | MANUAL
   requires_review: boolean
   reason_codes: list<string>
   publish_at: datetime | null
+}
+
+AgentRunResult {
+  agent_run_id: integer
+  pipeline_run_id: integer
+  topic_id: integer
+  status: pending | running | needs_review | completed | failed
+  error_code: string | null
+  loop_count: integer
+  tool_call_count: integer
+  model_call_count: integer
+  estimated_cost: decimal
+  candidate_repo_ids: list<integer>
+  evidence_count: integer
+  section_count: integer
+  report_draft_id: integer | null
+  verification: VerificationResult | null
 }
 ```
 
@@ -296,6 +380,19 @@ draft
 | `CONFLICT` | 唯一约束或状态机冲突 |
 | `AGENT_BUDGET_EXCEEDED` | 超出循环、工具或 Token 预算 |
 | `PUBLISH_POLICY_BLOCKED` | 报告不满足自动发布条件 |
+
+Agent 运行终态与错误码（T8）：
+
+```text
+completed    证据充足且 6 个草稿章节全部写入            -> pipeline_runs.status = succeeded
+needs_review AGENT_NO_CANDIDATES / AGENT_BUDGET_EXCEEDED /
+             AGENT_EVIDENCE_INCOMPLETE / AGENT_WRITE_FAILED
+             —— 结果需人工复核，不是异常              -> pipeline_runs.status = failed
+failed       AGENT_MODEL_UNAVAILABLE / AGENT_DRAFT_INVALID
+             —— 传输、模型或载荷失败                  -> pipeline_runs.status = failed
+```
+
+`needs_review` 与 `failed` 都写 `pipeline_runs.status=failed`，但只有后者值得重试：Celery 任务仅在 `AGENT_MODEL_UNAVAILABLE` 时重试。
 
 ## 9. 接口变更规则
 

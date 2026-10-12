@@ -24,9 +24,10 @@
 | 快照与候选排序 | 已完成 | 每日快照、窗口增量、规则筛选、候选排序和重复执行幂等通过 |
 | Celery 调度与运行记录 | 已完成 | 每日 Pipeline 定时触发、失败重试轨迹、运行状态查询和 CHECK 约束通过 |
 | 工具层与数据契约 | 已完成 | 5 个白名单工具契约、ACL、截断、只读限制、草稿幂等和 9 张新表通过真实 MySQL 冒烟 |
+| Agent 运行时（LangGraph） | 已完成 | 有界五节点图、三档预算硬停止、可插拔模型 Adapter（默认确定性离线桩）、步与工具调用记录、两条降级路径通过真实 MySQL 冒烟 |
 | 本地运行环境 | 可用 | Python 3.12.7、Docker Desktop 4.94.0、Compose v5.5.1 和 WSL 2 已验证 |
 
-结论：**T1-T7 均已完成，数据库、认证、真实数据采集、每日快照、规则候选排序、Celery 定时调度、Pipeline 运行记录和受限工具层已落地，可以进入 T8 LangGraph Research Agent。**
+结论：**T1-T8 均已完成，数据库、认证、真实数据采集、每日快照、规则候选排序、Celery 定时调度、Pipeline 运行记录、受限工具层和 LangGraph 研究 Agent 已落地，可以进入 T9 Prompt Guard 与运行预算。**
 
 ## 2. 开工前最终确认
 
@@ -210,7 +211,7 @@ T1 完成后暂停，向用户展示实际启动结果，再进入 T2。
 | 任务拆解明确 | 已完成 | 从 T1 开始 |
 | 学习路径明确 | 已完成 | 按 T1 前置项准备 |
 | 运行环境可用 | 已完成 | Docker Linux Engine 运行于 WSL 2，国内镜像已验证 |
-| 外部凭证可用 | GitHub/HF 已验证，模型 Key 待准备 | T8 前准备模型 Key |
-| 业务代码 | T1-T7 已完成 | 下一步进入 T8 LangGraph Research Agent |
+| 外部凭证可用 | GitHub/HF 已验证；模型 Key 待准备 | 切到 `AGENT_PROVIDER=openai_compatible` 前准备模型 Key |
+| 业务代码 | T1-T8 已完成 | 下一步进入 T9 Prompt Guard 与运行预算 |
 
-当前 T7 已完成，5 个白名单工具的 Pydantic 契约、注册表（白名单 / ACL / 预算 / 只读强制）、内容清理与截断、草稿幂等保存以及支撑它们的 9 张表都已落地并在真实 MySQL 上验证。下一步进入 T8，用 LangGraph 把 Research → Tool → Verify → Write 串成一条可追踪、受预算约束的轨迹。
+当前 T8 已完成：LangGraph 有界状态图把 Research → Tool → Observe → Verify → Write 串成一条可追踪、受预算约束的轨迹，真实调用 T7 的 5 个白名单工具，把 17 个步骤与 13 次工具调用落库，并产出 6 个带引用的草稿章节。模型接入是可插拔 Adapter，默认使用确定性离线桩，因此研究闭环可以在无网络、无 API Key 的条件下验证；真实供应商经同一接口按配置切换。下一步进入 T9，为注入文本与预算超限补齐防护与降级策略。

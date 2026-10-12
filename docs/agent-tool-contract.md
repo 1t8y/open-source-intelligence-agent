@@ -325,3 +325,16 @@ SectionRef {
 每次调用写入一行 `tool_calls`，其中 `arguments_json` 与 `result_summary` 在落库前脱敏并截断。`ToolRegistry.invoke()` 对只读工具强制检查会话脏状态，只读工具一旦产生写入即返回 `TOOL_INTERNAL_ERROR`。
 
 `agent_configs.tool_policy_json` 提供运行级工具白名单，运行时据此构造 `ToolContext.allowed_tools`；注册表自身的 `WHITELIST` 是上级边界，两者取交集。`repository_contents`、`report_drafts`、`report_sections` 是 T7 为落地本契约新增的表，详见 [data-model.md](data-model.md)。
+
+## 12. 调用方与参数校验通道（T8）
+
+自 2026-10-12 起，上述工具由 T8 的 Agent 运行时 `agent/graph.py` 在 `tool` 节点逐个调用，不再由测试或冒烟脚本直接驱动；运行时把 `plan` 节点返回的每个工具调用交给 `ToolRegistry.invoke()`，因此白名单、ACL、预算、Schema 校验与 `tool_calls` 记录对模型行为同样生效。工具白名单同时通过 `agent/tooling.py:build_tool_schemas()` 以 JSON Schema 形式暴露给模型，模型看到的契约与运行时校验同源。
+
+`ToolRegistry` 的参数校验是双通道的：
+
+```text
+1. model_validate(arguments)                        # T7 严格 Python 路径，语义不变
+2. 失败时回落 model_validate_json(json.dumps(...))  # JSON 路径，接受 ISO 8601 时间字符串
+```
+
+模型给出的参数天然是 JSON 形状，时间字段是字符串而非 `datetime`，第一条路径会拒绝。回落通道让同一份契约同时服务 Python 调用方与模型调用方，两条路径都保持 `extra="forbid"` 并拒绝错误类型；区别只在错误消息由哪条路径产生。已通过 Python 校验的调用方行为因此完全不变。

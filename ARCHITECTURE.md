@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-12 ｜ 文档版本：v0.7.0
+> 最后更新：2026-10-12 ｜ 文档版本：v0.8.0
 
 ## 1. 概述与目标
 
@@ -103,8 +103,8 @@ flowchart TB
 | 数据库 | MySQL | 8.0+ | 自然满足多表快照、聚合、唯一约束和面试要求 |
 | 缓存/队列 | Redis | 7.x | 缓存外部 API 结果并承载 Celery 队列 |
 | 异步任务 | Celery + Celery Beat | 5.x | 长耗时研究任务可重试、隔离并独立监控 |
-| Agent 编排 | LangGraph | 当前稳定版 | 显式状态图，便于限制循环和记录轨迹 |
-| 模型适配 | OpenAI-compatible Provider Adapter | 不绑定供应商 | 支持批准 API 和本地模型切换 |
+| Agent 编排 | LangGraph | `>=1.0,<2`（已验证 1.2.14） | 显式状态图，便于限制循环和记录轨迹 |
+| 模型适配 | OpenAI-compatible Provider Adapter + 确定性离线桩 | 不绑定供应商 | 支持批准 API、本地模型切换，并支持无网络端到端验证 |
 | 管理界面 | Jinja2 + HTMX | 当前稳定版 | 首期避免复杂前端，能完成审核和配置流程 |
 | 部署 | Docker Compose | Compose v2 | 一键启动 MySQL、Redis、API、Worker、Beat |
 | 评测 | pytest + 自建 Runner + LLM-as-a-judge | 按需 | 支持离线评测、版本回归和消融实验 |
@@ -186,16 +186,22 @@ Research -> Tool Call -> Observe -> Verify -> Write
 
 ```text
 AgentState {
-  run_id: string
+  run_id: integer
   topic_id: integer
   window_start: datetime
   window_end: datetime
   candidate_repo_ids: list[integer]
-  research_plan: list[ResearchTask]
-  evidence: list[EvidenceRef]
-  verification: VerificationResult
-  report_draft: ReportDraft
-  publish_decision: PublishDecision
+  prompt_version: string
+  max_loops: integer
+  max_model_calls: integer
+  max_tool_calls: integer
+  research_plan: list<ResearchTask>            # 累积
+  evidence: list<EvidenceRef>                  # 累积
+  draft_sections: list<SectionRef>             # 累积，T10 在此之上合成完整报告
+  messages: list<ChatMessage>                  # 累积，模型可见的对话轨迹
+  last_observations: list<ToolObservation>     # 本轮工具结果，供 observe 节点消费
+  pending_tool_calls: list<ModelToolCall>      # 本轮模型给出的工具调用
+  verification: VerificationResult | null
   loop_count: integer
   tool_call_count: integer
   model_call_count: integer
@@ -203,18 +209,32 @@ AgentState {
   status: pending | running | needs_review | completed | failed
   error_code: string | null
   error_message: string | null
+  incomplete: boolean
 }
 ```
+
+T8 的 `agent/state.py` 按本节实现该状态：标量字段由节点覆盖，列表字段通过 `Annotated[list[X], operator.add]` 累积，节点只返回自己的增量。
+
+```text
+ResearchTask        { task_index: integer, intent: profile | metrics | prior_reports | content, repo_id: integer | null }
+ToolObservation     { tool_name, repo_id, ok, result_count, truncated, error_code, payload }
+EvidenceRef         { tool_name, repo_id, ok, result_count, truncated, error_code, summary }
+VerificationResult  { sufficient: boolean, reason: string, covered_repo_ids: list<integer>,
+                      missing_repo_ids: list<integer>, content_repo_ids: list<integer>,
+                      has_prior_baseline: boolean }
+```
+
+`ResearchTask.intent` 是枚举而非自由文本：`plan` 节点只能把意图映射到白名单工具，模型无法通过任务描述引入新工具。`EvidenceRef` 记录的是**工具观测**（哪个工具、是否成功、返回几条、是否截断）；面向读者的可追溯事实引用是 `save_report_section` 使用的 `CitationRef`，字段见 [docs/agent-tool-contract.md](docs/agent-tool-contract.md)。
 
 ### 8.3 Tool Layer
 
 | 工具 | 输入 | 输出 | 权限 |
 |---|---|---|---|
-| `query_repo_metrics` | `repo_id`, `start`, `end` | `list[MetricPoint]` | 只读 |
-| `get_repository_profile` | `repo_id` | `RepositoryProfile` | 只读 |
-| `get_repository_content` | `repo_id`, `max_chars` | `ContentSnippet` | 只读、截断、不可信标记 |
-| `search_prior_reports` | `topic_id`, `repo_id`, `limit` | `list[ReportSummary]` | 只读、ACL 检查 |
-| `save_report_section` | `run_id`, `section_type`, `content`, `citations` | `SectionRef` | 仅写草稿 |
+| `query_repo_metrics` | `repo_id`, `start`, `end`, `granularity="day"` | `ToolResult[list[MetricPoint]]` | 只读 |
+| `get_repository_profile` | `repo_id` | `ToolResult[RepositoryProfile]` | 只读 |
+| `get_repository_content` | `repo_id`, `content_type="readme"`, `max_chars`(500-12000，默认 6000), `query_hint` | `ToolResult[ContentSnippet]`，`untrusted` 恒为 `true` | 只读、截断、不可信标记 |
+| `search_prior_reports` | `topic_id`, `repo_id`, `before`, `limit` | `ToolResult[list[ReportSummary]]` | 只读、ACL 检查 |
+| `save_report_section` | `section_key`, `content_markdown`, `citations`, `content_digest` | `ToolResult[SectionRef]` | 仅写当前运行草稿 |
 
 工具契约必须使用 Pydantic Schema。模型无权创建新工具、修改工具白名单、执行 Shell 或直接写 MySQL。发布动作由 Policy Engine 和 Publishing Service 完成，不属于 Agent Tool。
 
@@ -228,6 +248,8 @@ AgentState {
 - 历史仓库画像和报告摘要缓存复用；README 只保留与任务相关的片段。
 - 默认限制：单次运行最多 4 个研究循环、6 次模型调用、10 次工具调用，具体值进入 `agent_configs`。
 - 预算达到 80% 时降级；达到 100% 时停止新增模型调用，生成带未完成说明的草稿或进入人工审核。
+
+**实现状态**：T8 已实现「100% 硬停止 → 写出草稿 → 终态 `needs_review`」，三档预算落到 `agent_configs` 的 `max_loops` / `max_model_calls` / `max_tool_calls`。**尚未实现**：80% 降级行为（属于 T9）、廉价模型分流与画像/摘要缓存复用 —— T8 单次运行只使用一个 `AGENT_MODEL`。
 
 ### 8.5 发布策略
 
@@ -300,6 +322,25 @@ T7 已实现以下能力：
 - 支撑工具的数据契约新增 9 张表：`agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections`、`repository_contents`（README 内容缓存，data-model 之外新增）。
 - `repository_contents` 与 `report_drafts`/`report_sections` 是 T7 为落地契约而新增的表：前者承载「缓存命中直接返回」的 README，后者承载契约中的 `report_draft_id` 与章节版本；`report_versions`、`report_reviews` 留待 T10/T11。
 - 发布动作仍不属于 Agent Tool，由 Policy Engine 与 Publishing Service 在 T11 实现。
+
+### 9.4 T8 LangGraph Research Agent
+
+T8 已实现以下能力：
+
+- `agent/graph.py` 用 LangGraph `StateGraph` 搭出有界五节点图 `plan -> tool -> observe -> verify -> write`；`verify` 通过条件边回到 `plan`，形成「证据缺口 → 继续研究」的显式回边。`GRAPH_NODES` 固定节点顺序供测试断言。
+- `plan` 是研究阶段唯一调用模型的位置，它把 `ModelTurn.tool_calls` 交给 `tool` 节点；`tool` 节点逐个 `ToolRegistry.invoke()`，因此模型的每次工具调用都经过 T7 的白名单、ACL、预算与 Schema 校验，并被记入 `tool_calls`。
+- 三档预算 `max_loops` / `max_model_calls` / `max_tool_calls` 全部来自 `agent_configs`；任一耗尽立即停止研究并写出当前草稿，终态为 `needs_review`，不会无限循环。
+- 章节写入使用独立预算（次数由模板固定为 6），不与研究阶段的工具预算竞争，因此「研究得深」不会挤掉「写得完」。
+- `verify` 节点要求四类证据齐备才算充足：每个候选仓库的画像与指标、主题级历史报告基线、至少一个候选仓库的 README 内容；不满足时把缺口写进 `VerificationResult` 并回边补研究。
+- `agent/prompts.py` 从 `prompts/` 加载版本化 Prompt；`AGENT_PROMPTS_DIR` 可覆盖，`resolve_prompts_dir()` 同时覆盖仓库检出与容器 `/app` 两种布局。
+- 模型接入是可插拔 Adapter：`ModelClient` Protocol 只有 `provider` / `model` / `complete()`；`OfflineModelClient` 是确定性离线桩（默认），`OpenAICompatibleClient` 通过同一接口调用 OpenAI-compatible `/chat/completions`；`build_model_client(settings)` 按 `AGENT_PROVIDER` 选择。默认离线桩让端到端验证无需网络与 API Key，且相同输入产出字节一致，可作 T14 的评测 baseline。
+- 受限网络下的取舍：`AGENT_PROVIDER=openai_compatible` 时 `AGENT_API_BASE` 必须是 `https://` 且必须提供 `AGENT_API_KEY`，否则配置校验直接失败；离线桩不需要任何凭证。
+- `run_research_agent()` 负责取主题、解析研究窗口、加载候选仓库、取或建 `agent_configs`、把工具策略收敛为白名单子集、建 `pipeline_runs(run_type=agent)` 与 `agent_runs`，并在结束时把计数与终态同时写回 `agent_runs` 与 `pipeline_runs`。
+- `StepRecorder` 按 `step_index` 递增写 `agent_steps`（`plan`/`tool`/`observe`/`verify`/`write` 五类），只保存脱敏摘要与 SHA-256 摘要值，不落模型输出或 README 原文。
+- 终态语义：`AGENT_NO_CANDIDATES`、`AGENT_BUDGET_EXCEEDED`、`AGENT_EVIDENCE_INCOMPLETE`、`AGENT_WRITE_FAILED` 判为 `needs_review`（结果需人工复核，不是异常）；`AGENT_MODEL_UNAVAILABLE`、`AGENT_DRAFT_INVALID` 判为 `failed`。
+- Write 边界：按 T8 交付范围，Agent 只通过 `save_report_section` 生成 6 个草稿章节并留下 `citations`；完整报告合成、引用有效性校验与发布决策属于 T10/T11。
+- 工具参数校验增加 JSON 回落通道：模型参数天然是 JSON 形状（时间是 ISO 字符串），注册表先按 T7 的严格 Python 路径 `model_validate`，失败后回落到 `model_validate_json`；两条路径都保持 `extra="forbid"` 并拒绝错误类型，T7 语义不变。
+- `workers.tasks.run_research_agent` 已登记但**不进入 beat 调度**：Agent 消耗真实的模型预算，自动编排要等报告与发布阶段就绪后再开。任务只在 `AGENT_MODEL_UNAVAILABLE` 且未达重试上限时重试；`needs_review` 作为结果直接返回，不当成错误重试。
 
 ## 10. 关键接口摘要
 
@@ -378,7 +419,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T5 每日快照与候选排序 — 依赖：T4 — 验证：重复运行不重复，按时间窗口可查出趋势
 - [x] T6 Celery 调度与 PipelineRun — 依赖：T3/T5 — 验证：定时任务可执行、失败可重试、状态可查询
 - [x] T7 Tool Layer 与数据契约 — 依赖：T2/T5 — 验证：工具 Schema、ACL、截断和只读限制测试通过
-- [ ] T8 LangGraph Research Agent — 依赖：T7 — 验证：至少完成一条 Research→Tool→Verify→Write 轨迹
+- [x] T8 LangGraph Research Agent — 依赖：T7 — 验证：完成一条 Research→Tool→Observe→Verify→Write 轨迹，17 步、13 次工具调用、6 个草稿章节，两条降级路径均干净收敛
 - [ ] T9 Prompt Guard 与运行预算 — 依赖：T8 — 验证：循环、工具、Token 超限时安全停止
 - [ ] T10 报告生成与引用 — 依赖：T8 — 验证：关键数字可追溯，引用链接有效
 - [ ] T11 Verifier 与发布策略 — 依赖：T10 — 验证：`AUTO`、`AUTO_WITH_DELAY`、`MANUAL` 状态机测试通过
@@ -419,3 +460,5 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-12 | 完成 T6 Celery 调度、每日 Pipeline 编排与运行状态查询 | 9.2、10、14 | T6 | 62 项测试、Ruff、mypy；MySQL 冒烟验证幂等、attempt 轨迹、错误脱敏和约束；真实 Celery 重试记录两次尝试；Beat 定时触发与 CLI 状态查询通过 |
 | 2026-10-12 | 新增 Agent 运行、工具调用、报告与 README 内容缓存共 9 张表 | 6、7、9.3、14 | T7 | 迁移 `b3f6a1c2d4e7`；`upgrade head`、`downgrade -1`、再次升级和 `alembic check` 通过；元数据共 19 张表 |
 | 2026-10-12 | 完成 T7 工具层、数据契约与五个白名单工具 | 8.3、9.3、10、14 | T7 | 109 项测试（Agent 46 项）、Ruff、mypy 57 文件 0 错误；真实 MySQL 冒烟执行 5 个工具并记录 8 条 tool_calls，ACL 拒绝、截断、不可信标记、草稿幂等与只读限制全部通过 |
+| 2026-10-12 | 对齐 §8.2 状态对象与 §8.3 工具签名到已实现契约（`ResearchTask.intent` 枚举、`EvidenceRef` 的观测语义、五个工具的输入字段与返回信封） | 8.2、8.3 | T7/T8 文档校正 | 与 `agent/state.py`、`agent/tools/contracts.py` 逐字段比对 |
+| 2026-10-12 | 完成 T8 LangGraph Research Agent：有界五节点图与条件回边、三档预算硬停止、可插拔模型 Adapter（默认确定性离线桩）、运行时编排与记录、运行历史 CLI、Celery 任务（不入 beat 调度） | 5、8.2、8.3、9.4、10、14 | T8 | 171 项测试、Ruff、mypy 74 文件 0 错误；真实 MySQL 冒烟 17 步 / 13 次工具调用 / 6 个草稿章节 / 2 个候选仓库，步类型齐全、只读工具零写入；无候选（`needs_review`）与模型不可用（`failed`）两条降级路径通过；新增依赖 `langgraph>=1.0,<2` 与 13 个 `AGENT_*` 配置项，无数据库迁移 |

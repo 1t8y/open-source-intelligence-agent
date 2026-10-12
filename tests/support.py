@@ -1,16 +1,18 @@
-"""Shared seeding helpers for Agent tool tests."""
+"""Shared seeding helpers and settings builders for the test suite."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from open_source_intelligence.agent.tools.context import ToolContext
+from open_source_intelligence.core.config import Settings
 from open_source_intelligence.persistence import models  # noqa: F401
 from open_source_intelligence.persistence.base import Base
 from open_source_intelligence.persistence.models.agent import AgentConfig, AgentRun
@@ -37,6 +39,19 @@ ALL_TOOLS = (
 READ_TOOLS = ALL_TOOLS[:4]
 
 NOW = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
+
+TEST_SECRET_KEY = "test-secret-key-with-at-least-32-characters"
+
+
+def build_settings(**overrides: Any) -> Settings:
+    """Build validated settings for in-memory Agent tests without reading `.env`."""
+    values: dict[str, Any] = {
+        "database_url": "mysql+pymysql://app:secret@127.0.0.1:3306/open_source_intelligence",
+        "redis_url": "redis://127.0.0.1:6379/0",
+        "secret_key": TEST_SECRET_KEY,
+    }
+    values.update(overrides)
+    return Settings.model_validate(values)
 
 
 def build_session_factory() -> sessionmaker[Session]:

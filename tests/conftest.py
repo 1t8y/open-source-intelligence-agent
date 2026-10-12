@@ -1,4 +1,4 @@
-"""Fixtures shared by the Agent tool tests."""
+"""Shared in-memory database fixtures for the whole test suite."""
 
 from __future__ import annotations
 

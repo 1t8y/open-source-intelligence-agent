@@ -1,5 +1,6 @@
 """Application settings loaded from environment variables."""
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -38,6 +39,19 @@ class Settings(BaseSettings):
     pipeline_collect_limit: int = Field(default=20, ge=1, le=100)
     pipeline_task_max_retries: int = Field(default=2, ge=0, le=10)
     pipeline_retry_backoff_seconds: int = Field(default=30, ge=0, le=3600)
+    agent_enabled: bool = True
+    agent_provider: Literal["offline", "openai_compatible"] = "offline"
+    agent_model: str = Field(default="offline-deterministic-v1", min_length=1, max_length=128)
+    agent_api_base: str | None = None
+    agent_api_key: SecretStr | None = None
+    agent_prompt_version: str = Field(default="v1", min_length=1, max_length=64)
+    agent_max_loops: int = Field(default=4, ge=1, le=20)
+    agent_max_model_calls: int = Field(default=6, ge=1, le=50)
+    agent_max_tool_calls: int = Field(default=10, ge=1, le=100)
+    agent_max_cost: Decimal = Field(default=Decimal("0.50"), ge=0)
+    agent_max_candidates: int = Field(default=5, ge=1, le=30)
+    agent_request_timeout_seconds: int = Field(default=60, ge=1, le=600)
+    agent_prompts_dir: str | None = None
     docs_enabled: bool = True
 
     @field_validator("app_timezone")
@@ -74,13 +88,41 @@ class Settings(BaseSettings):
             raise ValueError("external API base URLs must use https://")
         return value.rstrip("/")
 
-    @field_validator("github_token", "huggingface_token", mode="after")
+    @field_validator("agent_prompts_dir")
+    @classmethod
+    def normalize_optional_dir(cls, value: str | None) -> str | None:
+        """Treat a blank prompt directory as unset so defaults can apply."""
+        if value is None or not value.strip():
+            return None
+        return value
+
+    @field_validator("agent_api_base")
+    @classmethod
+    def validate_optional_api_base(cls, value: str | None) -> str | None:
+        """Require HTTPS for a configured model endpoint and drop blank values."""
+        if value is None or not value.strip():
+            return None
+        if not value.startswith("https://"):
+            raise ValueError("agent_api_base must use https://")
+        return value.rstrip("/")
+
+    @field_validator("github_token", "huggingface_token", "agent_api_key", mode="after")
     @classmethod
     def normalize_optional_token(cls, value: SecretStr | None) -> SecretStr | None:
         """Treat blank environment tokens as unconfigured credentials."""
         if value is None or not value.get_secret_value().strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def validate_agent_provider(self) -> "Settings":
+        """Require endpoint and credential whenever a remote model is selected."""
+        if self.agent_provider == "openai_compatible":
+            if not self.agent_api_base:
+                raise ValueError("agent_api_base is required for the openai_compatible provider")
+            if self.agent_api_key is None:
+                raise ValueError("agent_api_key is required for the openai_compatible provider")
+        return self
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":

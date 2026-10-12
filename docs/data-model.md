@@ -399,3 +399,18 @@ T7 新增。草稿内的章节版本，幂等保存与版本递增都在这里�
 - `repository_contents` 唯一键为 `(repository_id, content_type)`，`content_type` 当前仅允许 `readme`。
 - `tool_calls` 必须关联 `agent_run_id`，只保存脱敏且截断后的 `arguments_json` 与 `result_summary`。
 - 五个 Agent 工具中只有 `save_report_section` 产生领域写入，且只写当前运行草稿；其余四个只读工具不得写入任何领域表（由注册表的只读写保护强制）。
+
+## 10. 写入方（T8）
+
+T8 未新增表，但下列表的写入方自此明确：
+
+| 表 | 写入方 | 说明 |
+|---|---|---|
+| `agent_configs` | `agent/runtime.py:load_or_create_config()` | 首次运行时创建 `default-research-agent`（version `v1`），后续复用 |
+| `agent_runs` | `StepRecorder.mark_running()` / `sync_counters()` / `finish()` | 运行状态、四档计数（loop / tool / model / cost）与终态 |
+| `agent_steps` | `StepRecorder.record()` | 每次节点执行写一行，`step_index` 在运行内递增；只存脱敏摘要与 SHA-256 摘要值，不存模型输出或 README 原文 |
+| `tool_calls` | `ToolRegistry.invoke()` | 每次工具调用一行，包含被拒绝与预算拒绝的分支 |
+| `pipeline_runs` | `agent/runtime.py`（`run_type=agent`） | `completed` 映射为 `succeeded`，`needs_review` 与 `failed` 映射为 `failed`，并写入 `metrics_json` |
+| `report_drafts` / `report_sections` | `save_report_section` | 每个 `agent_run` 一个草稿，每个草稿 6 个章节 |
+
+`reports` 与 `report_sources` 在 T8 仍为空：Write 只到草稿章节，报告合成与引用有效性校验属 T10。

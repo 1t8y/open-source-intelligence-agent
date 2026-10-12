@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 import httpx
 from celery import Task, shared_task
 
+from open_source_intelligence.agent.errors import AGENT_MODEL_UNAVAILABLE
+from open_source_intelligence.agent.runtime import run_research_agent as execute_research_agent
 from open_source_intelligence.collectors.cli import build_collectors
 from open_source_intelligence.collectors.service import collect_repositories
 from open_source_intelligence.core.config import Settings, get_settings
@@ -18,7 +20,7 @@ from open_source_intelligence.persistence.session import (
 )
 from open_source_intelligence.pipeline.daily import PipelineStageError
 from open_source_intelligence.pipeline.daily import run_daily_pipeline as execute_daily_pipeline
-from open_source_intelligence.workers.celery_app import DAILY_PIPELINE_TASK
+from open_source_intelligence.workers.celery_app import DAILY_PIPELINE_TASK, RESEARCH_AGENT_TASK
 
 
 def resolve_business_date(value: str | None, settings: Settings) -> date:
@@ -116,4 +118,61 @@ def run_daily_pipeline(
         engine.dispose()
     payload: dict[str, Any] = result.to_dict()
     payload["task"] = DAILY_PIPELINE_TASK
+    return payload
+
+
+def _optional_datetime(value: str | None) -> datetime | None:
+    """Parse an optional ISO 8601 timestamp from a task payload."""
+    return None if value is None else datetime.fromisoformat(value)
+
+
+@shared_task(bind=True, name=RESEARCH_AGENT_TASK)  # type: ignore[misc]
+def run_research_agent(
+    self: Task,
+    *,
+    topic_id: int,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    max_candidates: int | None = None,
+) -> dict[str, Any]:
+    """Run one bounded research Agent for a topic.
+
+    Transient model transport failures are retried with the shared pipeline backoff. Every
+    other outcome is returned as-is, because a draft that needs review is a result, not an
+    error: only model transport problems are worth retrying.
+    """
+    if topic_id <= 0:
+        raise ValueError("topic_id must be positive")
+    if max_candidates is not None and max_candidates <= 0:
+        raise ValueError("max_candidates must be positive")
+    settings = get_settings()
+    if not settings.agent_enabled:
+        raise ValueError("the research Agent is disabled by AGENT_ENABLED")
+    engine = create_database_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+    try:
+        with session_factory() as session:
+            result = execute_research_agent(
+                session,
+                topic_id=topic_id,
+                settings=settings,
+                window_start=_optional_datetime(window_start),
+                window_end=_optional_datetime(window_end),
+                max_candidates=max_candidates,
+            )
+    finally:
+        engine.dispose()
+    if (
+        result.status == "failed"
+        and result.error_code == AGENT_MODEL_UNAVAILABLE
+        and self.request.retries < settings.pipeline_task_max_retries
+    ):
+        raise self.retry(
+            countdown=pipeline_retry_countdown(
+                retries=self.request.retries,
+                settings=settings,
+            ),
+        )
+    payload: dict[str, Any] = result.to_dict()
+    payload["task"] = RESEARCH_AGENT_TASK
     return payload

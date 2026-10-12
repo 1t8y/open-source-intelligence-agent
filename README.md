@@ -1,7 +1,7 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：T1-T7 已完成，进入 T8
-> 文档版本：v0.6
+> 项目状态：T1-T8 已完成，进入 T9
+> 文档版本：v0.7
 > 最后更新：2026-10-12
 
 ## 最终版路径
@@ -45,7 +45,11 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T7 已完成：五个白名单工具（`query_repo_metrics`、`get_repository_profile`、`get_repository_content`、`search_prior_reports`、`save_report_section`）的 Pydantic 契约、注册表（白名单 / ACL / 预算 / 只读强制）、截断与不可信标记、草稿幂等保存全部落地，并新增 Agent 运行、报告与 README 内容缓存共 9 张表。下一步进入 T8 LangGraph Research Agent。
+当前 T8 已完成：LangGraph 有界状态图 `plan → tool → observe → verify → write` 已串成一条可追踪、受预算约束的研究轨迹。一次运行会真实调用 T7 的 5 个白名单工具、把每个步骤写入 `agent_steps`、把每次工具调用写入 `tool_calls`，并通过 `save_report_section` 产出 6 个带引用的草稿章节。三档预算（`max_loops` / `max_model_calls` / `max_tool_calls`）任一耗尽即安全停止并标 `needs_review`。
+
+模型接入采用可插拔 Adapter：默认 `AGENT_PROVIDER=offline` 使用确定性离线桩，无需网络与 API Key 即可端到端验证；`OpenAICompatibleClient` 通过同一个 `ModelClient` 接口对接真实供应商。
+
+按 T8 交付边界，Write 只到草稿章节；完整报告合成、引用有效性校验与发布决策归 T10/T11。下一步进入 T9 Prompt Guard 与运行预算。
 
 T1 验证命令：
 
@@ -102,6 +106,14 @@ T7 验证命令：
 ```
 
 该脚本执行 pytest、Ruff、mypy，重建服务并检查迁移漂移，然后在真实 MySQL 上调用全部 5 个白名单工具，验证 Schema 严格校验、跨主题 ACL 拒绝、内容清理与截断、不可信标记、草稿幂等与版本递增、只读工具零写入以及 `tool_calls` 记录，最后清理验证数据。
+
+T8 验证命令：
+
+```powershell
+.\scripts\verify_t8.ps1
+```
+
+该脚本执行 pytest、Ruff、mypy，重建服务并检查迁移漂移，然后在真实 MySQL 上跑通完整研究轨迹：断言 17 个步骤的 `step_index` 连续且类型覆盖 `plan/tool/observe/verify/write`、13 次工具调用全部成功且绑定同一 `agent_run`、6 个草稿章节版本为 1 且带引用、只读工具零写入，并验证「无候选」（`needs_review`）与「模型不可用」（`failed`）两条降级路径，最后清理验证数据。
 
 ## 开发原则
 

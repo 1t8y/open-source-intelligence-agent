@@ -9,6 +9,7 @@ from open_source_intelligence.core.config import Settings, get_settings
 
 HEALTHCHECK_TASK = "open_source_intelligence.workers.tasks.healthcheck"
 DAILY_PIPELINE_TASK = "open_source_intelligence.workers.tasks.run_daily_pipeline"
+RESEARCH_AGENT_TASK = "open_source_intelligence.workers.tasks.run_research_agent"
 
 
 def build_beat_schedule(settings: Settings) -> dict[str, dict[str, Any]]:

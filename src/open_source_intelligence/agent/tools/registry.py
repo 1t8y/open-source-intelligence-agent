@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -54,12 +55,17 @@ ToolHandler = Callable[[Session, ToolContext, Any], ToolOutcome]
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """One registered tool: its schema, handler, and read-only classification."""
+    """One registered tool: its schema, handler, and read-only classification.
+
+    `description` is the human-readable line the model sees when the whitelist is exposed
+    as JSON schemas; it must stay consistent with `docs/agent-tool-contract.md`.
+    """
 
     name: str
     read_only: bool
     input_model: type[BaseModel]
     handler: ToolHandler
+    description: str = ""
 
 
 def build_default_registry() -> ToolRegistry:
@@ -67,34 +73,53 @@ def build_default_registry() -> ToolRegistry:
     return ToolRegistry(
         (
             ToolSpec(
-                "query_repo_metrics",
-                True,
-                QueryRepoMetricsInput,
-                query_repo_metrics,
+                name="query_repo_metrics",
+                read_only=True,
+                input_model=QueryRepoMetricsInput,
+                handler=query_repo_metrics,
+                description=(
+                    "查询单个仓库在指定时间窗口内的每日指标时间序列"
+                    "（stars、forks、open issues 及其增量）。只读。"
+                ),
             ),
             ToolSpec(
-                "get_repository_profile",
-                True,
-                GetRepositoryProfileInput,
-                get_repository_profile,
+                name="get_repository_profile",
+                read_only=True,
+                input_model=GetRepositoryProfileInput,
+                handler=get_repository_profile,
+                description=(
+                    "获取单个仓库的主数据画像：来源、全名、链接、描述、语言、"
+                    "许可证、主题标签与最新计数。只读。"
+                ),
             ),
             ToolSpec(
-                "get_repository_content",
-                True,
-                GetRepositoryContentInput,
-                get_repository_content,
+                name="get_repository_content",
+                read_only=True,
+                input_model=GetRepositoryContentInput,
+                handler=get_repository_content,
+                description=(
+                    "获取仓库缓存的 README 内容片段；内容会被清洗并按 max_chars 截断，"
+                    "返回值始终标记为不可信外部文本。只读。"
+                ),
             ),
             ToolSpec(
-                "search_prior_reports",
-                True,
-                SearchPriorReportsInput,
-                search_prior_reports,
+                name="search_prior_reports",
+                read_only=True,
+                input_model=SearchPriorReportsInput,
+                handler=search_prior_reports,
+                description=(
+                    "查询授权主题下已发布的历史报告摘要，用于建立对比基线。只读，受主题 ACL 限制。"
+                ),
             ),
             ToolSpec(
-                "save_report_section",
-                False,
-                SaveReportSectionInput,
-                save_report_section,
+                name="save_report_section",
+                read_only=False,
+                input_model=SaveReportSectionInput,
+                handler=save_report_section,
+                description=(
+                    "把一段草稿章节写入当前 Agent 运行的报告草稿；"
+                    "相同内容摘要重复保存是幂等的。仅写草稿，不发布。"
+                ),
             ),
         )
     )
@@ -140,6 +165,20 @@ def _validation_message(exc: ValidationError) -> str:
 def _session_has_pending_writes(session: Session) -> bool:
     """Detect whether a read-only handler staged any persistence change."""
     return bool(session.new or session.dirty or session.deleted)
+
+
+def _validate_arguments(model: type[BaseModel], arguments: dict[str, Any]) -> BaseModel:
+    """Validate tool arguments whether they arrive as Python values or JSON-decoded ones.
+
+    Model-generated arguments are always JSON-shaped, so timestamps arrive as strings. The
+    Python path is strict and rejects those, while Pydantic's JSON path accepts them because
+    JSON has no native datetime. In-process callers keep hitting the strict Python path, and
+    both paths still reject unknown fields and wrong types.
+    """
+    try:
+        return model.model_validate(arguments)
+    except ValidationError:
+        return model.model_validate_json(json.dumps(arguments, default=str))
 
 
 class ToolRegistry:
@@ -201,7 +240,7 @@ class ToolRegistry:
                 "failed",
             )
         try:
-            payload = spec.input_model.model_validate(dict(arguments))
+            payload = _validate_arguments(spec.input_model, dict(arguments))
         except ValidationError as exc:
             return self._failure(
                 session,
