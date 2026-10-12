@@ -1,7 +1,7 @@
 # 项目接口基线
 
 > 文档状态：待用户确认  
-> 文档版本：v0.2
+> 文档版本：v0.3
 > 最后更新：2026-10-12
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -68,7 +68,7 @@ api/web
 | 模块 | 对外能力 | 主要消费方 |
 |---|---|---|
 | `collectors` | `collect_source`、返回标准仓库数据 | pipeline/workers |
-| `pipeline` | 清洗、快照、候选排序 | workers/api |
+| `pipeline` | 清洗、快照、候选排序、Pipeline 运行记录与编排 | workers/api |
 | `agent.runtime` | `run_research_agent` | workers |
 | `agent.tools` | 白名单工具 | agent.runtime |
 | `reports` | 草稿、验证、策略决策和发布 | api/workers |
@@ -82,10 +82,14 @@ Worker 接口：
 
 ```text
 create_celery_app(settings: Settings | None = None) -> Celery
+build_beat_schedule(settings: Settings) -> dict[str, dict[str, Any]]
 healthcheck() -> {"status": "ok", "task": "healthcheck"}
+run_daily_pipeline(provider="all", limit: int | None = None, business_date: str | None = None) -> dict
 ```
 
-Celery CLI 入口为 `open_source_intelligence.workers.celery_entry:app`。首期 Beat 每 60 秒执行一次 `open_source_intelligence.workers.tasks.healthcheck`。
+Celery CLI 入口为 `open_source_intelligence.workers.celery_entry:app`。Beat 每 60 秒执行一次 `open_source_intelligence.workers.tasks.healthcheck`；`PIPELINE_SCHEDULE_ENABLED` 为真时，每天 `PIPELINE_SCHEDULE_HOUR:PIPELINE_SCHEDULE_MINUTE`（默认 02:00，按 `APP_TIMEZONE`）执行一次 `open_source_intelligence.workers.tasks.run_daily_pipeline`。
+
+`run_daily_pipeline` 任务失败时按 `PIPELINE_TASK_MAX_RETRIES` 重试，退避为 `PIPELINE_RETRY_BACKOFF_SECONDS * 2^已重试次数`；每次尝试写入独立的 `pipeline_runs` 行，`attempt` 取 `已重试次数 + 1`。参数非法（非 `github/huggingface/all` 或 `limit` 越界）直接失败且不重试，因为重试不会改变结果。
 
 Persistence 接口：
 
@@ -134,7 +138,33 @@ rank_topic_candidates(session, topic, *, as_of_date: date) -> list[RankedCandida
 rank_all_topics(session, *, as_of_date: date) -> dict[int, int]
 ```
 
-CLI 入口为 `python -m open_source_intelligence.pipeline.cli`，支持 `snapshot`、`rank` 和 `all`。快照按 `(repository_id, snapshot_date)` 幂等；首日增量为 `NULL`，后续与最近历史快照求差。候选筛选只使用语言、关键词、最低 Star 和时间窗口；分数为 `max(0, star_growth + 2 * fork_growth + latest_stars / 1000)`。重复排序会替换该主题的现有候选链接，失败或不再命中过滤条件的旧候选不会残留。
+CLI 入口为 `python -m open_source_intelligence.pipeline.cli`，支持 `snapshot`、`rank`、`all`、`daily` 和 `runs`。快照按 `(repository_id, snapshot_date)` 幂等；首日增量为 `NULL`，后续与最近历史快照求差。候选筛选只使用语言、关键词、最低 Star 和时间窗口；分数为 `max(0, star_growth + 2 * fork_growth + latest_stars / 1000)`。重复排序会替换该主题的现有候选链接，失败或不再命中过滤条件的旧候选不会残留。
+
+Pipeline 运行记录接口：
+
+```text
+start_pipeline_run(session, *, run_type, topic_id=None, attempt=1, metrics_json=None) -> PipelineRun
+mark_pipeline_run_running(session, run, *, started_at=None) -> PipelineRun
+finish_pipeline_run(session, run, *, status, metrics_json=None, error_code=None, error_message=None) -> PipelineRun
+fail_pipeline_run(session, run, *, error_code, error_message, metrics_json=None) -> PipelineRun
+get_pipeline_run(session, run_id) -> PipelineRun | None
+list_pipeline_runs(session, *, topic_id=None, run_type=None, status=None, limit=20) -> Sequence[PipelineRun]
+summarize_pipeline_run(run) -> PipelineRunSummary
+```
+
+`run_type` 取值为 `collect`、`snapshot`、`rank`、`agent`、`publish`；`status` 取值为 `queued`、`running`、`succeeded`、`failed`、`partial`。`agent` 和 `publish` 必须提供 `topic_id`，与数据库 CHECK 约束一致。运行记录的每次状态变化立即提交，避免进程崩溃后丢失失败证据；`error_message` 写入前经过脱敏并截断到 2000 字符。
+
+每日确定性 Pipeline 编排接口：
+
+```text
+run_collect_stage(session, *, business_date, collectors, limit, attempt=1) -> CollectStageOutcome
+run_snapshot_stage(session, *, business_date, attempt=1) -> StageOutcome
+run_rank_stage(session, *, topic, business_date, attempt=1) -> StageOutcome
+run_rank_all_topics(session, *, business_date, attempt=1) -> list[StageOutcome]
+run_daily_pipeline(session, *, business_date, collectors, limit, attempt=1) -> DailyPipelineResult
+```
+
+固定顺序为 `collect -> snapshot -> rank`，每个阶段各写一条运行记录。采集阶段只有在所有供应商都失败时才抛 `PipelineStageError`（错误码 `COLLECTOR_FAILED`）并停止批次；部分失败记为 `partial` 后继续。快照失败抛 `PipelineStageError`（`SNAPSHOT_FAILED`）。单个主题的排序失败只把该主题记为 `failed`（`RANK_FAILED`），不阻塞其他主题，整体状态为 `partial`。排序阶段不调用大模型。
 
 Compose 运行接口：
 
@@ -209,6 +239,8 @@ Agent 只能调用以下白名单工具：
 - 数据库事务在应用服务边界开启，跨多个 Repository 时使用统一工作单元。
 - 仓库唯一键为 `(source_id, provider_repo_id)`。
 - 快照唯一键为 `(repository_id, snapshot_date)`。
+- `pipeline_runs.attempt >= 1`，`finished_at` 不早于 `started_at`；`agent` 和 `publish` 运行必须绑定 `topic_id`。
+- 每个阶段每次尝试只写一条 `pipeline_runs` 记录，禁止用同一行覆盖历史尝试。
 - `agent_steps` 在运行内按 `step_index` 唯一递增。
 - `MANUAL` 报告缺少 `approve` 审核记录时不能发布。
 

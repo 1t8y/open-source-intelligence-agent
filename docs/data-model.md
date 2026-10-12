@@ -3,7 +3,7 @@
 > 数据库：MySQL 8.0+  
 > ORM：SQLAlchemy 2.x  
 > 迁移：Alembic  
-> 最后更新：2026-09-24
+> 最后更新：2026-10-12
 
 ## 1. 设计原则
 
@@ -18,7 +18,7 @@
 ```text
 users --< user_roles >-- roles
 topics --< repositories >-- repo_snapshots
-topics --< pipeline_runs
+topics --< pipeline_runs（collect/snapshot 为全局运行，topic_id 为 NULL）
 topics --< agent_configs --< agent_runs --< agent_steps --< tool_calls
 agent_runs --< reports --< report_sources
 reports --< report_reviews
@@ -144,15 +144,20 @@ users --< audit_logs
 | 字段 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `id` | BIGINT UNSIGNED | PK | 运行 ID |
-| `topic_id` | BIGINT UNSIGNED | FK topics.id | 主题 |
-| `run_type` | VARCHAR(32) | NOT NULL | `collect`、`snapshot`、`agent`、`publish` |
+| `topic_id` | BIGINT UNSIGNED | FK topics.id, NULL | 主题；全局运行（`collect`/`snapshot`）为 `NULL` |
+| `run_type` | VARCHAR(32) | NOT NULL | `collect`、`snapshot`、`rank`、`agent`、`publish` |
 | `status` | VARCHAR(32) | NOT NULL | `queued/running/succeeded/failed/partial` |
 | `started_at` | DATETIME(6) | NULL | 开始时间 |
 | `finished_at` | DATETIME(6) | NULL | 结束时间 |
-| `attempt` | INT | NOT NULL DEFAULT 1 | 重试次数 |
-| `metrics_json` | JSON | NULL | 计数、耗时等 |
+| `attempt` | INT | NOT NULL DEFAULT 1 | 第几次尝试，重试时递增 |
+| `metrics_json` | JSON | NULL | 计数、业务日期和耗时等 |
 | `error_code` | VARCHAR(64) | NULL | 标准错误码 |
 | `error_message` | TEXT | NULL | 脱敏后的错误信息 |
+
+索引：`(topic_id, run_type, status)`、`(started_at)`。
+
+约束：`agent` 和 `publish` 运行必须绑定 `topic_id`；`collect`、`snapshot`、`rank` 可以是全局运行。
+每次尝试写入独立行，因此一次重试会留下两行同一业务日期的运行记录，便于还原重试轨迹。
 
 索引：`(topic_id, run_type, status)`、`(started_at)`。
 
@@ -330,5 +335,6 @@ users --< audit_logs
 - `report_sources.report_id` 必须与报告所属主题一致。
 - `audit_logs` 的 `result=denied` 必须保留原始 `request_id`。
 - 用户状态、数据范围、角色代码、审计结果、主题发布模式和 Pipeline 状态由数据库 CHECK 约束限制为文档定义的合法值。
+- Pipeline 运行的 `agent` 和 `publish` 类型必须绑定主题；`collect`、`snapshot`、`rank` 允许全局运行。
 - 仓库 star/fork、快照 star/fork/open issues、主题 star/window/candidate 阈值、候选 score/rank 和 Pipeline attempt 由数据库 CHECK 约束保证非负或正数范围。
 - 审计日志、仓库快照和主题候选关系的 `created_at` 由 ORM 使用 UTC 时间自动填充；业务明确需要时可显式覆盖。

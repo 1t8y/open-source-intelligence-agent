@@ -1,7 +1,7 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：T1-T5 已完成，进入 T6
-> 文档版本：v0.4
+> 项目状态：T1-T6 已完成，进入 T7
+> 文档版本：v0.5
 > 最后更新：2026-10-12
 
 ## 最终版路径
@@ -45,7 +45,7 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T5 已完成：真实 GitHub/Hugging Face 采集链路之后，每日快照、时间窗口增量、规则候选排序和幂等重跑均已通过 MySQL 冒烟验证。下一步进入 T6 Celery 调度与 `PipelineRun`。
+当前 T6 已完成：每日确定性 Pipeline 由 Celery Beat 定时触发，`collect -> snapshot -> rank` 每阶段各写一条 `pipeline_runs` 记录，失败按指数退避重试且每次尝试独立留痕，运行状态可用 CLI 查询。下一步进入 T7 Tool Layer 与数据契约。
 
 T1 验证命令：
 
@@ -86,6 +86,14 @@ T5 验证命令：
 ```
 
 该脚本在现有真实仓库上执行 3 次快照、2 次候选排序，验证幂等、窗口增量、排序和审计后清理验证数据。
+
+T6 验证命令：
+
+```powershell
+.\scripts\verify_t6.ps1
+```
+
+该脚本执行每日 Pipeline 的 MySQL 冒烟（运行记录、attempt 轨迹、错误脱敏、幂等和 CHECK 约束），通过真实 Celery broker 和 Worker 调度任务，用一个专用 Worker 指向不可达数据源以证明失败重试留下两条尝试记录，验证 Beat 定时触发与 CLI 状态查询，最后清理验证数据。
 
 ## 开发原则
 

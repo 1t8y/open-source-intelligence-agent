@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-12 ｜ 文档版本：v0.6.3
+> 最后更新：2026-10-12 ｜ 文档版本：v0.6.4
 
 ## 1. 概述与目标
 
@@ -274,6 +274,19 @@ T5 已实现以下内部能力：
 - 每个主题重新排序时替换原有 `topic_repositories`，避免旧候选残留；`max_candidates` 之外的候选保留分数和排名，但 `selected_for_agent=false`。
 - `python -m open_source_intelligence.pipeline.cli --action snapshot|rank|all --date YYYY-MM-DD` 提供可重复执行的运维入口。
 
+### 9.2 T6 Celery 调度与 PipelineRun
+
+T6 已实现以下能力：
+
+- 每日确定性 Pipeline 固定为 `collect -> snapshot -> rank`，由 `run_daily_pipeline()` 编排，每个阶段各写一条 `pipeline_runs` 记录。
+- `pipeline_runs.run_type` 增加 `rank`；`collect`、`snapshot`、`rank` 允许 `topic_id IS NULL`（全局运行），`agent` 和 `publish` 仍必须绑定主题，由数据库 CHECK 约束保证。
+- 每次尝试写独立运行行，`attempt = 已重试次数 + 1`，因此重试轨迹（attempt 1 失败、attempt 2 成功）完整可查，不用覆盖历史行。
+- 失败语义：全部供应商失败抛 `PipelineStageError`（`COLLECTOR_FAILED`）并停止批次；部分供应商失败记为 `partial` 后继续；快照失败抛 `SNAPSHOT_FAILED`；单个主题排序失败只记 `RANK_FAILED`，不影响其他主题。
+- 运行记录在 `queued -> running -> 终态` 的每次转换立即提交，进程崩溃不会丢失失败证据；`error_message` 写入前脱敏并截断。
+- Beat 在 `PIPELINE_SCHEDULE_ENABLED` 为真时，按 `APP_TIMEZONE` 每天 `PIPELINE_SCHEDULE_HOUR:PIPELINE_SCHEDULE_MINUTE`（默认 02:00）调度 `run_daily_pipeline` 任务。
+- Celery 任务按 `PIPELINE_TASK_MAX_RETRIES` 重试，退避为 `PIPELINE_RETRY_BACKOFF_SECONDS * 2^已重试次数`；参数非法不重试。
+- 状态查询：`python -m open_source_intelligence.pipeline.cli --action runs` 支持按 `run_type`、`status`、`topic_id` 和 `run_id` 查询；`list_pipeline_runs()` 是后续 API 的读取入口。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -349,7 +362,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T3 认证、RBAC 与审计骨架 — 依赖：T2 — 验证：Argon2、JWT、三角色权限、401/403 和审计事件通过
 - [x] T4 GitHub/Hugging Face Collector — 依赖：T2 — 验证：真实双源采集、重试、幂等入库和采集审计通过
 - [x] T5 每日快照与候选排序 — 依赖：T4 — 验证：重复运行不重复，按时间窗口可查出趋势
-- [ ] T6 Celery 调度与 PipelineRun — 依赖：T3/T5 — 验证：定时任务可执行、失败可重试、状态可查询
+- [x] T6 Celery 调度与 PipelineRun — 依赖：T3/T5 — 验证：定时任务可执行、失败可重试、状态可查询
 - [ ] T7 Tool Layer 与数据契约 — 依赖：T2/T5 — 验证：工具 Schema、ACL、截断和只读限制测试通过
 - [ ] T8 LangGraph Research Agent — 依赖：T7 — 验证：至少完成一条 Research→Tool→Verify→Write 轨迹
 - [ ] T9 Prompt Guard 与运行预算 — 依赖：T8 — 验证：循环、工具、Token 超限时安全停止
@@ -388,3 +401,5 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-09 | 完成 T4 GitHub/Hugging Face Collector | 4、5、9、14 | T4 | 36 项测试、真实双源采集、重复采集幂等、来源和成功审计验证通过 |
 | 2026-10-09 | 修复 T3/T4 审查问题 | 2、4、5、9、14 | T3/T4 复审 | 40 项测试、认证时序均一化、生产密钥保护、API 异常统一、并发 Upsert 和唯一数据源通过验证 |
 | 2026-10-12 | 完成 T5 每日快照、候选排序与 CLI | 9、14 | T5 | 44 项测试、Ruff、mypy、真实 4 仓库 MySQL 冒烟、重复快照和排序幂等、窗口增量与负分保护通过 |
+| 2026-10-12 | `pipeline_runs` 支持全局运行并新增 `rank` 类型 | 7、9.2、14 | T6 | 迁移 `9c1f7b2d4e83`；`alembic upgrade head`、`alembic check` 通过；主题范围 CHECK 约束在 MySQL 上生效 |
+| 2026-10-12 | 完成 T6 Celery 调度、每日 Pipeline 编排与运行状态查询 | 9.2、10、14 | T6 | 62 项测试、Ruff、mypy；MySQL 冒烟验证幂等、attempt 轨迹、错误脱敏和约束；真实 Celery 重试记录两次尝试；Beat 定时触发与 CLI 状态查询通过 |

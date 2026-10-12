@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     huggingface_token: SecretStr | None = None
     github_api_base: str = "https://api.github.com"
     huggingface_api_base: str = "https://hf-mirror.com/api"
+    pipeline_schedule_enabled: bool = True
+    pipeline_schedule_hour: int = Field(default=2, ge=0, le=23)
+    pipeline_schedule_minute: int = Field(default=0, ge=0, le=59)
+    pipeline_collect_limit: int = Field(default=20, ge=1, le=100)
+    pipeline_task_max_retries: int = Field(default=2, ge=0, le=10)
+    pipeline_retry_backoff_seconds: int = Field(default=30, ge=0, le=3600)
     docs_enabled: bool = True
 
     @field_validator("app_timezone")

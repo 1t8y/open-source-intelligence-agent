@@ -200,12 +200,12 @@ class TopicRepository(Base):
 
 
 class PipelineRun(Base):
-    """Execution record for collection, snapshot, and Agent pipelines."""
+    """Execution record for collection, snapshot, ranking, and Agent pipelines."""
 
     __tablename__ = "pipeline_runs"
     __table_args__ = (
         CheckConstraint(
-            "run_type IN ('collect', 'snapshot', 'agent', 'publish')",
+            "run_type IN ('collect', 'snapshot', 'rank', 'agent', 'publish')",
             name="run_type_valid",
         ),
         CheckConstraint(
@@ -217,15 +217,19 @@ class PipelineRun(Base):
             "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
             name="time_order_valid",
         ),
+        CheckConstraint(
+            "run_type IN ('collect', 'snapshot', 'rank') OR topic_id IS NOT NULL",
+            name="topic_scope_valid",
+        ),
         Index("ix_pipeline_runs_topic_type_status", "topic_id", "run_type", "status"),
         Index("ix_pipeline_runs_started_at", "started_at"),
     )
 
     id: Mapped[uint64_pk]
-    topic_id: Mapped[int] = mapped_column(
+    topic_id: Mapped[int | None] = mapped_column(
         unsigned_bigint(),
         ForeignKey("topics.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
     run_type: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -236,4 +240,4 @@ class PipelineRun(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    topic: Mapped[Topic] = relationship(back_populates="pipeline_runs")
+    topic: Mapped[Topic | None] = relationship(back_populates="pipeline_runs")
