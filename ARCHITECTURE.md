@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-12 ｜ 文档版本：v0.8.0
+> 最后更新：2026-10-12 ｜ 文档版本：v0.8.2
 
 ## 1. 概述与目标
 
@@ -342,6 +342,28 @@ T8 已实现以下能力：
 - 工具参数校验增加 JSON 回落通道：模型参数天然是 JSON 形状（时间是 ISO 字符串），注册表先按 T7 的严格 Python 路径 `model_validate`，失败后回落到 `model_validate_json`；两条路径都保持 `extra="forbid"` 并拒绝错误类型，T7 语义不变。
 - `workers.tasks.run_research_agent` 已登记但**不进入 beat 调度**：Agent 消耗真实的模型预算，自动编排要等报告与发布阶段就绪后再开。任务只在 `AGENT_MODEL_UNAVAILABLE` 且未达重试上限时重试；`needs_review` 作为结果直接返回，不当成错误重试。
 
+### 9.5 T5–T8 复查修复
+
+对 T5–T8 代码做了一次对照契约的复查，修复四处真实缺陷。每处都先写出会在修复前失败的回归测试，再改实现。
+
+| # | 缺陷 | 影响 | 修复 |
+|---|---|---|---|
+| 1 | 只读工具写保护只报警不回滚 | 保护触发后 `_record()` 的 `commit()` 会把处理器暂存的写入一起提交，「只读工具从不写入」事实上不成立 | `ToolRegistry._failure(discard_writes=True)` 在记录失败调用前先 `session.rollback()`；同时覆盖「暂存写入后抛异常」的路径 |
+| 2 | 撰写阶段的 Prompt 从未生效 | `prompts/draft_v1.md` 与 `PromptStage="draft"` 已定义却无人调用，`write` 节点沿用 `plan` 的系统 Prompt，真实供应商拿不到章节键、引用格式与 JSON 结构要求 | `GraphDependencies.draft_prompt` 承载 `load_prompt("draft", ...)`，`_write_node` 用 `_draft_messages()` 把系统消息替换为草稿 Prompt，保留 user 上下文与工具轨迹 |
+| 3 | 章节写入失败被判为成功 | `_write_node` 只改 `status` 而不设错误码，`_terminal_status` 又只看错误码与证据，于是「6 节只写成功 3 节」被报成 `completed` | `_write_node` 在 `failures > 0` 时写 `AGENT_WRITE_FAILED`；`_terminal_status` 收紧为「无错误码 **且** 证据充足」才是 `completed` |
+| 4 | 图内逃逸异常让运行卡在 `running` | 节点抛出的未分类异常（供应商适配器缺陷、记录步骤时的数据库抖动）会穿透 `graph.invoke`，`agent_runs` / `pipeline_runs` 永久停在 `running`，运维无法区分存活与僵死 | `run_research_agent` 捕获后经 `_record_crashed_run()` 写下 `AGENT_INTERNAL_ERROR` 终态再原样抛出；恢复写入自身失败时回滚，不掩盖原始异常 |
+
+新增错误码 `AGENT_INTERNAL_ERROR`（见 `agent/errors.py`），终态映射与 `INTERFACES.md` §8 一致。`REVIEW_REQUIRED_CODES` 保持不变，因此它判为 `failed`。
+
+端到端复跑时还暴露了两处**验证脚本自身**的缺陷。它们不影响产品代码，但会让门禁在本机静默失败或误报，因此一并修复：
+
+| # | 缺陷 | 影响 | 修复 |
+|---|---|---|---|
+| 5 | 验证脚本把「真实抓取 GitHub」当前置条件 | `verify_t5.ps1` / `verify_t6.ps1` 在正文冒烟之前先跑一次真实采集；主机无 GitHub 出口（`api.github.com` 连接被拒）时整条验证直接失败。而 `t6_mysql_smoke.py` 早已内置 `--collector offline`，该离线能力因这层前置而永远走不到 | 两个脚本新增**默认关闭**的 `-Offline` 开关：离线模式下改用仍可达的数据源播种，必要时复用 T4 已入库数据，并把 `--collector offline` / 可达 provider 传给下游冒烟与 Celery 检查；不带开关时行为与原先逐字一致，联网主机上的门禁强度不变 |
+| 6 | `verify_t6.ps1` 的运行查询断言依赖返回行序 | 它按 `runs` 查询结果的**出现顺序**拼 `attempt` 并期望 `"1,2"`，而 `list_pipeline_runs` 的契约是 `ORDER BY id DESC`（最新在前），所以同一天的重试必然返回 `2,1`，断言恒假 | 断言前对 `attempt` 排序。要求不变（同一天必须同时存在 attempt 1 与 2），只是不再依赖行序 |
+
+修复后 T5 与 T6 的离线端到端验证均通过：T5 复用 22 个已入库仓库完成快照幂等、窗口增量与排序断言；T6 完成真实 Celery 成功调度、独立 worker 的两次失败重试（attempt 轨迹 `1,2`）、Beat 准点派发与 CLI 运行查询。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -462,3 +484,5 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-12 | 完成 T7 工具层、数据契约与五个白名单工具 | 8.3、9.3、10、14 | T7 | 109 项测试（Agent 46 项）、Ruff、mypy 57 文件 0 错误；真实 MySQL 冒烟执行 5 个工具并记录 8 条 tool_calls，ACL 拒绝、截断、不可信标记、草稿幂等与只读限制全部通过 |
 | 2026-10-12 | 对齐 §8.2 状态对象与 §8.3 工具签名到已实现契约（`ResearchTask.intent` 枚举、`EvidenceRef` 的观测语义、五个工具的输入字段与返回信封） | 8.2、8.3 | T7/T8 文档校正 | 与 `agent/state.py`、`agent/tools/contracts.py` 逐字段比对 |
 | 2026-10-12 | 完成 T8 LangGraph Research Agent：有界五节点图与条件回边、三档预算硬停止、可插拔模型 Adapter（默认确定性离线桩）、运行时编排与记录、运行历史 CLI、Celery 任务（不入 beat 调度） | 5、8.2、8.3、9.4、10、14 | T8 | 171 项测试、Ruff、mypy 74 文件 0 错误；真实 MySQL 冒烟 17 步 / 13 次工具调用 / 6 个草稿章节 / 2 个候选仓库，步类型齐全、只读工具零写入；无候选（`needs_review`）与模型不可用（`failed`）两条降级路径通过；新增依赖 `langgraph>=1.0,<2` 与 13 个 `AGENT_*` 配置项，无数据库迁移 |
+| 2026-10-12 | T5–T8 复查修复四处缺陷：只读写保护改为回滚、撰写阶段启用 `draft` Prompt、章节写入失败计入 `AGENT_WRITE_FAILED`、逃逸异常收口为 `AGENT_INTERNAL_ERROR` | 9.3、9.4、9.5、15 | T5–T8 复查 | 新增 5 项回归测试（先证明修复前失败）；176 项测试、Ruff check+format、mypy 74 文件 0 错误；真实 MySQL 冒烟复跑通过 |
+| 2026-10-12 | 修复两处验证脚本缺陷：`verify_t5.ps1` / `verify_t6.ps1` 新增默认关闭的 `-Offline` 开关；`verify_t6.ps1` 的运行查询断言改为按 attempt 排序 | 9.5、15 | T5–T8 复查 | T5 离线端到端通过（repositories=22, candidates=22）；T6 离线端到端通过（run_rows=6, attempts=1,3, retry_attempts=1,2）；不带 `-Offline` 的默认行为与原先一致 |

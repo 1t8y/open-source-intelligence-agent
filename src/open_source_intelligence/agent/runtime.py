@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from open_source_intelligence.agent.errors import (
     AGENT_BUDGET_EXCEEDED,
     AGENT_EVIDENCE_INCOMPLETE,
+    AGENT_INTERNAL_ERROR,
     AGENT_NO_CANDIDATES,
     AGENT_WRITE_FAILED,
 )
@@ -43,6 +44,7 @@ from open_source_intelligence.agent.tools.registry import (
     build_default_registry,
 )
 from open_source_intelligence.core.config import Settings
+from open_source_intelligence.core.logging import redact_text
 from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.agent import AgentConfig, AgentRun
 from open_source_intelligence.persistence.models.intelligence import (
@@ -63,6 +65,9 @@ REVIEW_REQUIRED_CODES = frozenset(
         AGENT_WRITE_FAILED,
     }
 )
+
+#: Upper bound on the failure detail kept on `pipeline_runs.metrics_json`.
+MAX_FAILURE_DETAIL_CHARS = 2000
 
 
 @dataclass(slots=True)
@@ -145,6 +150,35 @@ def load_or_create_config(session: Session, settings: Settings) -> AgentConfig:
     return config
 
 
+def _record_crashed_run(
+    session: Session,
+    recorder: StepRecorder,
+    pipeline_run: PipelineRun,
+    error: BaseException,
+) -> None:
+    """Write a terminal `failed` state for a run that blew up outside the graph's control.
+
+    Without this, an exception escaping a node (a broken provider adapter, a database
+    hiccup while recording a step) would leave `agent_runs` and `pipeline_runs` stuck in
+    `running` forever, so operators could not tell a live run from a dead one. The original
+    exception is always re-raised by the caller; if the recovery write itself fails, the
+    session is rolled back rather than masking the original failure.
+    """
+    try:
+        recorder.finish(status="failed", error_code=AGENT_INTERNAL_ERROR)
+        pipeline_run.status = "failed"
+        pipeline_run.finished_at = utc_now()
+        pipeline_run.error_code = AGENT_INTERNAL_ERROR
+        pipeline_run.metrics_json = {
+            "error_code": AGENT_INTERNAL_ERROR,
+            "error_message": redact_text(str(error)).strip()[:MAX_FAILURE_DETAIL_CHARS]
+            or error.__class__.__name__,
+        }
+        session.commit()
+    except Exception:  # noqa: BLE001 - never mask the original failure
+        session.rollback()
+
+
 def load_candidate_repo_ids(session: Session, *, topic_id: int, limit: int) -> list[int]:
     """Return the ranked, Agent-selected repository ids for one topic."""
     rows = session.scalars(
@@ -204,14 +238,18 @@ def _terminal_status(state: AgentState) -> tuple[str, str | None]:
 
     Budget exhaustion and a missing evidence base are not crashes: they mean the draft needs
     a human. Only transport, model, and payload failures mark the run as failed.
+
+    `completed` requires both a complete evidence base and no error code at all, so a run
+    that hit a review-worthy problem (say a draft section that could not be stored) can never
+    be reported as a clean completion.
     """
     error_code = state.get("error_code")
     verification = state.get("verification")
     sufficient = verification is not None and verification.sufficient
+    if error_code is None and sufficient:
+        return "completed", None
     if error_code is not None and error_code not in REVIEW_REQUIRED_CODES:
         return "failed", error_code
-    if sufficient:
-        return "completed", error_code
     return "needs_review", error_code or AGENT_EVIDENCE_INCOMPLETE
 
 
@@ -293,6 +331,7 @@ def run_research_agent(
         session=session,
         recorder=recorder,
         context=context,
+        draft_prompt=load_prompt("draft", config.prompt_version, settings.agent_prompts_dir),
         tool_schemas=build_tool_schemas(resolved_registry),
     )
     graph = build_research_graph(deps)
@@ -336,7 +375,11 @@ def run_research_agent(
         "error_message": None,
         "incomplete": False,
     }
-    final_state = cast(AgentState, graph.invoke(initial_state))
+    try:
+        final_state = cast(AgentState, graph.invoke(initial_state))
+    except Exception as exc:  # noqa: BLE001 - the run must still reach a terminal state
+        _record_crashed_run(session, recorder, pipeline_run, exc)
+        raise
 
     recorder.sync_counters(
         loop_count=final_state.get("loop_count", 0),

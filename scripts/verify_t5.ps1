@@ -1,4 +1,6 @@
-param()
+param(
+    [switch]$Offline
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
@@ -43,12 +45,31 @@ Assert-LastCommandSucceeded 'alembic upgrade head'
 docker @composeArgs exec -T api alembic check
 Assert-LastCommandSucceeded 'alembic check'
 
-Write-Host '==> Ensure real repository data exists'
-$collectionOutput = docker @composeArgs exec -T api python -m open_source_intelligence.collectors.cli --provider all --limit 2
-Assert-LastCommandSucceeded 'collector seed'
-$collectionSummary = $collectionOutput | ConvertFrom-Json
-if (@($collectionSummary.errors.PSObject.Properties).Count -ne 0) {
-    throw "Collector seed reported errors: $collectionOutput"
+if ($Offline) {
+    # The T5 smoke needs repository rows, not fresh ones: snapshotting and ranking
+    # only read what T4 already stored. On a host without GitHub egress, seed from
+    # whichever source still answers and otherwise reuse the existing data instead
+    # of failing the whole verification on a network precondition.
+    Write-Host '==> Offline mode: seed from the reachable source, otherwise reuse stored data'
+    $seedSucceeded = $false
+    $collectionOutput = docker @composeArgs exec -T api python -m open_source_intelligence.collectors.cli --provider huggingface --limit 2
+    if ($LASTEXITCODE -eq 0) {
+        $collectionSummary = $collectionOutput | ConvertFrom-Json
+        $seedSucceeded = (@($collectionSummary.errors.PSObject.Properties).Count -eq 0) -and ([int]$collectionSummary.provider_counts.huggingface -ge 1)
+    }
+    if ($seedSucceeded) {
+        Write-Host '    seeded from Hugging Face'
+    } else {
+        Write-Host '    live source unavailable; continuing with the repository data already stored by T4'
+    }
+} else {
+    Write-Host '==> Ensure real repository data exists'
+    $collectionOutput = docker @composeArgs exec -T api python -m open_source_intelligence.collectors.cli --provider all --limit 2
+    Assert-LastCommandSucceeded 'collector seed'
+    $collectionSummary = $collectionOutput | ConvertFrom-Json
+    if (@($collectionSummary.errors.PSObject.Properties).Count -ne 0) {
+        throw "Collector seed reported errors: $collectionOutput"
+    }
 }
 
 Write-Host '==> Run T5 CLI smoke on MySQL'

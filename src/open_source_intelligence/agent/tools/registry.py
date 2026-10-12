@@ -269,6 +269,7 @@ class ToolRegistry:
                 exc.code,
                 exc.message,
                 "denied" if exc.code == TOOL_ACCESS_DENIED else "failed",
+                discard_writes=spec.read_only,
             )
         except Exception as exc:  # noqa: BLE001 - internal errors map to a stable code
             return self._failure(
@@ -280,6 +281,7 @@ class ToolRegistry:
                 TOOL_INTERNAL_ERROR,
                 str(exc),
                 "failed",
+                discard_writes=spec.read_only,
             )
         latency_ms = _elapsed_ms(started)
         self._record(
@@ -311,8 +313,19 @@ class ToolRegistry:
         code: str,
         message: str,
         status: str,
+        *,
+        discard_writes: bool = False,
     ) -> ToolResult[Any]:
-        """Build a failed envelope and persist the recorded invocation."""
+        """Build a failed envelope and persist the recorded invocation.
+
+        `discard_writes` is set for read-only tools: detecting the write is not enough
+        because `_record()` commits the session, which would flush whatever the handler
+        staged. Rolling back first keeps the "read-only tools never write" invariant true
+        instead of merely observable, and it also covers a handler that raises after
+        staging a write.
+        """
+        if discard_writes:
+            session.rollback()
         latency_ms = _elapsed_ms(started)
         safe_message = redact_text(message)[:ERROR_MESSAGE_CHARS]
         self._record(

@@ -1,4 +1,6 @@
-param()
+param(
+    [switch]$Offline
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
@@ -52,16 +54,38 @@ Assert-LastCommandSucceeded 'alembic upgrade head'
 docker @composeArgs exec -T api alembic check
 Assert-LastCommandSucceeded 'alembic check'
 
-Write-Host '==> Ensure real repository data exists'
-$collectionOutput = docker @composeArgs exec -T api python -m open_source_intelligence.collectors.cli --provider all --limit 2
-Assert-LastCommandSucceeded 'collector seed'
-$collectionSummary = $collectionOutput | ConvertFrom-Json
-if (@($collectionSummary.errors.PSObject.Properties).Count -ne 0) {
-    throw "Collector seed reported errors: $collectionOutput"
+if ($Offline) {
+    # Snapshotting and ranking only read the repository rows T4 already stored, so
+    # the orchestration under test does not depend on GitHub being reachable. Seed
+    # from whichever source still answers, and otherwise carry on with stored data.
+    Write-Host '==> Offline mode: seed from the reachable source, otherwise reuse stored data'
+    $seedSucceeded = $false
+    $collectionOutput = docker @composeArgs exec -T api python -m open_source_intelligence.collectors.cli --provider huggingface --limit 2
+    if ($LASTEXITCODE -eq 0) {
+        $collectionSummary = $collectionOutput | ConvertFrom-Json
+        $seedSucceeded = (@($collectionSummary.errors.PSObject.Properties).Count -eq 0) -and ([int]$collectionSummary.provider_counts.huggingface -ge 1)
+    }
+    if ($seedSucceeded) {
+        Write-Host '    seeded from Hugging Face'
+    } else {
+        Write-Host '    live source unavailable; continuing with the repository data already stored by T4'
+    }
+} else {
+    Write-Host '==> Ensure real repository data exists'
+    $collectionOutput = docker @composeArgs exec -T api python -m open_source_intelligence.collectors.cli --provider all --limit 2
+    Assert-LastCommandSucceeded 'collector seed'
+    $collectionSummary = $collectionOutput | ConvertFrom-Json
+    if (@($collectionSummary.errors.PSObject.Properties).Count -ne 0) {
+        throw "Collector seed reported errors: $collectionOutput"
+    }
 }
 
 Write-Host '==> Run T6 MySQL smoke: run records, attempts, retry trail, constraints'
-$smokeOutput = docker @composeArgs run --rm --no-deps @mountArgs /workspace/scripts/t6_mysql_smoke.py
+$smokeArgs = @('/workspace/scripts/t6_mysql_smoke.py')
+if ($Offline) {
+    $smokeArgs += @('--collector', 'offline')
+}
+$smokeOutput = docker @composeArgs run --rm --no-deps @mountArgs @smokeArgs
 Assert-LastCommandSucceeded 'T6 MySQL smoke'
 $smokeSummary = $smokeOutput | ConvertFrom-Json
 
@@ -100,7 +124,13 @@ if ($smokeSummary.topic_scope_constraint_enforced -ne $true) {
 }
 
 Write-Host '==> Dispatch the daily pipeline through the Celery broker'
-$successOutput = docker @composeArgs run --rm --no-deps @mountArgs /workspace/scripts/t6_celery_check.py --mode success --date $verifyDate --limit 2
+$successArgs = @('/workspace/scripts/t6_celery_check.py', '--mode', 'success', '--date', $verifyDate, '--limit', '2')
+if ($Offline) {
+    # The dispatch chain under test is provider agnostic, so in offline mode use a
+    # source that answers instead of letting GitHub egress decide the outcome.
+    $successArgs += @('--provider', 'huggingface')
+}
+$successOutput = docker @composeArgs run --rm --no-deps @mountArgs @successArgs
 Assert-LastCommandSucceeded 'T6 Celery success check'
 $successSummary = $successOutput | ConvertFrom-Json
 
@@ -152,7 +182,10 @@ Assert-LastCommandSucceeded 'pipeline run query'
 $runsSummary = $runsOutput | ConvertFrom-Json
 $failedRuns = @($runsSummary.runs)
 $retryDateRuns = @($failedRuns | Where-Object { $_.metrics.business_date -eq $retryDate })
-$retryAttempts = @($retryDateRuns | ForEach-Object { [int]$_.attempt })
+# `list_pipeline_runs` is documented as newest-first, so the attempts for one date
+# arrive in descending order. Sort them here to assert the retry trail itself
+# instead of accidentally asserting the row order of the query.
+$retryAttempts = @($retryDateRuns | ForEach-Object { [int]$_.attempt } | Sort-Object)
 
 if (@($failedRuns).Count -lt 2) {
     throw "pipeline run query returned too few failed runs: $runsOutput"

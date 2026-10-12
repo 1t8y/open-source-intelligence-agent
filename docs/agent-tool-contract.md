@@ -1,7 +1,7 @@
 # Agent 工具接口契约
 
 > 适用模块：`src/open_source_intelligence/agent/tools/`  
-> 契约版本：v1.1  
+> 契约版本：v1.2  
 > 最后更新：2026-10-12
 
 ## 1. 目的与边界
@@ -322,7 +322,7 @@ SectionRef {
 | `search_prior_reports` | `reports`、`report_sources` | 是 |
 | `save_report_section` | `report_drafts`、`report_sections` | 否，仅写当前运行草稿 |
 
-每次调用写入一行 `tool_calls`，其中 `arguments_json` 与 `result_summary` 在落库前脱敏并截断。`ToolRegistry.invoke()` 对只读工具强制检查会话脏状态，只读工具一旦产生写入即返回 `TOOL_INTERNAL_ERROR`。
+每次调用写入一行 `tool_calls`，其中 `arguments_json` 与 `result_summary` 在落库前脱敏并截断。`ToolRegistry.invoke()` 对只读工具强制检查会话脏状态：只读工具一旦产生写入即返回 `TOOL_INTERNAL_ERROR`，并**先回滚会话再记录该次调用**。回滚是必需的，因为记录调用本身会 `commit`；若只报错不回滚，处理器暂存的写入会被一并提交，让「只读工具从不写入」从一条可观测规则退化成一句口号。同一保护覆盖「处理器暂存写入后抛异常」的路径。
 
 `agent_configs.tool_policy_json` 提供运行级工具白名单，运行时据此构造 `ToolContext.allowed_tools`；注册表自身的 `WHITELIST` 是上级边界，两者取交集。`repository_contents`、`report_drafts`、`report_sections` 是 T7 为落地本契约新增的表，详见 [data-model.md](data-model.md)。
 

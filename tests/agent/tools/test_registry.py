@@ -147,6 +147,19 @@ def _writing_handler(session: Session, ctx: ToolContext, payload: object) -> Too
     return ToolOutcome(data=None)
 
 
+def _writing_then_raising_handler(
+    session: Session, ctx: ToolContext, payload: object
+) -> ToolOutcome:
+    session.add(User(id=778, username="sneakier", password_hash="h", display_name="Sneakier"))
+    raise RuntimeError("handler exploded after staging a write")
+
+
+def _count_user(session: Session, user_id: int) -> int:
+    return int(
+        session.scalar(select(func.count()).select_from(User).where(User.id == user_id)) or 0
+    )
+
+
 def test_read_only_tool_write_is_blocked(workspace: Workspace) -> None:
     """A read-only tool that stages a write is rejected by the registry."""
     topic = workspace.add_topic()
@@ -166,6 +179,55 @@ def test_read_only_tool_write_is_blocked(workspace: Workspace) -> None:
     assert result.error is not None
     assert result.error.code == TOOL_INTERNAL_ERROR
     assert "read-only" in result.error.message
+
+
+def test_read_only_tool_write_is_rolled_back_not_just_reported(workspace: Workspace) -> None:
+    """Blocking a read-only write must undo it; recording the call must not commit it."""
+    topic = workspace.add_topic()
+    run = workspace.add_agent_run(topic.id)
+    registry = ToolRegistry(
+        (ToolSpec("get_repository_profile", True, GetRepositoryProfileInput, _writing_handler),)
+    )
+
+    result = registry.invoke(
+        "get_repository_profile",
+        workspace.context(topic.id, agent_run_id=run.id, allowed=("get_repository_profile",)),
+        workspace.session,
+        {"repo_id": 1},
+    )
+
+    assert result.ok is False
+    assert _count_user(workspace.session, 777) == 0
+    assert _count_tool_calls(workspace.session) == 1
+
+
+def test_read_only_tool_that_raises_does_not_persist_its_write(workspace: Workspace) -> None:
+    """A read-only tool cannot smuggle a write through the error path either."""
+    topic = workspace.add_topic()
+    run = workspace.add_agent_run(topic.id)
+    registry = ToolRegistry(
+        (
+            ToolSpec(
+                "get_repository_profile",
+                True,
+                GetRepositoryProfileInput,
+                _writing_then_raising_handler,
+            ),
+        )
+    )
+
+    result = registry.invoke(
+        "get_repository_profile",
+        workspace.context(topic.id, agent_run_id=run.id, allowed=("get_repository_profile",)),
+        workspace.session,
+        {"repo_id": 1},
+    )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == TOOL_INTERNAL_ERROR
+    assert _count_user(workspace.session, 778) == 0
+    assert _count_tool_calls(workspace.session) == 1
 
 
 def test_write_tool_is_allowed_to_write(workspace: Workspace) -> None:

@@ -1,7 +1,7 @@
 # 项目接口基线
 
 > 文档状态：待用户确认  
-> 文档版本：v0.5
+> 文档版本：v0.6
 > 最后更新：2026-10-12
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -384,15 +384,17 @@ draft
 Agent 运行终态与错误码（T8）：
 
 ```text
-completed    证据充足且 6 个草稿章节全部写入            -> pipeline_runs.status = succeeded
+completed    证据充足、无任何错误码且 6 个草稿章节全部写入   -> pipeline_runs.status = succeeded
 needs_review AGENT_NO_CANDIDATES / AGENT_BUDGET_EXCEEDED /
              AGENT_EVIDENCE_INCOMPLETE / AGENT_WRITE_FAILED
              —— 结果需人工复核，不是异常              -> pipeline_runs.status = failed
 failed       AGENT_MODEL_UNAVAILABLE / AGENT_DRAFT_INVALID
              —— 传输、模型或载荷失败                  -> pipeline_runs.status = failed
+failed       AGENT_INTERNAL_ERROR
+             —— 图内逃逸的未分类异常，运行仍被收口为终态 -> pipeline_runs.status = failed
 ```
 
-`needs_review` 与 `failed` 都写 `pipeline_runs.status=failed`，但只有后者值得重试：Celery 任务仅在 `AGENT_MODEL_UNAVAILABLE` 时重试。
+`completed` 要求同时满足「无错误码」与「证据充足」，因此部分章节写入失败（`AGENT_WRITE_FAILED`）的运行不会因为证据充足而被误报为 `completed`。`needs_review` 与 `failed` 都写 `pipeline_runs.status=failed`，但只有后者值得重试：Celery 任务仅在 `AGENT_MODEL_UNAVAILABLE` 时重试。
 
 ## 9. 接口变更规则
 

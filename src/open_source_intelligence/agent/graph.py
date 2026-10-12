@@ -69,12 +69,29 @@ class GraphDependencies:
     session: Session
     recorder: StepRecorder
     context: ToolContext
+    draft_prompt: str
     tool_schemas: tuple[ToolSchema, ...] = ()
 
 
 def _elapsed_ms(started: float) -> int:
     """Return a non-negative elapsed millisecond count."""
     return max(0, int((time.perf_counter() - started) * 1000))
+
+
+def _draft_messages(messages: list[ChatMessage], draft_prompt: str) -> list[ChatMessage]:
+    """Swap the research system prompt for the drafting prompt.
+
+    The plan stage and the write stage are different tasks with different output
+    contracts, and `prompts/` versions them separately. Replacing the system message keeps
+    the recorded user context and tool trail intact while giving the model the draft
+    instructions (section keys, citation format, JSON shape) it is actually being asked for.
+    """
+    if not draft_prompt:
+        return list(messages)
+    return [
+        ChatMessage(role="system", content=draft_prompt),
+        *(message for message in messages if message.role != "system"),
+    ]
 
 
 def _as_repo_id(value: Any) -> int | None:
@@ -362,7 +379,7 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
 
     messages = list(state.get("messages") or [])
     try:
-        turn = deps.client.complete(messages, ())
+        turn = deps.client.complete(_draft_messages(messages, deps.draft_prompt), ())
     except ModelClientError as exc:
         deps.recorder.record(
             step_type="write",
@@ -428,13 +445,19 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         input_digest=digest_text(turn.text),
         latency_ms=_elapsed_ms(started),
     )
+    # A partially stored draft is not a finished draft: report it as needing a human instead
+    # of letting the run look complete with fewer sections than the template requires.
+    write_error_code = AGENT_WRITE_FAILED if failures else None
+    write_error_message = f"{failures} section(s) could not be saved" if failures else None
     return {
         "messages": [ChatMessage(role="assistant", content=turn.text)],
         "draft_sections": saved,
         "tool_call_count": tool_call_count,
         "model_call_count": model_call_count + 1,
-        "incomplete": not sufficient,
+        "incomplete": bool(failures) or not sufficient,
         "status": "needs_review" if (failures or not sufficient) else "completed",
+        "error_code": write_error_code,
+        "error_message": write_error_message,
     }
 
 

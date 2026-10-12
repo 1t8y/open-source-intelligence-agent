@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
+import pytest
 from agent_support import seed_topic
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -13,12 +14,24 @@ from support import NOW, Workspace, build_settings
 
 from open_source_intelligence.agent.errors import (
     AGENT_BUDGET_EXCEEDED,
+    AGENT_INTERNAL_ERROR,
     AGENT_MODEL_UNAVAILABLE,
     AGENT_NO_CANDIDATES,
+    AGENT_WRITE_FAILED,
 )
+from open_source_intelligence.agent.graph import SAVE_SECTION_TOOL
 from open_source_intelligence.agent.llm.errors import MODEL_REQUEST_FAILED, ModelClientError
 from open_source_intelligence.agent.llm.messages import ChatMessage, ModelTurn, ToolSchema
+from open_source_intelligence.agent.llm.offline import OfflineModelClient
+from open_source_intelligence.agent.prompts import load_prompt
 from open_source_intelligence.agent.runtime import DEFAULT_AGENT_CONFIG_NAME, run_research_agent
+from open_source_intelligence.agent.tools.contracts import TOOL_INTERNAL_ERROR
+from open_source_intelligence.agent.tools.errors import ToolExecutionError
+from open_source_intelligence.agent.tools.registry import (
+    ToolRegistry,
+    ToolSpec,
+    build_default_registry,
+)
 from open_source_intelligence.persistence.models.agent import (
     AgentConfig,
     AgentRun,
@@ -26,6 +39,7 @@ from open_source_intelligence.persistence.models.agent import (
     ToolCall,
 )
 from open_source_intelligence.persistence.models.intelligence import (
+    PipelineRun,
     Repository,
     RepositoryContent,
     RepoSnapshot,
@@ -51,6 +65,80 @@ class FailingClient:
     ) -> ModelTurn:
         del messages, tools
         raise ModelClientError(MODEL_REQUEST_FAILED, "simulated transport failure")
+
+
+class CrashingClient:
+    """Model client that raises an error the graph does not classify."""
+
+    @property
+    def provider(self) -> str:
+        return "crashing"
+
+    @property
+    def model(self) -> str:
+        return "crashing-v1"
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSchema],
+    ) -> ModelTurn:
+        del messages, tools
+        raise RuntimeError("provider adapter is broken")
+
+
+class RecordingClient:
+    """Offline client that also records the conversation of every call it serves."""
+
+    def __init__(self) -> None:
+        self._offline = OfflineModelClient()
+        self.calls: list[tuple[ChatMessage, ...]] = []
+        self.tool_sets: list[tuple[ToolSchema, ...]] = []
+
+    @property
+    def provider(self) -> str:
+        return self._offline.provider
+
+    @property
+    def model(self) -> str:
+        return self._offline.model
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSchema],
+    ) -> ModelTurn:
+        self.calls.append(tuple(messages))
+        self.tool_sets.append(tuple(tools))
+        return self._offline.complete(messages, tools)
+
+
+def _failing_section_handler(session: Session, ctx: Any, payload: Any) -> Any:
+    """Tool handler double that always fails, simulating an unwritable draft store."""
+    del session, ctx, payload
+    raise ToolExecutionError(TOOL_INTERNAL_ERROR, "draft storage unavailable")
+
+
+def _registry_with_failing_writer() -> ToolRegistry:
+    """Return the default whitelist with a `save_report_section` that always fails."""
+    default = build_default_registry()
+    specs = []
+    for name in default.tool_names:
+        spec = default.get(name)
+        assert spec is not None
+        if name == SAVE_SECTION_TOOL:
+            specs.append(
+                ToolSpec(
+                    name=spec.name,
+                    read_only=spec.read_only,
+                    input_model=spec.input_model,
+                    handler=_failing_section_handler,
+                    description=spec.description,
+                )
+            )
+        else:
+            specs.append(spec)
+    return ToolRegistry(specs)
 
 
 def _count(session: Session, entity: Any) -> int:
@@ -265,3 +353,84 @@ def test_runtime_honours_the_configured_tool_policy(
     # The narrowed policy cannot satisfy the evidence check, so the run needs a human.
     assert result.status == "needs_review"
     assert result.section_count == 0
+
+
+def test_runtime_reports_a_failed_draft_write_as_needing_review(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A run whose sections could not be stored is not a completed report draft."""
+    seeded = seed_topic(workspace, repo_count=1)
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        registry=_registry_with_failing_writer(),
+        now=NOW,
+    )
+
+    assert result.verification is not None and result.verification.sufficient is True
+    assert result.status == "needs_review"
+    assert result.error_code == AGENT_WRITE_FAILED
+    assert result.section_count == 0
+    agent_run = session.get(AgentRun, result.agent_run_id)
+    assert agent_run is not None
+    assert agent_run.status == "needs_review"
+    assert agent_run.error_code == AGENT_WRITE_FAILED
+
+
+def test_runtime_drafts_with_the_draft_prompt(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """The writing call must run under the draft prompt, not the research prompt."""
+    seeded = seed_topic(workspace, repo_count=1)
+    client = RecordingClient()
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        client=client,
+        now=NOW,
+    )
+
+    assert result.status == "completed"
+    assert len(client.calls) >= 2
+    plan_call, write_call = client.calls[0], client.calls[-1]
+    assert client.tool_sets[0], "the planning call must be offered the tool whitelist"
+    assert client.tool_sets[-1] == (), "the drafting call must not be offered tools"
+    assert plan_call[0].role == "system"
+    assert plan_call[0].content == load_prompt("plan", "v1")
+    assert write_call[0].role == "system"
+    assert write_call[0].content == load_prompt("draft", "v1")
+    # Mapping the conversation must not drop the recorded evidence trail.
+    assert sum(1 for message in write_call if message.role == "tool") > 0
+
+
+def test_runtime_leaves_no_run_stuck_in_running_when_a_node_crashes(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """An exception the graph cannot classify must still close both run records."""
+    seeded = seed_topic(workspace, repo_count=1)
+
+    with pytest.raises(RuntimeError):
+        run_research_agent(
+            session,
+            topic_id=seeded.topic.id,
+            settings=build_settings(),
+            client=CrashingClient(),
+            now=NOW,
+        )
+
+    agent_run = session.scalars(select(AgentRun).order_by(AgentRun.id.desc())).first()
+    assert agent_run is not None
+    assert agent_run.status == "failed"
+    assert agent_run.error_code == AGENT_INTERNAL_ERROR
+    assert agent_run.finished_at is not None
+    pipeline_run = session.get(PipelineRun, agent_run.pipeline_run_id)
+    assert pipeline_run is not None
+    assert pipeline_run.status == "failed"
+    assert pipeline_run.finished_at is not None
+    assert pipeline_run.error_code == AGENT_INTERNAL_ERROR
+    assert (pipeline_run.metrics_json or {}).get("error_code") == AGENT_INTERNAL_ERROR
