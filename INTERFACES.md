@@ -1,8 +1,8 @@
 # 项目接口基线
 
 > 文档状态：待用户确认  
-> 文档版本：v0.1  
-> 最后更新：2026-10-08  
+> 文档版本：v0.2
+> 最后更新：2026-10-12
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
 ## 1. 契约范围
@@ -124,6 +124,17 @@ upsert_repository(session, source, item) -> Repository
 默认 API 地址为 `https://api.github.com` 和 `https://hf-mirror.com/api`，可通过 `GITHUB_API_BASE`、`HUGGINGFACE_API_BASE` 覆盖。API Token 可选，空白 Token 会规范化为未配置。
 
 MySQL 写入路径使用原生 Upsert，`data_sources.source_type` 和 `repositories(source_id, provider_repo_id)` 均由数据库唯一约束保证并发幂等。
+
+Pipeline 接口：
+
+```text
+create_daily_snapshots(session, *, snapshot_date: date) -> int
+get_snapshot_series(session, repository_id, *, start_date: date, end_date: date) -> Sequence[RepoSnapshot]
+rank_topic_candidates(session, topic, *, as_of_date: date) -> list[RankedCandidate]
+rank_all_topics(session, *, as_of_date: date) -> dict[int, int]
+```
+
+CLI 入口为 `python -m open_source_intelligence.pipeline.cli`，支持 `snapshot`、`rank` 和 `all`。快照按 `(repository_id, snapshot_date)` 幂等；首日增量为 `NULL`，后续与最近历史快照求差。候选筛选只使用语言、关键词、最低 Star 和时间窗口；分数为 `max(0, star_growth + 2 * fork_growth + latest_stars / 1000)`。重复排序会替换该主题的现有候选链接，失败或不再命中过滤条件的旧候选不会残留。
 
 Compose 运行接口：
 

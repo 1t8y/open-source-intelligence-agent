@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-09 ｜ 文档版本：v0.6.2
+> 最后更新：2026-10-12 ｜ 文档版本：v0.6.3
 
 ## 1. 概述与目标
 
@@ -263,6 +263,17 @@ Celery Beat
 - Redis 故障时，API 仍可读取已入库报告；只影响新任务入队，不影响历史数据读取。
 - 首期每日和每周任务频率可配置，时区统一保存 UTC，展示时转换为 `Asia/Shanghai`。
 
+### 9.1 T5 确定性数据 Pipeline
+
+T5 已实现以下内部能力：
+
+- `create_daily_snapshots(session, snapshot_date)` 按 `(repository_id, snapshot_date)` 幂等创建或更新每日快照；首日增量为 `NULL`，后续增量相对最近历史快照计算。
+- `get_snapshot_series(...)` 按日期返回单仓库时间序列。
+- `rank_topic_candidates(session, topic, as_of_date)` 基于语言、关键词、最低 Star 和时间窗口筛选候选；候选阶段不调用大模型。
+- 候选分数为 `max(0, star_growth + 2 * fork_growth + latest_stars / 1000)`，负增长不能突破 `score >= 0` 数据库约束。
+- 每个主题重新排序时替换原有 `topic_repositories`，避免旧候选残留；`max_candidates` 之外的候选保留分数和排名，但 `selected_for_agent=false`。
+- `python -m open_source_intelligence.pipeline.cli --action snapshot|rank|all --date YYYY-MM-DD` 提供可重复执行的运维入口。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -337,7 +348,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T2.3 Alembic 迁移环境 — 验证：`upgrade head`、`downgrade base`、再次升级和 `alembic check` 通过
 - [x] T3 认证、RBAC 与审计骨架 — 依赖：T2 — 验证：Argon2、JWT、三角色权限、401/403 和审计事件通过
 - [x] T4 GitHub/Hugging Face Collector — 依赖：T2 — 验证：真实双源采集、重试、幂等入库和采集审计通过
-- [ ] T5 每日快照与候选排序 — 依赖：T4 — 验证：重复运行不重复，按时间窗口可查出趋势
+- [x] T5 每日快照与候选排序 — 依赖：T4 — 验证：重复运行不重复，按时间窗口可查出趋势
 - [ ] T6 Celery 调度与 PipelineRun — 依赖：T3/T5 — 验证：定时任务可执行、失败可重试、状态可查询
 - [ ] T7 Tool Layer 与数据契约 — 依赖：T2/T5 — 验证：工具 Schema、ACL、截断和只读限制测试通过
 - [ ] T8 LangGraph Research Agent — 依赖：T7 — 验证：至少完成一条 Research→Tool→Verify→Write 轨迹
@@ -376,3 +387,4 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-09 | 完成 T3 认证、RBAC 与审计骨架 | 5、7、8、14 | T3 | 29 项测试、真实登录、当前用户、401 拒绝和 auth.* 审计持久化通过 |
 | 2026-10-09 | 完成 T4 GitHub/Hugging Face Collector | 4、5、9、14 | T4 | 36 项测试、真实双源采集、重复采集幂等、来源和成功审计验证通过 |
 | 2026-10-09 | 修复 T3/T4 审查问题 | 2、4、5、9、14 | T3/T4 复审 | 40 项测试、认证时序均一化、生产密钥保护、API 异常统一、并发 Upsert 和唯一数据源通过验证 |
+| 2026-10-12 | 完成 T5 每日快照、候选排序与 CLI | 9、14 | T5 | 44 项测试、Ruff、mypy、真实 4 仓库 MySQL 冒烟、重复快照和排序幂等、窗口增量与负分保护通过 |
