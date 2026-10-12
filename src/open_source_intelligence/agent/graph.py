@@ -30,8 +30,10 @@ from open_source_intelligence.agent.errors import (
     AGENT_DRAFT_INVALID,
     AGENT_MODEL_UNAVAILABLE,
     AGENT_NO_CANDIDATES,
+    AGENT_PROMPT_INJECTION,
     AGENT_WRITE_FAILED,
 )
+from open_source_intelligence.agent.guards import GuardDecision, guard_tool_payload
 from open_source_intelligence.agent.llm.base import ModelClient
 from open_source_intelligence.agent.llm.errors import ModelClientError
 from open_source_intelligence.agent.llm.messages import ChatMessage, ToolSchema
@@ -51,6 +53,7 @@ from open_source_intelligence.agent.tools.truncation import content_digest
 from open_source_intelligence.agent.writing import DraftPayloadError, parse_draft_payload
 
 SAVE_SECTION_TOOL = "save_report_section"
+TOKEN_DEGRADE_PERCENT = 80
 
 _INTENT_BY_TOOL: dict[str, ResearchIntent] = {
     "get_repository_profile": "profile",
@@ -112,16 +115,34 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _tool_message_content(result: ToolResult[Any]) -> str:
+def _tool_message_content(result: ToolResult[Any]) -> tuple[str, GuardDecision]:
     """Render one tool result as the JSON the model reads back."""
     if result.ok:
-        return json.dumps(_jsonable(result.data), ensure_ascii=False)
+        payload, decision = guard_tool_payload(_jsonable(result.data))
+        return json.dumps(payload, ensure_ascii=False), decision
     if result.error is not None:
-        return json.dumps(
-            {"error": {"code": result.error.code, "message": result.error.message}},
-            ensure_ascii=False,
+        return (
+            json.dumps(
+                {"error": {"code": result.error.code, "message": result.error.message}},
+                ensure_ascii=False,
+            ),
+            GuardDecision(False, 0),
         )
-    return json.dumps({"error": {"code": "UNKNOWN", "message": "tool failed"}})
+    return (
+        json.dumps({"error": {"code": "UNKNOWN", "message": "tool failed"}}),
+        GuardDecision(False, 0),
+    )
+
+
+def _total_tokens(state: AgentState) -> int:
+    """Return the current total token count recorded in the graph state."""
+    return state.get("prompt_tokens", 0) + state.get("completion_tokens", 0)
+
+
+def _token_budget_at_or_above(state: AgentState, percent: int) -> bool:
+    """Return whether the configured token budget reached the given percentage."""
+    max_tokens = state.get("max_tokens", 0)
+    return max_tokens > 0 and _total_tokens(state) * 100 >= max_tokens * percent
 
 
 def _observation_summary(observation: ToolObservation) -> str:
@@ -138,6 +159,17 @@ def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     loop_count = state.get("loop_count", 0)
     model_call_count = state.get("model_call_count", 0)
     max_model_calls = state.get("max_model_calls", 0)
+    prompt_tokens = state.get("prompt_tokens", 0)
+    completion_tokens = state.get("completion_tokens", 0)
+
+    if state.get("guard_triggered"):
+        deps.recorder.record(
+            step_type="plan",
+            status="skipped",
+            summary="prompt guard triggered; stopping further research calls",
+            latency_ms=_elapsed_ms(started),
+        )
+        return {"pending_tool_calls": [], "loop_count": loop_count + 1}
 
     if max_model_calls > 0 and model_call_count >= max_model_calls:
         deps.recorder.record(
@@ -146,7 +178,37 @@ def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             summary="model call budget exhausted; stopping research",
             latency_ms=_elapsed_ms(started),
         )
-        return {"pending_tool_calls": [], "loop_count": loop_count + 1}
+        return {
+            "pending_tool_calls": [],
+            "loop_count": loop_count + 1,
+            "budget_degraded": True,
+        }
+
+    if _token_budget_at_or_above(state, 100):
+        deps.recorder.record(
+            step_type="plan",
+            status="skipped",
+            summary="token budget exhausted; stopping research",
+            latency_ms=_elapsed_ms(started),
+        )
+        return {
+            "pending_tool_calls": [],
+            "loop_count": loop_count + 1,
+            "budget_degraded": True,
+        }
+
+    if _token_budget_at_or_above(state, TOKEN_DEGRADE_PERCENT):
+        deps.recorder.record(
+            step_type="plan",
+            status="degraded",
+            summary="token budget reached 80%; finishing evidence collection",
+            latency_ms=_elapsed_ms(started),
+        )
+        return {
+            "pending_tool_calls": [],
+            "loop_count": loop_count + 1,
+            "budget_degraded": True,
+        }
 
     messages = list(state.get("messages") or [])
     try:
@@ -182,7 +244,9 @@ def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         output_digest=digest_text(json.dumps(_jsonable(list(turn.tool_calls)), ensure_ascii=False)),
         latency_ms=_elapsed_ms(started),
     )
-    return {
+    next_prompt_tokens = prompt_tokens + turn.prompt_tokens
+    next_completion_tokens = completion_tokens + turn.completion_tokens
+    next_state: dict[str, Any] = {
         "messages": [
             ChatMessage(role="assistant", content=turn.text, tool_calls=turn.tool_calls),
         ],
@@ -190,8 +254,15 @@ def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         "research_plan": plan,
         "loop_count": loop_count + 1,
         "model_call_count": model_call_count + 1,
+        "prompt_tokens": next_prompt_tokens,
+        "completion_tokens": next_completion_tokens,
         "estimated_cost": state.get("estimated_cost", Decimal("0")) + turn.cost,
     }
+    token_total = next_prompt_tokens + next_completion_tokens
+    max_tokens = state.get("max_tokens", 0)
+    if max_tokens > 0 and token_total * 100 >= max_tokens * TOKEN_DEGRADE_PERCENT:
+        next_state["budget_degraded"] = True
+    return next_state
 
 
 def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
@@ -199,6 +270,7 @@ def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     started = time.perf_counter()
     calls = list(state.get("pending_tool_calls") or [])
     tool_call_count = state.get("tool_call_count", 0)
+    guard_triggered = bool(state.get("guard_triggered"))
     messages: list[ChatMessage] = []
     observations: list[ToolObservation] = []
 
@@ -206,12 +278,14 @@ def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         context = replace(deps.context, tool_call_count=tool_call_count)
         result = deps.registry.invoke(call.name, context, deps.session, call.arguments)
         tool_call_count += 1
+        content, guard_decision = _tool_message_content(result)
+        guard_triggered = guard_triggered or guard_decision.triggered
         messages.append(
             ChatMessage(
                 role="tool",
                 name=call.name,
                 tool_call_id=call.call_id,
-                content=_tool_message_content(result),
+                content=content,
             )
         )
         observations.append(
@@ -223,6 +297,7 @@ def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
                 truncated=result.meta.truncated,
                 error_code=None if result.error is None else result.error.code,
                 payload=result.data,
+                guard_triggered=guard_decision.triggered,
             )
         )
 
@@ -237,6 +312,7 @@ def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         "messages": messages,
         "last_observations": observations,
         "tool_call_count": tool_call_count,
+        "guard_triggered": guard_triggered,
     }
 
 
@@ -244,6 +320,7 @@ def _observe_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     """Summarize the latest tool outcomes into audit-friendly evidence rows."""
     started = time.perf_counter()
     observations = list(state.get("last_observations") or [])
+    guard_triggered = bool(state.get("guard_triggered"))
     evidence = [
         EvidenceRef(
             tool_name=observation.tool_name,
@@ -253,16 +330,18 @@ def _observe_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             truncated=observation.truncated,
             error_code=observation.error_code,
             summary=_observation_summary(observation),
+            guard_triggered=observation.guard_triggered,
         )
         for observation in observations
     ]
+    guard_triggered = guard_triggered or any(item.guard_triggered for item in evidence)
     deps.recorder.record(
         step_type="observe",
         status="ok",
         summary=f"absorbed {len(evidence)} observation(s)",
         latency_ms=_elapsed_ms(started),
     )
-    return {"evidence": evidence}
+    return {"evidence": evidence, "guard_triggered": guard_triggered}
 
 
 def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
@@ -275,6 +354,9 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     started = time.perf_counter()
     candidates = list(state.get("candidate_repo_ids") or [])
     evidence = list(state.get("evidence") or [])
+    guard_triggered = bool(state.get("guard_triggered")) or any(
+        item.guard_triggered for item in evidence
+    )
     profiles = {
         item.repo_id
         for item in evidence
@@ -309,6 +391,8 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         reasons.append("no prior report baseline was queried")
     if candidates and not content_repos:
         reasons.append("no cached repository content was read")
+    if guard_triggered:
+        reasons.append("untrusted content contained instruction-like text")
 
     result = VerificationResult(
         sufficient=not reasons,
@@ -317,6 +401,7 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         missing_repo_ids=missing,
         content_repo_ids=sorted(content_repos),
         has_prior_baseline=has_prior_baseline,
+        security_risk=guard_triggered,
     )
     deps.recorder.record(
         step_type="verify",
@@ -324,7 +409,7 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         summary=result.reason,
         latency_ms=_elapsed_ms(started),
     )
-    return {"verification": result}
+    return {"verification": result, "guard_triggered": guard_triggered}
 
 
 def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
@@ -334,6 +419,11 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     sufficient = verification is not None and verification.sufficient
     model_call_count = state.get("model_call_count", 0)
     max_model_calls = state.get("max_model_calls", 0)
+    prompt_tokens = state.get("prompt_tokens", 0)
+    completion_tokens = state.get("completion_tokens", 0)
+    max_tokens = state.get("max_tokens", 0)
+    budget_degraded = bool(state.get("budget_degraded"))
+    guard_triggered = bool(state.get("guard_triggered"))
 
     if not state.get("candidate_repo_ids"):
         deps.recorder.record(
@@ -377,6 +467,21 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "error_message": "model call budget exhausted before drafting",
         }
 
+    if max_tokens > 0 and prompt_tokens + completion_tokens >= max_tokens:
+        deps.recorder.record(
+            step_type="write",
+            status="skipped",
+            summary="token budget exhausted before drafting",
+            latency_ms=_elapsed_ms(started),
+        )
+        return {
+            "incomplete": True,
+            "status": "needs_review",
+            "error_code": AGENT_BUDGET_EXCEEDED,
+            "error_message": "token budget exhausted before drafting",
+            "budget_degraded": True,
+        }
+
     messages = list(state.get("messages") or [])
     try:
         turn = deps.client.complete(_draft_messages(messages, deps.draft_prompt), ())
@@ -393,6 +498,10 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "error_code": AGENT_MODEL_UNAVAILABLE,
             "error_message": exc.message,
             "model_call_count": model_call_count + 1,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "budget_degraded": budget_degraded,
+            "guard_triggered": guard_triggered,
         }
 
     try:
@@ -410,6 +519,10 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "error_code": AGENT_DRAFT_INVALID,
             "error_message": str(exc),
             "model_call_count": model_call_count + 1,
+            "prompt_tokens": prompt_tokens + turn.prompt_tokens,
+            "completion_tokens": completion_tokens + turn.completion_tokens,
+            "budget_degraded": budget_degraded,
+            "guard_triggered": guard_triggered,
         }
 
     # Chapter writes are deterministic and bounded by the report template, so they run
@@ -447,15 +560,38 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     )
     # A partially stored draft is not a finished draft: report it as needing a human instead
     # of letting the run look complete with fewer sections than the template requires.
-    write_error_code = AGENT_WRITE_FAILED if failures else None
-    write_error_message = f"{failures} section(s) could not be saved" if failures else None
+    next_prompt_tokens = prompt_tokens + turn.prompt_tokens
+    next_completion_tokens = completion_tokens + turn.completion_tokens
+    token_total = next_prompt_tokens + next_completion_tokens
+    budget_exceeded = max_tokens > 0 and token_total >= max_tokens
+    budget_limited = budget_degraded and not sufficient
+    if failures:
+        write_error_code: str | None = AGENT_WRITE_FAILED
+        write_error_message: str | None = f"{failures} section(s) could not be saved"
+    elif guard_triggered:
+        write_error_code = AGENT_PROMPT_INJECTION
+        write_error_message = "untrusted content contained instruction-like text"
+    elif budget_exceeded or budget_limited:
+        write_error_code = AGENT_BUDGET_EXCEEDED
+        write_error_message = "token budget stopped the research stage"
+    else:
+        write_error_code = None
+        write_error_message = None
     return {
         "messages": [ChatMessage(role="assistant", content=turn.text)],
         "draft_sections": saved,
         "tool_call_count": tool_call_count,
         "model_call_count": model_call_count + 1,
-        "incomplete": bool(failures) or not sufficient,
-        "status": "needs_review" if (failures or not sufficient) else "completed",
+        "prompt_tokens": next_prompt_tokens,
+        "completion_tokens": next_completion_tokens,
+        "budget_degraded": budget_degraded or budget_exceeded,
+        "guard_triggered": guard_triggered,
+        "incomplete": bool(failures) or not sufficient or guard_triggered or budget_exceeded,
+        "status": (
+            "needs_review"
+            if (failures or not sufficient or guard_triggered or budget_exceeded)
+            else "completed"
+        ),
         "error_code": write_error_code,
         "error_message": write_error_message,
     }
@@ -464,7 +600,11 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
 def _route_after_verify(state: AgentState) -> Literal["plan", "write"]:
     """Continue researching only while there is an unexhausted budget and a next step."""
     verification = state.get("verification")
+    if state.get("guard_triggered"):
+        return "write"
     if verification is not None and verification.sufficient:
+        return "write"
+    if state.get("budget_degraded"):
         return "write"
     if not state.get("pending_tool_calls"):
         return "write"
@@ -473,6 +613,8 @@ def _route_after_verify(state: AgentState) -> Literal["plan", "write"]:
     if state.get("model_call_count", 0) >= state.get("max_model_calls", 0):
         return "write"
     if state.get("tool_call_count", 0) >= state.get("max_tool_calls", 0):
+        return "write"
+    if _token_budget_at_or_above(state, 100):
         return "write"
     return "plan"
 

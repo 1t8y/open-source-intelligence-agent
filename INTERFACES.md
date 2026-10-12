@@ -1,7 +1,7 @@
 # 项目接口基线
 
-> 文档状态：待用户确认  
-> 文档版本：v0.6
+> 文档状态：实施基线（T1-T9 已对齐）
+> 文档版本：v0.7
 > 最后更新：2026-10-12
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -142,6 +142,16 @@ rank_all_topics(session, *, as_of_date: date) -> dict[int, int]
 ```
 
 CLI 入口为 `python -m open_source_intelligence.pipeline.cli`，支持 `snapshot`、`rank`、`all`、`daily` 和 `runs`。快照按 `(repository_id, snapshot_date)` 幂等；首日增量为 `NULL`，后续与最近历史快照求差。候选筛选只使用语言、关键词、最低 Star 和时间窗口；分数为 `max(0, star_growth + 2 * fork_growth + latest_stars / 1000)`。重复排序会替换该主题的现有候选链接，失败或不再命中过滤条件的旧候选不会残留。
+
+Agent Guard 接口：
+
+```text
+inspect_untrusted_text(text: str) -> GuardDecision
+sanitize_untrusted_text(text: str) -> tuple[str, GuardDecision]
+guard_tool_payload(payload: Any) -> tuple[Any, GuardDecision]
+```
+
+`AGENT_MAX_TOKENS` 是单次 Agent 运行的 Token 上限；达到 80% 时停止新增研究规划调用，达到 100% 时不再发起任何模型调用。不可信内容命中指令模式时，工具结果中的命中行替换为 `[BLOCKED_UNTRUSTED_INSTRUCTION]`，运行写 `AGENT_PROMPT_INJECTION` 并进入人工复核。
 
 Pipeline 运行记录接口：
 
@@ -379,6 +389,7 @@ draft
 | `VALIDATION_ERROR` | 请求或工具参数非法 |
 | `CONFLICT` | 唯一约束或状态机冲突 |
 | `AGENT_BUDGET_EXCEEDED` | 超出循环、工具或 Token 预算 |
+| `AGENT_PROMPT_INJECTION` | 不可信内容包含指令式文本，运行进入人工复核 |
 | `PUBLISH_POLICY_BLOCKED` | 报告不满足自动发布条件 |
 
 Agent 运行终态与错误码（T8）：
@@ -386,7 +397,8 @@ Agent 运行终态与错误码（T8）：
 ```text
 completed    证据充足、无任何错误码且 6 个草稿章节全部写入   -> pipeline_runs.status = succeeded
 needs_review AGENT_NO_CANDIDATES / AGENT_BUDGET_EXCEEDED /
-             AGENT_EVIDENCE_INCOMPLETE / AGENT_WRITE_FAILED
+             AGENT_EVIDENCE_INCOMPLETE / AGENT_WRITE_FAILED /
+             AGENT_PROMPT_INJECTION
              —— 结果需人工复核，不是异常              -> pipeline_runs.status = failed
 failed       AGENT_MODEL_UNAVAILABLE / AGENT_DRAFT_INVALID
              —— 传输、模型或载荷失败                  -> pipeline_runs.status = failed

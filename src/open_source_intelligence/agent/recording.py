@@ -83,12 +83,16 @@ class StepRecorder:
         loop_count: int,
         tool_call_count: int,
         model_call_count: int,
+        prompt_tokens: int,
+        completion_tokens: int,
         estimated_cost: Decimal,
     ) -> None:
         """Mirror the in-graph counters onto the run row for queryability."""
         self._agent_run.loop_count = loop_count
         self._agent_run.tool_call_count = tool_call_count
         self._agent_run.model_call_count = model_call_count
+        self._agent_run.prompt_tokens = prompt_tokens
+        self._agent_run.completion_tokens = completion_tokens
         self._agent_run.estimated_cost = estimated_cost
         self._session.commit()
 

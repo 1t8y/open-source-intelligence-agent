@@ -22,6 +22,7 @@ from open_source_intelligence.agent.errors import (
     AGENT_EVIDENCE_INCOMPLETE,
     AGENT_INTERNAL_ERROR,
     AGENT_NO_CANDIDATES,
+    AGENT_PROMPT_INJECTION,
     AGENT_WRITE_FAILED,
 )
 from open_source_intelligence.agent.graph import GraphDependencies, build_research_graph
@@ -62,6 +63,7 @@ REVIEW_REQUIRED_CODES = frozenset(
         AGENT_BUDGET_EXCEEDED,
         AGENT_EVIDENCE_INCOMPLETE,
         AGENT_NO_CANDIDATES,
+        AGENT_PROMPT_INJECTION,
         AGENT_WRITE_FAILED,
     }
 )
@@ -82,7 +84,11 @@ class AgentRunResult:
     loop_count: int
     tool_call_count: int
     model_call_count: int
+    prompt_tokens: int
+    completion_tokens: int
     estimated_cost: Decimal
+    budget_degraded: bool = False
+    guard_triggered: bool = False
     candidate_repo_ids: list[int] = field(default_factory=list)
     evidence_count: int = 0
     section_count: int = 0
@@ -100,7 +106,12 @@ class AgentRunResult:
             "loop_count": self.loop_count,
             "tool_call_count": self.tool_call_count,
             "model_call_count": self.model_call_count,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.prompt_tokens + self.completion_tokens,
             "estimated_cost": str(self.estimated_cost),
+            "budget_degraded": self.budget_degraded,
+            "guard_triggered": self.guard_triggered,
             "candidate_repo_ids": self.candidate_repo_ids,
             "evidence_count": self.evidence_count,
             "section_count": self.section_count,
@@ -142,6 +153,7 @@ def load_or_create_config(session: Session, settings: Settings) -> AgentConfig:
         max_loops=settings.agent_max_loops,
         max_model_calls=settings.agent_max_model_calls,
         max_tool_calls=settings.agent_max_tool_calls,
+        max_tokens=settings.agent_max_tokens,
         max_cost=settings.agent_max_cost,
         enabled=True,
     )
@@ -345,6 +357,7 @@ def run_research_agent(
         "max_loops": config.max_loops,
         "max_model_calls": config.max_model_calls,
         "max_tool_calls": config.max_tool_calls,
+        "max_tokens": config.max_tokens,
         "research_plan": [],
         "evidence": [],
         "draft_sections": [],
@@ -369,7 +382,11 @@ def run_research_agent(
         "loop_count": 0,
         "tool_call_count": 0,
         "model_call_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
         "estimated_cost": Decimal("0"),
+        "budget_degraded": False,
+        "guard_triggered": False,
         "status": "running",
         "error_code": None,
         "error_message": None,
@@ -385,6 +402,8 @@ def run_research_agent(
         loop_count=final_state.get("loop_count", 0),
         tool_call_count=final_state.get("tool_call_count", 0),
         model_call_count=final_state.get("model_call_count", 0),
+        prompt_tokens=final_state.get("prompt_tokens", 0),
+        completion_tokens=final_state.get("completion_tokens", 0),
         estimated_cost=final_state.get("estimated_cost", Decimal("0")),
     )
     status, error_code = _terminal_status(final_state)
@@ -401,7 +420,11 @@ def run_research_agent(
         loop_count=final_state.get("loop_count", 0),
         tool_call_count=final_state.get("tool_call_count", 0),
         model_call_count=final_state.get("model_call_count", 0),
+        prompt_tokens=final_state.get("prompt_tokens", 0),
+        completion_tokens=final_state.get("completion_tokens", 0),
         estimated_cost=final_state.get("estimated_cost", Decimal("0")),
+        budget_degraded=bool(final_state.get("budget_degraded")),
+        guard_triggered=bool(final_state.get("guard_triggered")),
         candidate_repo_ids=candidate_ids,
         evidence_count=len(final_state.get("evidence") or []),
         section_count=len(sections),

@@ -48,17 +48,31 @@ def downgrade() -> None:
     op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{TOPIC_SCOPE_CHECK}`"))
     op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{RUN_TYPE_CHECK}`"))
     op.execute(
-        sa.text(
-            f"ALTER TABLE `pipeline_runs` ADD CONSTRAINT `{RUN_TYPE_CHECK}` "
-            "CHECK (`run_type` IN ('collect', 'snapshot', 'agent', 'publish'))"
-        )
-    )
-    op.execute(
         sa.text("DELETE FROM `pipeline_runs` WHERE `topic_id` IS NULL"),
+    )
+    # MySQL refuses to change a column that is still referenced by a foreign key.
+    op.drop_constraint(
+        "fk_pipeline_runs_topic_id_topics",
+        "pipeline_runs",
+        type_="foreignkey",
     )
     op.alter_column(
         "pipeline_runs",
         "topic_id",
         existing_type=mysql.BIGINT(unsigned=True),
         nullable=False,
+    )
+    op.create_foreign_key(
+        "fk_pipeline_runs_topic_id_topics",
+        "pipeline_runs",
+        "topics",
+        ["topic_id"],
+        ["id"],
+        ondelete="RESTRICT",
+    )
+    op.execute(
+        sa.text(
+            f"ALTER TABLE `pipeline_runs` ADD CONSTRAINT `{RUN_TYPE_CHECK}` "
+            "CHECK (`run_type` IN ('collect', 'snapshot', 'agent', 'publish'))"
+        )
     )

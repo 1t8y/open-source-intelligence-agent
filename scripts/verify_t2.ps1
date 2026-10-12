@@ -28,6 +28,9 @@ $temporaryDatabase = 'open_source_intelligence_t2_verify'
 $encodedRootPassword = [uri]::EscapeDataString($envValues['MYSQL_ROOT_PASSWORD'])
 $temporaryDatabaseUrl = "mysql+pymysql://root:$encodedRootPassword@mysql:3306/${temporaryDatabase}?charset=utf8mb4"
 $composeArgs = @('compose', '--env-file', '.env.example', '-f', 'infra/docker-compose.yml')
+$expectedTableCount = python -c "import sys; sys.path.insert(0, 'src'); from open_source_intelligence.persistence import models; from open_source_intelligence.persistence.base import Base; print(len(Base.metadata.tables) + 1)"
+Assert-LastCommandSucceeded 'expected table count'
+$expectedTableCount = [int]$expectedTableCount.Trim()
 
 Write-Host '==> Python tests'
 python -m pytest tests -q
@@ -60,8 +63,8 @@ try {
 
     $tableCount = docker @composeArgs exec -T mysql sh -lc "mysql -uroot -p`"`$MYSQL_ROOT_PASSWORD`" -N -e `"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$temporaryDatabase';`""
     Assert-LastCommandSucceeded 'count tables after upgrade'
-    if ([int]$tableCount.Trim() -ne 11) {
-        throw "Expected 11 tables after upgrade, found $tableCount"
+    if ([int]$tableCount.Trim() -ne $expectedTableCount) {
+        throw "Expected $expectedTableCount tables after upgrade, found $tableCount"
     }
 
     Write-Host '==> Check schema drift'

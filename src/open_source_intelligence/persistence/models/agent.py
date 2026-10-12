@@ -35,6 +35,7 @@ class AgentConfig(Base):
         CheckConstraint("max_loops > 0", name="max_loops_positive"),
         CheckConstraint("max_model_calls > 0", name="max_model_calls_positive"),
         CheckConstraint("max_tool_calls > 0", name="max_tool_calls_positive"),
+        CheckConstraint("max_tokens > 0", name="max_tokens_positive"),
         CheckConstraint("max_cost >= 0", name="max_cost_nonnegative"),
         UniqueConstraint("name", "version"),
     )
@@ -49,6 +50,7 @@ class AgentConfig(Base):
     max_loops: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
     max_model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
     max_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=12000)
     max_cost: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -70,6 +72,8 @@ class AgentRun(Base):
         CheckConstraint("loop_count >= 0", name="loop_count_nonnegative"),
         CheckConstraint("tool_call_count >= 0", name="tool_call_count_nonnegative"),
         CheckConstraint("model_call_count >= 0", name="model_call_count_nonnegative"),
+        CheckConstraint("prompt_tokens >= 0", name="prompt_tokens_nonnegative"),
+        CheckConstraint("completion_tokens >= 0", name="completion_tokens_nonnegative"),
         CheckConstraint("estimated_cost >= 0", name="estimated_cost_nonnegative"),
         CheckConstraint(
             "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
@@ -102,6 +106,8 @@ class AgentRun(Base):
     loop_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tool_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     model_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     estimated_cost: Mapped[Decimal] = mapped_column(
         Numeric(10, 6),
         nullable=False,

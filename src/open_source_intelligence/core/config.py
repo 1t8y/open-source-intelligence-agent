@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     agent_max_loops: int = Field(default=4, ge=1, le=20)
     agent_max_model_calls: int = Field(default=6, ge=1, le=50)
     agent_max_tool_calls: int = Field(default=10, ge=1, le=100)
+    agent_max_tokens: int = Field(default=12000, ge=1, le=1_000_000)
     agent_max_cost: Decimal = Field(default=Decimal("0.50"), ge=0)
     agent_max_candidates: int = Field(default=5, ge=1, le=30)
     agent_request_timeout_seconds: int = Field(default=60, ge=1, le=600)

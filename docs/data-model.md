@@ -196,6 +196,7 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 | `max_loops` | INT | NOT NULL | 最大循环 |
 | `max_model_calls` | INT | NOT NULL | 最大模型调用 |
 | `max_tool_calls` | INT | NOT NULL | 最大工具调用 |
+| `max_tokens` | INT | NOT NULL DEFAULT 12000 | 单次运行最大 Token |
 | `max_cost` | DECIMAL(10,6) | NOT NULL | 最大费用 |
 | `enabled` | TINYINT(1) | NOT NULL | 是否启用 |
 | `created_at` | DATETIME(6) | NOT NULL | UTC |
@@ -216,6 +217,8 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 | `loop_count` | INT | NOT NULL DEFAULT 0 |
 | `tool_call_count` | INT | NOT NULL DEFAULT 0 |
 | `model_call_count` | INT | NOT NULL DEFAULT 0 |
+| `prompt_tokens` | INT | NOT NULL DEFAULT 0 |
+| `completion_tokens` | INT | NOT NULL DEFAULT 0 |
 | `estimated_cost` | DECIMAL(10,6) | NOT NULL DEFAULT 0 |
 | `publish_mode` | VARCHAR(32) | NULL |
 | `decision_reason_json` | JSON | NULL |
@@ -393,6 +396,7 @@ T7 新增。草稿内的章节版本，幂等保存与版本递增都在这里�
 - 用户状态、数据范围、角色代码、审计结果、主题发布模式和 Pipeline 状态由数据库 CHECK 约束限制为文档定义的合法值。
 - Pipeline 运行的 `agent` 和 `publish` 类型必须绑定主题；`collect`、`snapshot`、`rank` 允许全局运行。
 - 仓库 star/fork、快照 star/fork/open issues、主题 star/window/candidate 阈值、候选 score/rank 和 Pipeline attempt 由数据库 CHECK 约束保证非负或正数范围。
+- `agent_configs.max_tokens` 必须为正数；`agent_runs.prompt_tokens` 与 `completion_tokens` 必须非负。
 - 审计日志、仓库快照和主题候选关系的 `created_at` 由 ORM 使用 UTC 时间自动填充；业务明确需要时可显式覆盖。
 - Agent 配置唯一键为 `(name, version)`；`agent_runs` 必须绑定 `pipeline_run_id`、`topic_id` 和 `agent_config_id`。
 - 每个 `agent_run` 最多一个 `report_drafts` 行；`report_sections` 在草稿内按 `(report_draft_id, section_key, version)` 唯一，并可用 `(report_draft_id, section_key, content_digest)` 做幂等判定。

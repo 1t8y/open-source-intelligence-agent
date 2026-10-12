@@ -33,6 +33,11 @@ def _state(**overrides: Any) -> AgentState:
         "max_model_calls": 6,
         "tool_call_count": 0,
         "max_tool_calls": 10,
+        "max_tokens": 1000,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "budget_degraded": False,
+        "guard_triggered": False,
         "verification": None,
     }
     state.update(overrides)
@@ -77,4 +82,37 @@ def test_stops_when_any_budget_is_exhausted(overrides: dict[str, int]) -> None:
 
 def test_stops_without_a_verification_result() -> None:
     state = _state(verification=None, pending_tool_calls=[])
+    assert _route_after_verify(state) == "write"
+
+
+def test_routes_to_write_when_the_token_budget_is_degraded() -> None:
+    """At 80% the graph keeps existing evidence but stops further planning."""
+    state = _state(
+        verification=_verification(sufficient=False),
+        pending_tool_calls=[_call()],
+        prompt_tokens=80,
+        max_tokens=100,
+        budget_degraded=True,
+    )
+    assert _route_after_verify(state) == "write"
+
+
+def test_stops_when_the_token_budget_is_exhausted() -> None:
+    """A fully exhausted Token budget may not trigger another model call."""
+    state = _state(
+        verification=_verification(sufficient=False),
+        pending_tool_calls=[_call()],
+        prompt_tokens=100,
+        max_tokens=100,
+    )
+    assert _route_after_verify(state) == "write"
+
+
+def test_routes_to_write_when_prompt_guard_is_triggered() -> None:
+    """Untrusted instructions stop research even if evidence remains incomplete."""
+    state = _state(
+        verification=_verification(sufficient=False),
+        pending_tool_calls=[_call()],
+        guard_triggered=True,
+    )
     assert _route_after_verify(state) == "write"

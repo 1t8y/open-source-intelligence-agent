@@ -39,6 +39,7 @@ class ToolObservation(StrictModel):
     truncated: bool
     error_code: str | None = None
     payload: Any = None
+    guard_triggered: bool = False
 
 
 class EvidenceRef(StrictModel):
@@ -51,6 +52,7 @@ class EvidenceRef(StrictModel):
     truncated: bool
     error_code: str | None = None
     summary: str = ""
+    guard_triggered: bool = False
 
 
 class VerificationResult(StrictModel):
@@ -62,6 +64,7 @@ class VerificationResult(StrictModel):
     missing_repo_ids: list[int]
     content_repo_ids: list[int] = Field(default_factory=list)
     has_prior_baseline: bool = False
+    security_risk: bool = False
 
 
 class AgentState(TypedDict, total=False):
@@ -76,6 +79,7 @@ class AgentState(TypedDict, total=False):
     max_loops: int
     max_model_calls: int
     max_tool_calls: int
+    max_tokens: int
     research_plan: Annotated[list[ResearchTask], operator.add]
     evidence: Annotated[list[EvidenceRef], operator.add]
     draft_sections: Annotated[list[SectionRef], operator.add]
@@ -86,7 +90,11 @@ class AgentState(TypedDict, total=False):
     loop_count: int
     tool_call_count: int
     model_call_count: int
+    prompt_tokens: int
+    completion_tokens: int
     estimated_cost: Decimal
+    budget_degraded: bool
+    guard_triggered: bool
     status: str
     error_code: str | None
     error_message: str | None

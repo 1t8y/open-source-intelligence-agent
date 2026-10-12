@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-12 ｜ 文档版本：v0.8.2
+> 最后更新：2026-10-12 ｜ 文档版本：v0.8.3
 
 ## 1. 概述与目标
 
@@ -249,7 +249,7 @@ VerificationResult  { sufficient: boolean, reason: string, covered_repo_ids: lis
 - 默认限制：单次运行最多 4 个研究循环、6 次模型调用、10 次工具调用，具体值进入 `agent_configs`。
 - 预算达到 80% 时降级；达到 100% 时停止新增模型调用，生成带未完成说明的草稿或进入人工审核。
 
-**实现状态**：T8 已实现「100% 硬停止 → 写出草稿 → 终态 `needs_review`」，三档预算落到 `agent_configs` 的 `max_loops` / `max_model_calls` / `max_tool_calls`。**尚未实现**：80% 降级行为（属于 T9）、廉价模型分流与画像/摘要缓存复用 —— T8 单次运行只使用一个 `AGENT_MODEL`。
+**实现状态**：T8 已实现「100% 硬停止 → 写出草稿 → 终态 `needs_review`」，三档预算落到 `agent_configs` 的 `max_loops` / `max_model_calls` / `max_tool_calls`。T9 已补齐 `max_tokens`、Prompt/Completion Token 计数和 80% 降级：达到 80% 后停止新增研究规划调用，保留撰写预算；达到 100% 后不再发起新的模型调用。**尚未实现**：廉价模型分流与画像/摘要缓存复用 —— 当前单次运行只使用一个 `AGENT_MODEL`。
 
 ### 8.5 发布策略
 
@@ -364,6 +364,17 @@ T8 已实现以下能力：
 
 修复后 T5 与 T6 的离线端到端验证均通过：T5 复用 22 个已入库仓库完成快照幂等、窗口增量与排序断言；T6 完成真实 Celery 成功调度、独立 worker 的两次失败重试（attempt 轨迹 `1,2`）、Beat 准点派发与 CLI 运行查询。
 
+### 9.6 T9 Prompt Guard 与运行预算
+
+T9 已实现以下能力：
+
+- `agent/guards.py` 在不可信内容进入模型对话前扫描指令式文本；命中行替换为 `[BLOCKED_UNTRUSTED_INSTRUCTION]`，剩余内容包裹在 `<untrusted_content>` 中。
+- Prompt Guard 只作用于 `untrusted=true` 的内容载荷，不修改指标、画像或历史报告等结构化数据；越权工具仍由 T7 白名单、ACL 和 Schema 在运行时拒绝。
+- 命中风险时状态记录 `guard_triggered=true`，`verification.security_risk=true`，跳过后续研究回边，终态写 `AGENT_PROMPT_INJECTION` 并进入人工复核。
+- `agent_configs.max_tokens` 配置单次运行 Token 上限；`agent_runs.prompt_tokens` 与 `completion_tokens` 记录每个运行实际观测到的用量。
+- 达到 80% 时 `budget_degraded=true`，不再调用模型继续研究，但允许用剩余预算完成草稿；达到 100% 时在任何新模型调用前停止并标记 `AGENT_BUDGET_EXCEEDED`。
+- `AGENT_MAX_TOKENS` 默认 12000，随 `AGENT_MAX_LOOPS`、`AGENT_MAX_MODEL_CALLS` 和 `AGENT_MAX_TOOL_CALLS` 一起进入 Agent 配置与环境模板。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -442,7 +453,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T6 Celery 调度与 PipelineRun — 依赖：T3/T5 — 验证：定时任务可执行、失败可重试、状态可查询
 - [x] T7 Tool Layer 与数据契约 — 依赖：T2/T5 — 验证：工具 Schema、ACL、截断和只读限制测试通过
 - [x] T8 LangGraph Research Agent — 依赖：T7 — 验证：完成一条 Research→Tool→Observe→Verify→Write 轨迹，17 步、13 次工具调用、6 个草稿章节，两条降级路径均干净收敛
-- [ ] T9 Prompt Guard 与运行预算 — 依赖：T8 — 验证：循环、工具、Token 超限时安全停止
+- [x] T9 Prompt Guard 与运行预算 — 依赖：T8 — 验证：循环、工具、Token 超限时安全停止
 - [ ] T10 报告生成与引用 — 依赖：T8 — 验证：关键数字可追溯，引用链接有效
 - [ ] T11 Verifier 与发布策略 — 依赖：T10 — 验证：`AUTO`、`AUTO_WITH_DELAY`、`MANUAL` 状态机测试通过
 - [ ] T12 报告 API 与管理界面 — 依赖：T3/T11 — 验证：可查看、编辑、审核、发布和回退报告
@@ -486,3 +497,5 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-12 | 完成 T8 LangGraph Research Agent：有界五节点图与条件回边、三档预算硬停止、可插拔模型 Adapter（默认确定性离线桩）、运行时编排与记录、运行历史 CLI、Celery 任务（不入 beat 调度） | 5、8.2、8.3、9.4、10、14 | T8 | 171 项测试、Ruff、mypy 74 文件 0 错误；真实 MySQL 冒烟 17 步 / 13 次工具调用 / 6 个草稿章节 / 2 个候选仓库，步类型齐全、只读工具零写入；无候选（`needs_review`）与模型不可用（`failed`）两条降级路径通过；新增依赖 `langgraph>=1.0,<2` 与 13 个 `AGENT_*` 配置项，无数据库迁移 |
 | 2026-10-12 | T5–T8 复查修复四处缺陷：只读写保护改为回滚、撰写阶段启用 `draft` Prompt、章节写入失败计入 `AGENT_WRITE_FAILED`、逃逸异常收口为 `AGENT_INTERNAL_ERROR` | 9.3、9.4、9.5、15 | T5–T8 复查 | 新增 5 项回归测试（先证明修复前失败）；176 项测试、Ruff check+format、mypy 74 文件 0 错误；真实 MySQL 冒烟复跑通过 |
 | 2026-10-12 | 修复两处验证脚本缺陷：`verify_t5.ps1` / `verify_t6.ps1` 新增默认关闭的 `-Offline` 开关；`verify_t6.ps1` 的运行查询断言改为按 attempt 排序 | 9.5、15 | T5–T8 复查 | T5 离线端到端通过（repositories=22, candidates=22）；T6 离线端到端通过（run_rows=6, attempts=1,3, retry_attempts=1,2）；不带 `-Offline` 的默认行为与原先一致 |
+| 2026-10-12 | 完成 T9 Prompt Guard、80%/100% Token 预算与 Token 计数持久化 | 8.4、9.6、14 | T9 | 184 项测试、Ruff、mypy；迁移 `c4a9e2f1d6b8` 升级和 drift 检查通过；MySQL 冒烟验证正常 Token 持久化、80% 降级撰写、100% 硬停止和注入风险复核均通过 |
+| 2026-10-12 | 修复 T6 迁移回滚的 MySQL 外键顺序，并让 T2 验证脚本按 ORM 元数据动态计算表数量 | 9.2、14、15 | T2/T6 回归 | `verify_t2.ps1` 完成升级、回滚 base、再次升级；19 张 ORM 表加 `alembic_version` 共 20 张，临时库已清理 |
