@@ -163,6 +163,7 @@ def generate_report(
         report = Report(
             agent_run_id=agent_run_id,
             topic_id=draft.topic_id,
+            owner_id=topic.created_by,
             title=resolved_title,
             current_version=1,
             content_markdown=markdown,
@@ -180,6 +181,8 @@ def generate_report(
             raise ReportGenerationError(
                 f"report {report.id} is not editable in status {report.status}"
             )
+        if report.owner_id is None:
+            report.owner_id = topic.created_by
         report.title = resolved_title
         report.topic_id = draft.topic_id
         report.publish_mode = topic.publish_mode

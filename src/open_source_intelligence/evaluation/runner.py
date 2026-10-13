@@ -33,6 +33,7 @@ from open_source_intelligence.agent.llm.base import ModelClient
 from open_source_intelligence.agent.profile import profile_for_target
 from open_source_intelligence.agent.runtime import load_or_create_config
 from open_source_intelligence.core.config import Settings, get_settings
+from open_source_intelligence.core.logging import redact_text
 from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.agent import AgentConfig
 from open_source_intelligence.persistence.models.evaluation import (
@@ -378,7 +379,7 @@ def run_evaluation(
                     case_key=case.case_key,
                     status="failed",
                     error_code="EVAL_CASE_ERROR",
-                    error_message=f"{exc.__class__.__name__}: {exc}"[:500],
+                    error_message=redact_text(f"{exc.__class__.__name__}: {exc}")[:500],
                 )
             else:
                 if output.succeeded:

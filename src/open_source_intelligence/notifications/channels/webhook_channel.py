@@ -11,12 +11,55 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import socket
+from ipaddress import ip_address
+from urllib.parse import SplitResult, urlsplit
 
 import httpx
 
+from ..errors import PushTargetNotAllowed
 from .base import MAX_DETAIL_LENGTH, DeliveryReceipt, OutboundMessage
 
 SIGNATURE_HEADER = "X-OSIA-Signature"
+
+
+def validate_webhook_url(destination: str) -> SplitResult:
+    """Validate the destination shape without performing DNS resolution."""
+    parts = urlsplit(destination)
+    if parts.scheme != "https" or not parts.hostname:
+        raise PushTargetNotAllowed("webhook destinations must be absolute HTTPS URLs")
+    if parts.username is not None or parts.password is not None:
+        raise PushTargetNotAllowed("webhook destinations must not contain credentials")
+    try:
+        _ = parts.port
+    except ValueError as exc:
+        raise PushTargetNotAllowed("webhook destination contains an invalid port") from exc
+    return parts
+
+
+def validate_webhook_destination(destination: str) -> None:
+    """Reject webhook URLs that resolve to loopback, private, or other non-public addresses."""
+    parts = validate_webhook_url(destination)
+    hostname = parts.hostname
+    assert hostname is not None
+    try:
+        addresses = {
+            info[4][0]
+            for info in socket.getaddrinfo(
+                hostname,
+                parts.port or 443,
+                type=socket.SOCK_STREAM,
+            )
+        }
+    except socket.gaierror as exc:
+        raise PushTargetNotAllowed(f"webhook host cannot be resolved: {hostname}") from exc
+    if not addresses:
+        raise PushTargetNotAllowed(f"webhook host cannot be resolved: {hostname}")
+    for address in addresses:
+        if not ip_address(address).is_global:
+            raise PushTargetNotAllowed(
+                f"webhook destination resolves to a non-public address: {hostname}"
+            )
 
 
 def sign_body(secret: str, body: bytes) -> str:
@@ -44,6 +87,7 @@ class WebhookChannel:
 
     def send(self, *, destination: str, message: OutboundMessage) -> DeliveryReceipt:
         """POST one JSON notification, signing it when a secret is configured."""
+        validate_webhook_destination(destination)
         body = json.dumps(message.to_dict(), ensure_ascii=False, sort_keys=True).encode()
         headers = {"Content-Type": "application/json"}
         if self._signing_secret is not None:
@@ -54,6 +98,8 @@ class WebhookChannel:
                 content=body,
                 headers=headers,
                 timeout=self._timeout,
+                follow_redirects=False,
+                trust_env=False,
             )
         except httpx.HTTPError as exc:
             return DeliveryReceipt(

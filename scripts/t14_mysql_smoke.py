@@ -269,7 +269,9 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
         delete(RepositoryContent).where(RepositoryContent.repository_id.in_(repository_ids))
     )
     session.execute(delete(RepoSnapshot).where(RepoSnapshot.repository_id.in_(repository_ids)))
-    session.execute(delete(Repository).where(Repository.id.in_(repository_ids)))
+    session.execute(
+        delete(Repository).where(Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%"))
+    )
     session.execute(delete(Report).where(Report.title == REPORT_TITLE))
 
     ids = list(actor_ids.values())

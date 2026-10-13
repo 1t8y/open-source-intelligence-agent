@@ -256,6 +256,7 @@ def test_metadata_edit_does_not_append_a_version(
     assert outcome.version == before_version
     assert outcome.changed_fields == ("visibility",)
     assert report.visibility == "PRIVATE"
+    assert report.owner_id is not None
 
 
 def test_edit_is_refused_outside_the_draft_queue(

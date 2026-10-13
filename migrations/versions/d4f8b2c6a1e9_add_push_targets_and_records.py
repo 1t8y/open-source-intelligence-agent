@@ -31,6 +31,23 @@ def uint64() -> sa.BigInteger:
     return sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
+def _has_check(table_name: str, constraint_name: str) -> bool:
+    """Return whether one CHECK constraint already exists."""
+    value = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT COUNT(*) FROM information_schema.table_constraints "
+                "WHERE constraint_schema = DATABASE() AND table_name = :table_name "
+                "AND constraint_name = :constraint_name AND constraint_type = 'CHECK'"
+            ),
+            {"table_name": table_name, "constraint_name": constraint_name},
+        )
+        .scalar_one()
+    )
+    return bool(value)
+
+
 def upgrade() -> None:
     """Create the push allowlist and delivery trail, and register the push run type.
 
@@ -154,24 +171,16 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop the push tables and unregister the push run type."""
-    op.drop_index("ix_report_pushes_status_updated", table_name="report_pushes")
-    op.drop_index("ix_report_pushes_report_version", table_name="report_pushes")
-    op.execute(
-        sa.text("ALTER TABLE `report_pushes` DROP CHECK `ck_report_pushes_attempt_non_negative`")
-    )
-    op.execute(
-        sa.text("ALTER TABLE `report_pushes` DROP CHECK `ck_report_pushes_version_positive`")
-    )
-    op.execute(sa.text("ALTER TABLE `report_pushes` DROP CHECK `ck_report_pushes_status_valid`"))
-    op.drop_table("report_pushes")
-
-    op.drop_index("ix_push_targets_channel_enabled", table_name="push_targets")
-    op.execute(sa.text("ALTER TABLE `push_targets` DROP CHECK `ck_push_targets_channel_valid`"))
-    op.drop_table("push_targets")
+    existing = set(sa.inspect(op.get_bind()).get_table_names())
+    if "report_pushes" in existing:
+        op.drop_table("report_pushes")
+    if "push_targets" in existing:
+        op.drop_table("push_targets")
 
     # The narrower CHECK would reject the run rows this revision allowed, so they go first.
     op.execute(sa.text("DELETE FROM `pipeline_runs` WHERE `run_type` = 'push'"))
-    op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{RUN_TYPE_CHECK}`"))
+    if _has_check("pipeline_runs", RUN_TYPE_CHECK):
+        op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{RUN_TYPE_CHECK}`"))
     op.execute(
         sa.text(
             f"ALTER TABLE `pipeline_runs` ADD CONSTRAINT `{RUN_TYPE_CHECK}` "

@@ -214,23 +214,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop the evaluation tables in reverse dependency order."""
-    op.drop_index("ix_eval_results_run_status", table_name="eval_results")
-    op.execute(
-        sa.text("ALTER TABLE `eval_results` DROP CHECK `ck_eval_results_latency_nonnegative`")
-    )
-    op.execute(sa.text("ALTER TABLE `eval_results` DROP CHECK `ck_eval_results_cost_nonnegative`"))
-    op.execute(sa.text("ALTER TABLE `eval_results` DROP CHECK `ck_eval_results_human_score_range`"))
-    op.drop_table("eval_results")
-
-    op.drop_index("ix_eval_runs_status_created", table_name="eval_runs")
-    op.drop_index("ix_eval_runs_dataset_target", table_name="eval_runs")
-    op.execute(sa.text("ALTER TABLE `eval_runs` DROP CHECK `ck_eval_runs_finished_after_started`"))
-    op.execute(sa.text("ALTER TABLE `eval_runs` DROP CHECK `ck_eval_runs_status_valid`"))
-    op.execute(sa.text("ALTER TABLE `eval_runs` DROP CHECK `ck_eval_runs_target_type_valid`"))
-    op.drop_table("eval_runs")
-
-    op.drop_index("ix_eval_cases_dataset_enabled", table_name="eval_cases")
-    op.drop_table("eval_cases")
-
-    op.drop_index("ix_eval_datasets_name_created", table_name="eval_datasets")
-    op.drop_table("eval_datasets")
+    existing = set(sa.inspect(op.get_bind()).get_table_names())
+    for table_name in ("eval_results", "eval_runs", "eval_cases", "eval_datasets"):
+        if table_name in existing:
+            op.drop_table(table_name)

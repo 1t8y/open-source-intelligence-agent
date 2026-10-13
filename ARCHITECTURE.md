@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-13 ｜ 文档版本：v0.9.0
+> 最后更新：2026-10-14 ｜ 文档版本：v0.9.1
 
 ## 1. 概述与目标
 
@@ -599,3 +599,4 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-13 | 新增 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results` 四张表 | 6、7、9.11、14 | T14 | 迁移 `f1a7c9d3b582`（`down_revision` = `d4f8b2c6a1e9`）；`(name, version)` 与 `(dataset_id, case_key)` 与 `(eval_run_id, eval_case_id)` 三处唯一约束；三个门禁指标落真实列，其余指标存 `details_json`；`alembic heads` 单 head，`upgrade`/`downgrade` 的 MySQL DDL 离线渲染与 ORM 元数据逐字段一致 |
 | 2026-10-13 | 修正 T14 两处评测语义缺陷：① 消融此前相对 baseline 衡量，导致 `agent_no_tools` 的差值恒为 `0` —— 因为 baseline 本就在消融跌到的地板上，损失被完全掩盖；② 全部样本失败的 run 因 `gate_failures` 为空而 `passed=true` —— 把"没有测量"误判为"通过" | 9.11、14、15 | T14 | ① 引入参照链 `baseline_single_prompt <- agent_full <- agent_no_*`（`_reference_summary`），`agent_no_tools` 差值变为 `-1.0000`；② `passed` 增加 `scored_case_count > 0` 必要条件。两处均先复现后修，各补回归测试（`test_an_ablation_is_measured_against_the_agent_not_the_baseline`、`test_a_wholly_failed_run_cannot_pass`），并同步 `PROMOTION_TARGETS = ("agent_full",)` 使消融作为对照不否决发布 |
 | 2026-10-13 | 修正 T14 两处夹具缺陷（不影响产品代码）：评测夹具的种子快照日期落在数据集样本窗口之外，导致 `query_repo_metrics` 静默返回空、所有样本 `citation_coverage=0`；历史报告 `generated_at` 等于窗口结束时刻，不满足 `search_prior_reports` 的 `< before` 条件而对 Agent 不可见 | 9.11、15 | T14 | 快照日期与 `SMOKE_NOW` 移入 2026-10 窗口，历史报告改用独立时刻 `PRIOR_REPORT_AT`；给冒烟脚本补 `_validate_world` 自检（校验主题存在、快照落在窗口内、历史报告早于窗口结束、stars/forks 取值匹配）以防再次静默失效；新增回归测试 `test_the_prior_report_is_actually_visible_to_the_agent`，修正后单元夹具与冒烟的 `source_accuracy` 一致为 `0.9630` |
+| 2026-10-14 | T10-T14 复审：修复报告 owner 丢失、Webhook SSRF、推送/评测失败详情脱敏、推送重试串版本、wheel 未打包 Web 资源、README/评测数据集未入镜像，以及 MySQL 非事务 DDL 半完成后的迁移重入问题 | 5、7、9.9、9.10、9.11、11、14、15 | T10-T14 复审 | 定向回归测试、全量 pytest、Ruff、mypy 通过；`verify_t2` 完成全链升级/回滚/再次升级；`verify_t11`、`verify_t12`、`verify_t13`、`verify_t14` 全部通过；本地 wheel 清单验证 `web/templates` 和 `web/static` 均被打包 |

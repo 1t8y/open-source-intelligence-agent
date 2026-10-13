@@ -14,6 +14,10 @@ from open_source_intelligence.notifications.channels import (
     build_channel,
     sign_body,
 )
+from open_source_intelligence.notifications.channels.webhook_channel import (
+    validate_webhook_destination,
+    validate_webhook_url,
+)
 from open_source_intelligence.notifications.errors import (
     PushApprovalRequired,
     PushBlocked,
@@ -23,6 +27,7 @@ from open_source_intelligence.notifications.errors import (
     PushTargetNotAllowed,
 )
 from open_source_intelligence.notifications.service import (
+    PUSH_VERSION_SUPERSEDED,
     build_message,
     list_pushes,
     list_targets,
@@ -485,6 +490,81 @@ def test_the_webhook_signature_is_stable() -> None:
     assert sign_body("secret", b"{}") == sign_body("secret", b"{}")
     assert sign_body("secret", b"{}") != sign_body("other", b"{}")
     assert sign_body("secret", b"{}").startswith("sha256=")
+
+
+@pytest.mark.parametrize(
+    "destination",
+    (
+        "http://hooks.example.com/osia",
+        "https://user:password@hooks.example.com/osia",
+        "ftp://hooks.example.com/osia",
+    ),
+)
+def test_webhook_url_requires_https_without_embedded_credentials(destination: str) -> None:
+    """Webhook destinations cannot smuggle a downgrade or URL credentials."""
+    with pytest.raises(PushTargetNotAllowed):
+        validate_webhook_url(destination)
+
+
+def test_webhook_destination_rejects_private_addresses() -> None:
+    """A destination resolving to loopback must never reach an outbound request."""
+    with pytest.raises(PushTargetNotAllowed, match="non-public"):
+        validate_webhook_destination("https://127.0.0.1/internal")
+
+
+def test_failed_push_details_are_redacted_before_persistence(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """Transport diagnostics must not leave credentials in the delivery table."""
+    report = seed_pushable_report(session, workspace, status=PUBLISHED)
+    target = workspace.add_push_target(destination="ops@example.com")
+    notifier = StubChannel(fail_times=1, detail="token=super-secret-token")
+
+    outcome = push_report(
+        session,
+        report_id=report.id,
+        channel="email",
+        target_id=target.id,
+        notifier=notifier,
+    )
+    row = session.get(ReportPush, outcome.push_id)
+
+    assert row is not None
+    assert row.response_excerpt is not None
+    assert "super-secret-token" not in row.response_excerpt
+    assert row.error_message is not None
+    assert "super-secret-token" not in row.error_message
+
+
+def test_retry_does_not_send_a_superseded_version(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A retry row is for its original version; a newer version must supersede it."""
+    report = seed_pushable_report(session, workspace, status=PUBLISHED)
+    target = workspace.add_push_target(destination="ops@example.com")
+    settings = build_settings(push_max_attempts=3)
+    notifier = StubChannel(fail_times=1)
+    failed = push_report(
+        session,
+        report_id=report.id,
+        channel="email",
+        target_id=target.id,
+        settings=settings,
+        notifier=notifier,
+    )
+    report.current_version = 2
+    session.commit()
+
+    outcomes = retry_failed_pushes(session, settings=settings, notifier=notifier)
+    row = session.get(ReportPush, failed.push_id)
+
+    assert outcomes == []
+    assert notifier.attempts == 1
+    assert row is not None
+    assert row.error_code == PUSH_VERSION_SUPERSEDED
+    assert row.attempt == settings.push_max_attempts
 
 
 def test_build_channel_needs_credentials_for_live_email() -> None:

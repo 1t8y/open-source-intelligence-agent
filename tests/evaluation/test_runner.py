@@ -504,6 +504,32 @@ def test_a_run_row_is_created_even_when_every_case_fails(
     assert run.finished_at is not None
 
 
+def test_runner_redacts_provider_errors_before_persistence(
+    session: Session,
+    workspace: Workspace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider exception text may contain credentials and must not be stored verbatim."""
+    dataset_id = _seeded(session, workspace)
+
+    def broken_target(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("api_key=super-secret-provider-key")
+
+    monkeypatch.setattr("open_source_intelligence.evaluation.runner.run_target", broken_target)
+    run_evaluation(
+        session,
+        dataset_id=dataset_id,
+        target_types=[BASELINE_TARGET],
+        settings=SETTINGS,
+        now=WINDOW_END,
+    )
+    result = session.scalars(select(EvalResult)).first()
+    assert result is not None
+    assert result.details_json is not None
+    assert "super-secret-provider-key" not in str(result.details_json)
+
+
 def test_a_wholly_failed_run_cannot_pass(session: Session, workspace: Workspace) -> None:
     """No measurement is not a passing measurement.
 

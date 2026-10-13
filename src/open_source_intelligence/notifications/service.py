@@ -46,6 +46,7 @@ from open_source_intelligence.pipeline.runs import (
 from open_source_intelligence.security.audit import record_audit_event
 
 from .channels import DeliveryReceipt, NotificationChannel, OutboundMessage, build_channel
+from .channels.webhook_channel import validate_webhook_url
 from .errors import (
     PushApprovalRequired,
     PushBlocked,
@@ -71,6 +72,8 @@ REVIEW_APPROVE: Final[str] = "approve"
 MAX_DETAIL_LENGTH: Final[int] = 512
 #: Error code recorded when a transport refuses or fails a delivery.
 PUSH_ERROR_CODE: Final[str] = "PUSH_DELIVERY_FAILED"
+#: Error code recorded when a retry targets a version the report has already left behind.
+PUSH_VERSION_SUPERSEDED: Final[str] = "PUSH_VERSION_SUPERSEDED"
 #: How much of the report body travels with a notification.
 BODY_EXCERPT_CHARS: Final[int] = 800
 SUBJECT_PREFIX: Final[str] = "[开源技术情报]"
@@ -185,6 +188,8 @@ def _resolve_target(
         raise PushTargetNotAllowed(
             f"push target {target_id} uses channel {target.channel}, not {channel}"
         )
+    if target.channel == "webhook":
+        validate_webhook_url(target.destination)
     if report.visibility == PRIVATE_VISIBILITY and not target.allow_private:
         raise PushTargetNotAllowed(f"push target {target_id} is not cleared for PRIVATE reports")
     if report.sensitivity == CONFIDENTIAL_SENSITIVITY and not target.allow_confidential:
@@ -237,6 +242,7 @@ def push_report(
     settings: Settings | None = None,
     notifier: NotificationChannel | None = None,
     now: datetime | None = None,
+    version: int | None = None,
 ) -> PushOutcome:
     """Deliver one report version to one allowlisted target.
 
@@ -249,6 +255,12 @@ def push_report(
         raise PushDisabled("pushing is disabled by PUSH_ENABLED")
     moment = now or utc_now()
     report = _require_report(session, report_id)
+    target_version = report.current_version if version is None else version
+    if target_version != report.current_version:
+        raise PushBlocked(
+            f"push version {target_version} is not current; report {report.id} is at "
+            f"version {report.current_version}"
+        )
     if report.status not in PUSHABLE_STATUSES:
         allowed = " or ".join(sorted(PUSHABLE_STATUSES))
         raise PushBlocked(
@@ -263,7 +275,7 @@ def push_report(
 
     key = ReportPush.key_for(
         report_id=report.id,
-        version=report.current_version,
+        version=target_version,
         target_id=target.id,
     )
     existing = session.scalar(select(ReportPush).where(ReportPush.idempotency_key == key))
@@ -284,7 +296,7 @@ def push_report(
     row = existing or ReportPush(
         report_id=report.id,
         target_id=target.id,
-        version=report.current_version,
+        version=target_version,
         channel=target.channel,
         destination=target.destination,
         idempotency_key=key,
@@ -295,6 +307,9 @@ def push_report(
     )
     if existing is None:
         session.add(row)
+    else:
+        row.channel = target.channel
+        row.destination = target.destination
     pipeline_run = start_pipeline_run(
         session,
         run_type=PUSH_RUN_TYPE,
@@ -310,7 +325,9 @@ def push_report(
 
     receipt = _deliver(adapter, destination=target.destination, message=message)
     row.status = "sent" if receipt.ok else "failed"
-    row.response_excerpt = None if receipt.detail is None else receipt.detail[:MAX_DETAIL_LENGTH]
+    row.response_excerpt = (
+        None if receipt.detail is None else redact_text(receipt.detail)[:MAX_DETAIL_LENGTH]
+    )
     if receipt.ok:
         row.sent_at = moment
         row.error_code = None
@@ -462,6 +479,7 @@ def retry_push(
         settings=settings,
         notifier=notifier,
         now=now,
+        version=row.version,
     )
 
 
@@ -492,6 +510,32 @@ def retry_failed_pushes(
     ).all()
     outcomes: list[PushOutcome] = []
     for row in candidates:
+        report = session.get(Report, row.report_id)
+        if report is None or row.version != report.current_version:
+            row.attempt = resolved.push_max_attempts
+            row.error_code = PUSH_VERSION_SUPERSEDED
+            row.error_message = (
+                f"version {row.version} is no longer current"
+                if report is not None
+                else "report no longer exists"
+            )
+            row.updated_at = now or utc_now()
+            record_audit_event(
+                session,
+                action="report.push",
+                resource_type="report",
+                resource_id=str(row.report_id),
+                result="denied",
+                actor_id=actor_id,
+                metadata_json={
+                    "channel": row.channel,
+                    "target_id": row.target_id,
+                    "retry": True,
+                    "error_code": PUSH_VERSION_SUPERSEDED,
+                },
+            )
+            session.commit()
+            continue
         try:
             outcomes.append(
                 push_report(
@@ -503,6 +547,7 @@ def retry_failed_pushes(
                     settings=resolved,
                     notifier=notifier,
                     now=now,
+                    version=row.version,
                 )
             )
         except PushError as exc:

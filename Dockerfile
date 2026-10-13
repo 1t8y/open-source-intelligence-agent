@@ -13,6 +13,7 @@ RUN groupadd --system app && useradd --system --gid app --create-home app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY prompts ./prompts
+COPY datasets ./datasets
 COPY alembic.ini ./
 COPY migrations ./migrations
 

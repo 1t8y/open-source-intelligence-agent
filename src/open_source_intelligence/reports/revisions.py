@@ -214,6 +214,12 @@ def revise_report(
         title = _normalize_title(title)
 
     changed: list[str] = []
+    resulting_visibility = visibility if visibility is not None else report.visibility
+    if resulting_visibility == "PRIVATE" and report.owner_id is None:
+        if actor_id is None:
+            raise ReportGenerationError("a PRIVATE report requires a recorded owner")
+        report.owner_id = actor_id
+        changed.append("owner_id")
     if title is not None and title != report.title:
         report.title = title
         changed.append("title")
