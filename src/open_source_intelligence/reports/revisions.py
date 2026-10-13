@@ -37,8 +37,16 @@ from .state import transition_report
 #: `generate_report` already applies, so both edit paths agree on when a report is editable.
 EDITABLE_STATUSES: Final[frozenset[str]] = frozenset({"draft", "changes_requested"})
 
-#: `failed` is terminal: a rejected report is not silently revived by a rollback.
-ROLLBACK_BLOCKED_STATUSES: Final[frozenset[str]] = frozenset({"failed"})
+#: Longest title accepted by the edit paths; mirrors `Report.title`'s column width.
+MAX_TITLE_CHARS: Final[int] = 255
+
+#: Statuses a rollback may return to `draft`. It mirrors the legal edges *into* `draft`:
+#: `draft` and `changes_requested` can be rewound to an earlier version, and `published` can
+#: be withdrawn. A report still on the publishing path (`pending_review`, `approved`,
+#: `scheduled`) has to leave that path explicitly first, and `failed` is terminal.
+ROLLBACKABLE_STATUSES: Final[frozenset[str]] = frozenset(
+    {"draft", "changes_requested", "published"}
+)
 
 
 class _Unset:
@@ -77,6 +85,27 @@ def _require_report(session: Session, report_id: int) -> Report:
     if report is None:
         raise ReportNotFoundError(f"report {report_id} does not exist")
     return report
+
+
+def _normalize_title(title: str) -> str:
+    """Return a trimmed title, rejecting anything that cannot render as one heading.
+
+    `verification._check_structure` compares the first body line against `# <title>`, so a
+    title carrying a newline could never satisfy the structure check: the report would sit at
+    `failed` verification with no way to publish it, and the reason would look like a content
+    problem rather than a bad field.
+    """
+    normalized = title.strip()
+    if (
+        not normalized
+        or len(normalized) > MAX_TITLE_CHARS
+        or "\n" in normalized
+        or "\r" in normalized
+    ):
+        raise ReportGenerationError(
+            f"title must be a single non-empty line of at most {MAX_TITLE_CHARS} characters"
+        )
+    return normalized
 
 
 def _copy_sources(
@@ -181,6 +210,8 @@ def revise_report(
         raise ReportGenerationError(f"unsupported sensitivity: {sensitivity}")
     if not isinstance(publish_at, _Unset) and publish_at is not None and publish_at.tzinfo is None:
         raise ReportGenerationError("publish_at must be a timezone-aware UTC timestamp")
+    if title is not None:
+        title = _normalize_title(title)
 
     changed: list[str] = []
     if title is not None and title != report.title:
@@ -201,6 +232,11 @@ def revise_report(
     if content_changed:
         assert content_markdown is not None
         previous_version = report.current_version
+        # Return the report to `draft` before the new version is written, mirroring
+        # `rollback_report`: the states that allow an edit are exactly the states that may
+        # enter `draft`, and deciding that first keeps a refused transition from leaving a
+        # half-applied revision behind.
+        _return_to_draft(report)
         version = _append_version(
             session,
             report,
@@ -216,7 +252,6 @@ def revise_report(
             to_version=version,
             moment=moment,
         )
-        _return_to_draft(report)
         changed.append("content_markdown")
 
     if changed:
@@ -261,8 +296,16 @@ def rollback_report(
     """
     moment = now or utc_now()
     report = _require_report(session, report_id)
-    if report.status in ROLLBACK_BLOCKED_STATUSES:
-        raise ReportStateError(f"report {report.id} is {report.status}; rollback is not allowed")
+    # The state check comes before any write. `_return_to_draft` can refuse the transition,
+    # and a refusal has to leave the report exactly as it was: checking afterwards would hand
+    # the caller an error while the session already held a half-applied revision — a bumped
+    # `current_version`, a replaced body, and staged `report_versions` / `report_sources`
+    # rows — which the UI then renders on the same identity-mapped object.
+    if report.status not in ROLLBACKABLE_STATUSES:
+        raise ReportStateError(
+            f"report {report.id} is {report.status}; only a draft, a report returned for "
+            "changes, or a published report can be rolled back"
+        )
     target = session.scalar(
         select(ReportVersion).where(
             ReportVersion.report_id == report.id,
@@ -275,6 +318,9 @@ def rollback_report(
         raise ReportGenerationError(f"version {version} is already the current version")
 
     previous_version = report.current_version
+    # Move the state machine first, for the same reason as the check above: once the version
+    # row exists the revision has happened, so the transition has to be decided before it.
+    _return_to_draft(report)
     new_version = _append_version(
         session,
         report,
@@ -290,7 +336,6 @@ def rollback_report(
         to_version=new_version,
         moment=moment,
     )
-    _return_to_draft(report)
     record_audit_event(
         session,
         action="report.rollback",

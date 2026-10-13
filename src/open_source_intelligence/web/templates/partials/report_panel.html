@@ -1,5 +1,7 @@
-{% set editable = report.status in ["draft", "changes_requested"] %}
-{% set rollbackable = can_write and report.status != "failed" and detail.versions | length > 1 %}
+{% set editable = report.status in editable_statuses %}
+{# Mirror the server-side `ROLLBACKABLE_STATUSES`: the button must only appear for the
+   statuses `rollback_report` accepts, otherwise clicking it would just surface an error. #}
+{% set rollbackable = can_write and report.status in rollbackable_statuses and detail.versions | length > 1 %}
 <section class="card">
   <div class="row space-between start">
     <div>
@@ -76,7 +78,7 @@
         <td>{{ "通过" if detail.verification.citations_ok else "不通过" }}</td>
         <td>{{ "通过" if detail.verification.numbers_ok else "不通过" }}</td>
         <td>{{ "通过" if detail.verification.sensitivity_ok else "不通过" }}</td>
-        <td>{{ detail.verification.details_json.get("citation_coverage", "—") }}</td>
+        <td>{{ (detail.verification.details_json or {}).get("citation_coverage", "—") }}</td>
         <td>{{ (detail.verification.reason_codes_json or []) | join("、") or "无" }}</td>
       </tr>
     </tbody>

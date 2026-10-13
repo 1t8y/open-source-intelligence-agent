@@ -1,7 +1,7 @@
 # 项目接口基线
 
 > 文档状态：实施基线（T1-T12 已对齐）
-> 文档版本：v0.9
+> 文档版本：v0.10
 > 最后更新：2026-10-13
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -378,7 +378,8 @@ Agent 只能调用以下白名单工具：
 - `reports.owner_id` 是 `PRIVATE` 可见范围的唯一抓手：`PRIVATE` 报告仅负责人可读，`owner_id` 为 `NULL` 时只有 `ADMIN` 可读。列表的权限过滤必须发生在数据库查询阶段，不得先取全量再在应用层过滤。
 - `report_verifications` 按 `(report_id, version)` 唯一，保存该版本的验证结论（四个布尔检查 + 原因码）；重复验证刷新同一行。
 - `report_reviews` 记录人对某个版本的审核决定，`decision` 取 `approve`、`reject`、`request_changes`。
-- 报告编辑只允许在 `draft` / `changes_requested` 状态下进行，且只追加不可变的 `report_versions` 行，不覆盖历史版本；回退历史版本同样追加新版本，不重写历史。
+- 报告编辑只允许在 `draft` / `changes_requested` 状态下进行，且只追加不可变的 `report_versions` 行，不覆盖历史版本；回退历史版本同样追加新版本，不重写历史，且只允许从 `draft` / `changes_requested` / `published` 发起（即状态机指向 `draft` 的入边）。两条路径都在写入前先判定状态，被拒时报告保持原状。
+- `report_reviews.edited_version_id` 必须指向**同一份报告**的版本行：外键只保证行存在，不保证归属，服务在写审核记录前显式解析该组合。
 - `MANUAL` 报告缺少 `approve` 审核记录时不能发布。
 - 任何报告发布前，都必须存在针对其 `current_version` 且 `verdict=passed` 的 `report_verifications` 行（`INV-5`）。
 - 发布刻意按 `publish_mode` 收紧而不放宽：`publish_mode` 是上限，验证失败、敏感内容、首次配置、运行不干净等发现只会让决策更严格。
@@ -408,7 +409,7 @@ published         -> draft
 failed            -> （终态，无出边）
 ```
 
-`published -> draft` 同时承载两种语义：撤回已发布的报告，以及回退到历史版本。两种动作都**追加新版本**并清空 `publish_at` / `published_at`，不重写历史；回退的具体版本号记在该版本的 `change_reason`（`rollback_to_v<n>`）里。`failed` 是唯一终态：被拒绝的报告不能通过回退复活。
+`published -> draft` 同时承载两种语义：撤回已发布的报告，以及回退到历史版本。两种动作都**追加新版本**并清空 `publish_at` / `published_at`，不重写历史；回退的具体版本号记在该版本的 `change_reason`（`rollback_to_v<n>`）里。`failed` 是唯一终态：被拒绝的报告不能通过回退复活。编辑只能发生在 `draft` / `changes_requested`，回退只能发生在 `draft` / `changes_requested` / `published` —— 两者都精确等于状态机指向 `draft` 的入边集合，仍在下游发布路径上的报告（`pending_review` / `approved` / `scheduled`）必须先显式离开该路径。状态不满足时服务在**任何写入之前**拒绝，报告保持原状（`current_version`、正文与引用集都不变）。
 
 `pending_review` 只能由人清除（`approve` / `reject` / `request_changes`），重复评估发布策略不会把已经进入下游状态（`pending_review` / `approved` / `scheduled` / `published`）的报告静默推进。
 
@@ -446,11 +447,11 @@ failed            -> （终态，无出边）
 | 动作 | 成功 | 失败语义 |
 |---|---|---|
 | `GET /reports`、`GET /reports/{id}` | `200` | `401` 未登录；`403 FORBIDDEN` 越权（不泄露标题）；`404 NOT_FOUND` 不存在 |
-| `PATCH /reports/{id}` | `200` | `409 REPORT_STATE_INVALID` 非可编辑状态；`422 VALIDATION_ERROR` 字段非法 |
+| `PATCH /reports/{id}` | `200` | `409 REPORT_STATE_INVALID` 非可编辑状态；`422 VALIDATION_ERROR` 字段非法（含无法渲染为单一标题的 `title`） |
 | `POST /reports/{id}/verify` | `200` | `404 NOT_FOUND` |
-| `POST /reports/{id}/review` | `200` | `400 VALIDATION_ERROR` 未知决定；`409 REPORT_STATE_INVALID` 非 `pending_review` |
+| `POST /reports/{id}/review` | `200` | `400 VALIDATION_ERROR` 未知决定或 `edited_version_id` 不属于该报告；`409 REPORT_STATE_INVALID` 非 `pending_review` |
 | `POST /reports/{id}/publish` | `200` | `409 PUBLISH_POLICY_BLOCKED`（缺验证/缺审核）；`409 REPORT_STATE_INVALID`（状态或窗口） |
-| `POST /reports/{id}/rollback` | `200` | `400` 目标为当前版本；`404` 版本不存在；`409` 报告为 `failed` |
+| `POST /reports/{id}/rollback` | `200` | `400` 目标为当前版本；`404` 版本不存在；`409` 报告不在可回退状态（`draft` / `changes_requested` / `published` 之外，含 `failed`） |
 | UI 写操作 | `200` 渲染片段 | `403` CSRF 校验失败或角色只读；`409` 同上；`303` 未登录重定向到 `/ui/login` |
 
 发布策略原因码（T11，出现在 `publish_decision.reason_codes` 与 `report_verifications.reason_codes_json`）：

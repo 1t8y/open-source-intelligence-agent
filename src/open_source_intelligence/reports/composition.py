@@ -194,7 +194,10 @@ def generate_report(
             report.current_version += 1
             report.content_markdown = markdown
             report.generated_at = generated_at
-            report.status = "draft"
+            # Go through the state machine rather than assigning `status` directly: it is the
+            # only writer of `reports.status`, and a direct write would silently keep working
+            # even if this branch later became reachable from a state it must not be.
+            transition_report(report, "draft")
             version_incremented = True
         version = report.current_version
 

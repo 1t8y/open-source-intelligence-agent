@@ -30,7 +30,12 @@ from open_source_intelligence.reports.publishing import (
     publish_report,
     record_review,
 )
-from open_source_intelligence.reports.revisions import revise_report, rollback_report
+from open_source_intelligence.reports.revisions import (
+    EDITABLE_STATUSES,
+    ROLLBACKABLE_STATUSES,
+    revise_report,
+    rollback_report,
+)
 from open_source_intelligence.reports.verification import verify_report
 from open_source_intelligence.security.audit import record_audit_event
 from open_source_intelligence.security.authorization import (
@@ -134,7 +139,13 @@ def render(
     csrf: str | None = None,
 ) -> HTMLResponse:
     """Render a template and hand the browser a CSRF cookie when it lacks one."""
-    payload: dict[str, Any] = {"csrf_token": csrf or request.cookies.get(CSRF_COOKIE, "")}
+    payload: dict[str, Any] = {
+        "csrf_token": csrf or request.cookies.get(CSRF_COOKIE, ""),
+        # Hand the state-machine-derived sets to the template instead of retyping them there, so
+        # the buttons a page offers and the states the services accept cannot drift apart.
+        "editable_statuses": sorted(EDITABLE_STATUSES),
+        "rollbackable_statuses": sorted(ROLLBACKABLE_STATUSES),
+    }
     payload.update(context)
     response = templates.TemplateResponse(
         request,
@@ -267,7 +278,7 @@ def login_submit(
 
 
 @router.post("/logout")
-def logout(request: Request, csrf: CsrfField) -> Response:
+def logout(request: Request, csrf: CsrfField = "") -> Response:
     """Clear the session cookie."""
     verify_csrf(request, csrf)
     response = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)

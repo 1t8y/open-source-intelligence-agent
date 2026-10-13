@@ -34,6 +34,7 @@ from open_source_intelligence.persistence.models.reporting import (
     Report,
     ReportReview,
     ReportVerification,
+    ReportVersion,
 )
 from open_source_intelligence.pipeline.runs import (
     fail_pipeline_run,
@@ -500,6 +501,22 @@ def record_review(
         REVIEW_REJECT: "failed",
         REVIEW_REQUEST_CHANGES: "changes_requested",
     }[decision]
+    if edited_version_id is not None:
+        # The column is a foreign key, but a foreign key only proves the row exists: it would
+        # happily record a review against a version of a *different* report, and an unknown id
+        # would surface as a database error instead of a rejected request. Resolving the pair
+        # here covers both, and doing it before the transition keeps a refused review from
+        # leaving the status half-moved.
+        owned = session.scalar(
+            select(ReportVersion.id).where(
+                ReportVersion.id == edited_version_id,
+                ReportVersion.report_id == report.id,
+            )
+        )
+        if owned is None:
+            raise ReportGenerationError(
+                f"report {report.id} has no version row {edited_version_id}"
+            )
     transition_report(report, target)
     review = ReportReview(
         report_id=report.id,
@@ -553,7 +570,7 @@ def _fail_publish(
         attempt=1,
     )
     mark_pipeline_run_running(session, pipeline_run, started_at=moment)
-    report.status = "failed"
+    transition_report(report, "failed")
     report.publish_at = None
     record_audit_event(
         session,

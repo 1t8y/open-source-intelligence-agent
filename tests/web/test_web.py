@@ -581,3 +581,47 @@ def test_rollback_action_restores_a_historical_version(
     assert report.current_version == 3
     assert report.status == "draft"
     assert ("report.rollback", "success") in audit_trail(session_factory)
+
+
+@pytest.mark.parametrize("status", ["pending_review", "approved", "scheduled"])
+def test_rollback_is_not_offered_on_the_publishing_path(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    status: str,
+) -> None:
+    """The button matches the server-side guard, and forcing the post cannot corrupt a page.
+
+    The template used to hide the button only for `failed`, so these three statuses rendered a
+    button the service refuses; the refusal then reached the panel renderer *after* the report
+    object had already been rewritten, so the page showed the wrong version and body.
+    """
+    case = _seed(session, workspace)
+    assert web_login(client, editor).status_code == 303
+    original = load_report(session_factory, case.report_id).content_markdown
+
+    edited = client.post(
+        f"{BASE}/{case.report_id}/edit",
+        data={**_token(client), "content_markdown": original + "\n第二版内容。\n"},
+    )
+    assert "内容已更新为第 2 版" in edited.text
+    configure_report(session, report_id=case.report_id, status=status)
+
+    page = client.get(f"{BASE}/{case.report_id}")
+    assert page.status_code == 200
+    assert f'action="{BASE}/{case.report_id}/rollback"' not in page.text
+
+    forced = client.post(
+        f"{BASE}/{case.report_id}/rollback",
+        data={**_token(client), "version": 1},
+    )
+
+    # A rendered refusal, not a crash, and the panel still shows the untampered report.
+    assert forced.status_code == 200
+    assert "第 2 版" in forced.text
+    report = load_report(session_factory, case.report_id)
+    assert report.status == status
+    assert report.current_version == 2
+    assert report.content_markdown.endswith("第二版内容。\n")

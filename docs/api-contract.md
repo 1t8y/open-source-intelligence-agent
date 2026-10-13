@@ -1,6 +1,6 @@
 # API 接口契约
 
-> 版本：v1.1  
+> 版本：v1.2  
 > 前缀：`/api/v1`  
 > 最后更新：2026-10-13
 
@@ -329,7 +329,7 @@
 
 ### `POST /reports/{report_id}/review`
 
-权限：`ADMIN`、`EDITOR`。只有 `pending_review` 状态可被审核，否则 `409 REPORT_STATE_INVALID`。未知 `decision` 返回 `400 VALIDATION_ERROR`。
+权限：`ADMIN`、`EDITOR`。只有 `pending_review` 状态可被审核，否则 `409 REPORT_STATE_INVALID`。未知 `decision` 返回 `400 VALIDATION_ERROR`。`edited_version_id` 非空时必须指向**同一份报告**的版本行，否则 `400 VALIDATION_ERROR`（外键只能证明行存在，不能证明归属）。
 
 ```json
 { "decision": "approve", "comment": "来源和数字已核对", "edited_version_id": null }
@@ -357,7 +357,9 @@
 ```
 
 - 追加新版本（`change_reason = rollback_to_v<n>`）并从被回退版本复制引用集合，报告回到 `draft`。
-- 目标为当前版本返回 `400 VALIDATION_ERROR`；版本不存在返回 `404 NOT_FOUND`；报告为 `failed` 返回 `409 REPORT_STATE_INVALID`。
+- 只允许从 `draft` / `changes_requested` / `published` 发起（状态机指向 `draft` 的全部入边）；仍在下游发布路径上的报告（`pending_review` / `approved` / `scheduled`）返回 `409 REPORT_STATE_INVALID`。
+- 目标为当前版本返回 `400 VALIDATION_ERROR`；版本不存在返回 `404 NOT_FOUND`。
+- 状态不满足时在**任何写入之前**拒绝：报告保持原状（`current_version`、正文与引用集都不变），不做半途修改。
 - 响应 `{ "report_id", "version", "restored_from", "status", "comment" }`。
 
 ### `POST /reports/publish-due`

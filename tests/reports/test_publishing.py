@@ -33,6 +33,7 @@ from open_source_intelligence.persistence.models.reporting import (
     ReportReview,
     ReportSource,
     ReportVerification,
+    ReportVersion,
 )
 from open_source_intelligence.pipeline.runs import list_pipeline_runs
 from open_source_intelligence.reports.errors import (
@@ -377,6 +378,53 @@ def test_record_review_rejects_an_unknown_decision(
 
     with pytest.raises(ReportGenerationError, match="unsupported review decision"):
         record_review(session, report_id=report_case.report_id, decision="rubber_stamp", now=NOW)
+
+
+def test_record_review_rejects_a_foreign_edited_version(
+    session: Session,
+    workspace: Workspace,
+    report_case: SeededReport,
+) -> None:
+    """`edited_version_id` must name a version of *this* report.
+
+    A foreign key only proves the row exists, so a version belonging to another report used
+    to be recorded silently. The check also runs before the transition, so a refused review
+    leaves the report where it was.
+    """
+    _park_for_review(session, report_case)
+    other = build_report(session, workspace, publish_mode=AUTO_WITH_DELAY)
+    foreign_version_id = session.scalar(
+        select(ReportVersion.id).where(ReportVersion.report_id == other.report_id)
+    )
+    assert foreign_version_id is not None
+
+    with pytest.raises(ReportGenerationError, match="no version row"):
+        record_review(
+            session,
+            report_id=report_case.report_id,
+            decision=REVIEW_APPROVE,
+            edited_version_id=foreign_version_id,
+            now=NOW,
+        )
+
+    assert report_case.reload(session).status == "pending_review"
+
+
+def test_record_review_rejects_an_unknown_edited_version(
+    session: Session,
+    report_case: SeededReport,
+) -> None:
+    """An unknown id is a rejected request, not a database-level failure."""
+    _park_for_review(session, report_case)
+
+    with pytest.raises(ReportGenerationError, match="no version row"):
+        record_review(
+            session,
+            report_id=report_case.report_id,
+            decision=REVIEW_APPROVE,
+            edited_version_id=999_999,
+            now=NOW,
+        )
 
 
 # --------------------------------------------------------------------------------------
