@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from open_source_intelligence.notifications.service import push_report
 from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.identity import User
 from open_source_intelligence.persistence.models.intelligence import Topic
@@ -37,6 +38,8 @@ from open_source_intelligence.security.authorization import (
 )
 from open_source_intelligence.security.dependencies import get_db_session, require_roles
 from open_source_intelligence.security.service import get_role_codes
+
+from .push import PushOutcomeResponse
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 
@@ -186,6 +189,13 @@ class RollbackRequest(BaseModel):
 
     version: int = Field(ge=1)
     comment: str | None = Field(default=None, max_length=2000)
+
+
+class PushRequest(BaseModel):
+    """Request to deliver one report version to one allowlisted target."""
+
+    channel: Literal["email", "webhook"]
+    target_id: int = Field(ge=1)
 
 
 class RevisionResponse(BaseModel):
@@ -529,3 +539,34 @@ def rollback_one(
         comment=payload.comment,
     )
     return RevisionResponse(**outcome.to_dict())
+
+
+@router.post("/{report_id}/push", response_model=PushOutcomeResponse)
+def push_one(
+    report_id: int,
+    payload: PushRequest,
+    request: Request,
+    user: WriteUser,
+    session: DbSession,
+) -> PushOutcomeResponse:
+    """Deliver one report version to one allowlisted destination.
+
+    Only an `approved` or `published` report may be pushed, and only to a target that is
+    enabled and cleared for the report's visibility and sensitivity; every refusal raises and
+    is answered as Problem Details.
+
+    A delivery the transport refused is a recorded, retryable result rather than a request
+    error, so it comes back as `200` with `status="failed"` and a stable `error_code` — the
+    same shape `POST /reports/publish-due` uses for a blocked release. Re-posting the same
+    report, version, and target replays the stored result with `replayed=true` instead of
+    sending twice.
+    """
+    authorize_report_read(session, request, user, report_id=report_id)
+    outcome = push_report(
+        session,
+        report_id=report_id,
+        channel=payload.channel,
+        target_id=payload.target_id,
+        actor_id=user.id,
+    )
+    return PushOutcomeResponse(**outcome.to_dict())

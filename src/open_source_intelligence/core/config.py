@@ -56,6 +56,20 @@ class Settings(BaseSettings):
     publish_delay_minutes: int = Field(default=60, ge=0, le=10080)
     publish_min_citation_coverage: float = Field(default=1.0, ge=0.0, le=1.0)
     publish_sweep_minutes: int = Field(default=15, ge=1, le=1440)
+    push_enabled: bool = True
+    push_auto_after_publish: bool = True
+    push_delivery: Literal["offline", "live"] = "offline"
+    push_max_attempts: int = Field(default=3, ge=1, le=10)
+    push_retry_backoff_seconds: int = Field(default=60, ge=0, le=3600)
+    push_retry_interval_minutes: int = Field(default=15, ge=1, le=1440)
+    push_timeout_seconds: int = Field(default=20, ge=1, le=300)
+    push_email_from: str | None = None
+    push_smtp_host: str | None = None
+    push_smtp_port: int = Field(default=587, ge=1, le=65535)
+    push_smtp_username: str | None = None
+    push_smtp_password: SecretStr | None = None
+    push_smtp_starttls: bool = True
+    push_webhook_signing_secret: SecretStr | None = None
     docs_enabled: bool = True
 
     @field_validator("app_timezone")
@@ -110,7 +124,30 @@ class Settings(BaseSettings):
             raise ValueError("agent_api_base must use https://")
         return value.rstrip("/")
 
-    @field_validator("github_token", "huggingface_token", "agent_api_key", mode="after")
+    @field_validator("push_email_from", "push_smtp_host", "push_smtp_username")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        """Treat a blank push setting as unset so a channel can report it is not configured."""
+        if value is None or not value.strip():
+            return None
+        return value.strip()
+
+    @field_validator("push_email_from")
+    @classmethod
+    def validate_email_from(cls, value: str | None) -> str | None:
+        """Require a usable envelope sender when one is configured."""
+        if value is not None and "@" not in value:
+            raise ValueError("push_email_from must be an email address")
+        return value
+
+    @field_validator(
+        "github_token",
+        "huggingface_token",
+        "agent_api_key",
+        "push_smtp_password",
+        "push_webhook_signing_secret",
+        mode="after",
+    )
     @classmethod
     def normalize_optional_token(cls, value: SecretStr | None) -> SecretStr | None:
         """Treat blank environment tokens as unconfigured credentials."""

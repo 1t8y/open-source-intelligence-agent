@@ -26,6 +26,7 @@ from open_source_intelligence.persistence.models.intelligence import (
     Topic,
     TopicRepository,
 )
+from open_source_intelligence.persistence.models.notifications import PushTarget
 from open_source_intelligence.persistence.models.reporting import Report, ReportSource
 
 ALL_TOOLS = (
@@ -317,3 +318,30 @@ class Workspace:
             max_tool_calls=max_tool_calls,
             tool_call_count=tool_call_count,
         )
+
+    def add_push_target(
+        self,
+        *,
+        name: str | None = None,
+        channel: str = "email",
+        destination: str = "ops@example.com",
+        enabled: bool = True,
+        allow_private: bool = False,
+        allow_confidential: bool = False,
+    ) -> PushTarget:
+        """Create one allowlisted delivery destination.
+
+        The two `allow_*` switches default to `False`, mirroring the column defaults: a
+        freshly added destination is safe until someone deliberately widens it.
+        """
+        target = PushTarget(
+            name=name or f"target-{self._next()}",
+            channel=channel,
+            destination=destination,
+            enabled=enabled,
+            allow_private=allow_private,
+            allow_confidential=allow_confidential,
+        )
+        self.session.add(target)
+        self.session.flush()
+        return target

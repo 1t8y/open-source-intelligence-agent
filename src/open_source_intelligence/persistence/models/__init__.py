@@ -12,6 +12,7 @@ from .intelligence import (
     Topic,
     TopicRepository,
 )
+from .notifications import PushTarget, ReportPush
 from .reporting import (
     Report,
     ReportDraft,
@@ -29,8 +30,10 @@ __all__ = [
     "AuditLog",
     "DataSource",
     "PipelineRun",
+    "PushTarget",
     "Report",
     "ReportDraft",
+    "ReportPush",
     "ReportReview",
     "ReportSection",
     "ReportSource",

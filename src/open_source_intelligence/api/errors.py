@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from open_source_intelligence.notifications.errors import PushError
 from open_source_intelligence.reports.errors import (
     PublishPolicyBlocked,
     ReportGenerationError,
@@ -36,6 +37,7 @@ STATUS_PROBLEMS: dict[int, tuple[str, str]] = {
     UNPROCESSABLE_CONTENT: ("VALIDATION_ERROR", "Validation Error"),
     status.HTTP_429_TOO_MANY_REQUESTS: ("RATE_LIMITED", "Too Many Requests"),
     status.HTTP_500_INTERNAL_SERVER_ERROR: ("INTERNAL_ERROR", "Internal Server Error"),
+    status.HTTP_502_BAD_GATEWAY: ("BAD_GATEWAY", "Bad Gateway"),
     status.HTTP_503_SERVICE_UNAVAILABLE: ("SERVICE_UNAVAILABLE", "Service Unavailable"),
 }
 
@@ -45,6 +47,16 @@ DOMAIN_PROBLEM_STATUS: dict[str, int] = {
     "REPORT_STATE_INVALID": status.HTTP_409_CONFLICT,
     "PUBLISH_POLICY_BLOCKED": status.HTTP_409_CONFLICT,
     "PUBLISH_ERROR": status.HTTP_409_CONFLICT,
+    # A destination that is not on the allowlist is a bad request, not a permission problem:
+    # the caller may know the report perfectly well and simply asked for the wrong target.
+    "PUSH_TARGET_NOT_ALLOWED": status.HTTP_400_BAD_REQUEST,
+    "PUSH_BLOCKED": status.HTTP_409_CONFLICT,
+    "PUSH_APPROVAL_REQUIRED": status.HTTP_409_CONFLICT,
+    "PUSH_ERROR": status.HTTP_409_CONFLICT,
+    # No delivery attempt could be made, either because pushing is switched off or because the
+    # retry budget is spent; both are upstream conditions rather than caller mistakes.
+    "PUSH_DISABLED": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "PUSH_DELIVERY_FAILED": status.HTTP_502_BAD_GATEWAY,
 }
 
 
@@ -163,5 +175,22 @@ def add_problem_handlers(app: FastAPI) -> None:
             request,
             status_code=status.HTTP_400_BAD_REQUEST,
             code="VALIDATION_ERROR",
+            detail=str(exc),
+        )
+
+    @app.exception_handler(PushError)
+    async def push_error_handler(
+        request: Request,
+        exc: PushError,
+    ) -> JSONResponse:
+        """Render a refused or impossible push with its own stable push code.
+
+        Registering the base class covers the whole hierarchy, so a new push failure only has to
+        declare a `code` and a mapping to become a correct Problem Details response.
+        """
+        return problem_response(
+            request,
+            status_code=_domain_status(exc.code, status.HTTP_409_CONFLICT),
+            code=exc.code,
             detail=str(exc),
         )

@@ -1,6 +1,6 @@
 # API 接口契约
 
-> 版本：v1.2  
+> 版本：v1.3  
 > 前缀：`/api/v1`  
 > 最后更新：2026-10-13
 
@@ -376,7 +376,69 @@
 
 ### `POST /reports/{report_id}/push`
 
-T13 范围，当前未实现。
+权限：`ADMIN`、`EDITOR`，且调用者必须通过该报告的读权限（`PRIVATE` 报告需 `owner_id == user.id`）。把**当前版本**投递到一个允许列表目标。
+
+请求体：
+
+```json
+{ "channel": "email", "target_id": 7 }
+```
+
+`channel` 取 `email` 或 `webhook`，必须与目标行的渠道一致；`target_id` 是 `push_targets.id`。
+
+守卫顺序固定，任一违规抛 Problem Details：
+
+| 条件 | 状态码 | `code` |
+|---|---|---|
+| 报告状态不是 `approved` / `published` | `409` | `PUSH_BLOCKED` |
+| `CONFIDENTIAL` 报告缺少当前版本的 `approve` 审核 | `409` | `PUSH_APPROVAL_REQUIRED` |
+| 目标不存在 / 已禁用 / 渠道不符 / 未对该可见范围或敏感级别开放 | `400` | `PUSH_TARGET_NOT_ALLOWED` |
+| `push_delivery=live` 但缺 SMTP 主机或发件人 | `400` | `PUSH_TARGET_NOT_ALLOWED` |
+| 推送能力被关闭 | `503` | `PUSH_DISABLED` |
+| 未登录 / 越权 | `401` / `403` | `AUTH_REQUIRED` / `FORBIDDEN` |
+
+**传输失败返回 `200`**，响应体里 `status="failed"` 并带稳定 `error_code`（`PUSH_DELIVERY_FAILED`），因为它是被记录的可重试结果而不是请求错误：
+
+```json
+{ "push_id": 15, "report_id": 42, "version": 1, "channel": "email",
+  "destination": "ops@example.com", "status": "sent", "attempt": 1,
+  "error_code": null, "error_message": null, "delivered": true, "replayed": false }
+```
+
+幂等：同一 `(report_id, version, target_id)` 三元组只有一条记录。重复请求不重发，返回同一行并置 `replayed=true`；失败行的重试**推进同一行的 `attempt`**，`attempt` 用尽后不再重试。
+
+### `GET /push/targets`
+
+权限：`ADMIN`、`EDITOR`。返回启用的投递允许列表，可用 `channel=email|webhook` 过滤。
+
+```json
+{ "items": [{ "id": 7, "name": "ops-email", "channel": "email",
+  "destination": "ops@example.com", "description": null, "enabled": true,
+  "allow_private": false, "allow_confidential": false }] }
+```
+
+### `GET /push/records`
+
+权限：`ADMIN`、`EDITOR`。投递记录，最新优先；可按 `report_id` 与 `status=pending|sent|failed` 过滤，`limit` 范围 1-200、默认 50。
+
+```json
+{ "items": [{ "id": 15, "report_id": 42, "version": 1, "channel": "email",
+  "destination": "ops@example.com", "status": "sent", "attempt": 1,
+  "error_code": null, "error_message": null, "sent_at": "2026-10-13T13:00:00+00:00",
+  "created_at": "2026-10-13T12:59:59+00:00", "updated_at": "2026-10-13T13:00:00+00:00" }],
+  "status_counts": { "sent": 1 } }
+```
+
+### `POST /push/retry`
+
+权限：`ADMIN`、`EDITOR`。运行一次失败重试扫描，等价于 Celery 的 `retry-failed-pushes` 周期任务；`limit` 范围 1-100、默认 100。单条不可重试的行被跳过并记 `denied` 审计，不中断整批。
+
+```json
+{ "attempted_count": 1, "delivered_count": 1, "failed_count": 0,
+  "outcomes": [{ "push_id": 15, "report_id": 42, "version": 1, "channel": "webhook",
+    "destination": "https://hooks.example.com/osia", "status": "sent", "attempt": 2,
+    "error_code": null, "error_message": null, "delivered": true, "replayed": false }] }
+```
 
 ### 管理界面（`/ui`）
 
@@ -386,8 +448,9 @@ T13 范围，当前未实现。
 |---|---|
 | `GET /ui/login`、`POST /ui/login`、`POST /ui/logout` | 登录表单与退出；会话存 `HttpOnly` Cookie |
 | `GET /ui/reports` | 报告列表，支持 `status`、`visibility`、`page`、`page_size`，权限过滤同 API |
-| `GET /ui/reports/{report_id}` | 报告详情：验证结论、引用与证据、版本历史、审核记录、编辑表单 |
+| `GET /ui/reports/{report_id}` | 报告详情：验证结论、引用与证据、版本历史、审核记录、编辑表单、推送卡片与投递记录 |
 | `POST /ui/reports/{report_id}/{verify,review,publish,rollback,edit}` | 动作，返回刷新后的报告片段 |
+| `POST /ui/reports/{report_id}/push` | 推送到一个允许列表目标，返回刷新后的报告片段；渠道取自目标行，表单传 `channel` 无效 |
 | `POST /ui/reports/publish-due` | 到期释放驱动，返回释放结果片段 |
 
 写操作必须携带与 Cookie 一致的 `csrf_token` 表单字段（双提交校验）：缺失或不匹配返回 `403`。只读角色（`VIEWER`）的写操作返回 `403`。未登录访问任意 `/ui` 页面返回 `303` 重定向到 `/ui/login?next=<原路径>`。

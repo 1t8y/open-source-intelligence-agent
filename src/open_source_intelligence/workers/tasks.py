@@ -14,6 +14,10 @@ from open_source_intelligence.agent.runtime import run_research_agent as execute
 from open_source_intelligence.collectors.cli import build_collectors
 from open_source_intelligence.collectors.service import collect_repositories
 from open_source_intelligence.core.config import Settings, get_settings
+from open_source_intelligence.notifications.service import PUSH_BATCH_LIMIT
+from open_source_intelligence.notifications.service import (
+    retry_failed_pushes as execute_retry_failed_pushes,
+)
 from open_source_intelligence.persistence.session import (
     create_database_engine,
     create_session_factory,
@@ -29,6 +33,7 @@ from open_source_intelligence.reports.publishing import (
 from open_source_intelligence.workers.celery_app import (
     DAILY_PIPELINE_TASK,
     PUBLISH_DUE_TASK,
+    PUSH_RETRY_TASK,
     RESEARCH_AGENT_TASK,
 )
 
@@ -214,4 +219,34 @@ def publish_due_reports(limit: int = PUBLISH_BATCH_LIMIT) -> dict[str, Any]:
         "released_count": published_count,
         "blocked_count": len(released) - published_count,
         "released": released,
+    }
+
+
+@shared_task(name=PUSH_RETRY_TASK)  # type: ignore[misc]
+def retry_failed_pushes(limit: int = PUSH_BATCH_LIMIT) -> dict[str, Any]:
+    """Retry the report pushes whose transport refused them earlier.
+
+    Retrying here rather than in the publishing sweep keeps the two concerns apart: a release
+    that is due must not wait behind a mail server, and a delivery that failed has to be
+    retried on its own schedule. The sweep is idempotent, because a push row only stays a
+    candidate while it is `failed` and still inside its retry budget.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    settings = get_settings()
+    engine = create_database_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+    try:
+        with session_factory() as session:
+            outcomes = execute_retry_failed_pushes(session, limit=limit, settings=settings)
+    finally:
+        engine.dispose()
+    delivered = [item for item in outcomes if item.delivered]
+    return {
+        "status": "ok",
+        "task": PUSH_RETRY_TASK,
+        "delivered_count": len(delivered),
+        "failed_count": len(outcomes) - len(delivered),
+        "attempted_count": len(outcomes),
+        "outcomes": [item.to_dict() for item in outcomes],
     }

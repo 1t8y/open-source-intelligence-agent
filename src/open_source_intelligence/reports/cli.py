@@ -1,4 +1,4 @@
-"""Command-line entry point for report generation, verification, and publishing.
+"""Command-line entry point for report generation, verification, publishing, and pushing.
 
 `--agent-run-id` on its own still means "generate", which keeps the T10 entry point
 working; every later stage of the publishing chain is addressed with `--action`.
@@ -12,6 +12,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.core.config import get_settings
+from open_source_intelligence.notifications.errors import PushError
+from open_source_intelligence.notifications.service import push_report
+from open_source_intelligence.notifications.service import (
+    retry_failed_pushes as execute_retry_failed_pushes,
+)
 from open_source_intelligence.persistence.session import (
     create_database_engine,
     create_session_factory,
@@ -29,13 +34,14 @@ from open_source_intelligence.reports.publishing import (
 )
 from open_source_intelligence.reports.verification import verify_report
 
-ACTIONS = ("generate", "verify", "publish", "review", "publish-due")
+ACTIONS = ("generate", "verify", "publish", "review", "publish-due", "push", "push-retry")
 REVIEW_DECISIONS = ("approve", "reject", "request_changes")
+PUSH_CHANNELS = ("email", "webhook")
 
 
 def parse_args() -> argparse.Namespace:
     """Parse the action, its target, and the optional review payload."""
-    parser = argparse.ArgumentParser(description="Generate, verify, and publish reports")
+    parser = argparse.ArgumentParser(description="Generate, verify, publish, and push reports")
     parser.add_argument("--action", choices=ACTIONS, default="generate")
     parser.add_argument("--agent-run-id", type=int)
     parser.add_argument("--report-id", type=int)
@@ -44,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reviewer-id", type=int)
     parser.add_argument("--comment")
     parser.add_argument("--limit", type=int, default=PUBLISH_BATCH_LIMIT)
+    parser.add_argument("--channel", choices=PUSH_CHANNELS)
+    parser.add_argument("--target-id", type=int)
     return parser.parse_args()
 
 
@@ -60,6 +68,16 @@ def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
         if args.limit < 1:
             raise SystemExit("--limit must be at least 1")
         return {"released": publish_due_reports(session, limit=args.limit)}
+    if args.action == "push-retry":
+        if args.limit < 1:
+            raise SystemExit("--limit must be at least 1")
+        outcomes = execute_retry_failed_pushes(session, limit=args.limit)
+        return {
+            "limit": args.limit,
+            "attempted_count": len(outcomes),
+            "delivered_count": sum(1 for item in outcomes if item.delivered),
+            "outcomes": [item.to_dict() for item in outcomes],
+        }
     if args.action == "generate":
         result = generate_report(
             session,
@@ -73,16 +91,27 @@ def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
         return verify_report(session, report_id=report_id).to_dict()
     if args.action == "publish":
         return publish_or_request_review(session, report_id=report_id).to_dict()
+    if args.action == "push":
+        if args.channel is None:
+            raise SystemExit("--channel is required for the push action")
+        push_outcome = push_report(
+            session,
+            report_id=report_id,
+            channel=args.channel,
+            target_id=_required(args.target_id, "--target-id"),
+            actor_id=args.reviewer_id,
+        )
+        return push_outcome.to_dict()
     if args.decision is None:
         raise SystemExit("--decision is required for the review action")
-    outcome = record_review(
+    review_outcome = record_review(
         session,
         report_id=report_id,
         decision=args.decision,
         reviewer_id=args.reviewer_id,
         comment=args.comment,
     )
-    return outcome.to_dict()
+    return review_outcome.to_dict()
 
 
 def main() -> None:
@@ -94,10 +123,13 @@ def main() -> None:
     try:
         with session_factory() as session:
             payload = run_action(args, session)
-    except (ReportGenerationError, ReportPublishError) as exc:
+    except (ReportGenerationError, ReportPublishError, PushError) as exc:
+        # `code` is the same stable identifier the API answers with, so a script can branch on
+        # the failure instead of matching on message text. It stays `null` for the few errors
+        # that carry no code of their own.
         print(
             json.dumps(
-                {"action": args.action, "error": str(exc)},
+                {"action": args.action, "code": getattr(exc, "code", None), "error": str(exc)},
                 ensure_ascii=False,
                 sort_keys=True,
             )

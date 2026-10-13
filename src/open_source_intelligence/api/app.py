@@ -20,6 +20,7 @@ from .errors import add_problem_handlers
 from .middleware import add_request_id_middleware
 from .routes.auth import router as auth_router
 from .routes.health import router as health_router
+from .routes.push import router as push_router
 from .routes.reports import router as reports_router
 
 
@@ -51,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(reports_router)
+    app.include_router(push_router)
     app.include_router(web_router)
 
     @app.get("/", include_in_schema=False)

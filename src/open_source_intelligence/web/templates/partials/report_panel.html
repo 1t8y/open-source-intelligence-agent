@@ -56,7 +56,7 @@
     {% endif %}
   </div>
   {% else %}
-  <p class="hint">当前角色只读，不能验证、审核、发布、编辑或回退报告。</p>
+  <p class="hint">当前角色只读，不能验证、审核、发布、编辑、回退或推送报告。</p>
   {% endif %}
 </section>
 
@@ -139,6 +139,55 @@
       {% endfor %}
     </tbody>
   </table>
+</section>
+
+<section class="card">
+  <h2>推送记录</h2>
+  {% if can_write %}
+    {% if push_targets %}
+    <form class="inline-form" method="post" action="/ui/reports/{{ report.id }}/push"
+          hx-post="/ui/reports/{{ report.id }}/push" hx-target="#report-panel" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <select name="target_id" aria-label="推送目标">
+        {% for target in push_targets %}
+        <option value="{{ target.id }}">{{ target.name }}（{{ target.channel }} · {{ target.destination }}）</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="primary">推送</button>
+    </form>
+    <p class="hint">
+      只有 {{ push_statuses | join(" / ") }} 状态的报告可以推送；同一版本与目标的重复请求不会重复发送，
+      因此失败后再次推送即为重试。只有允许列表里的目标可以接收。
+    </p>
+    {% else %}
+    <p class="hint">还没有可用的推送目标。先在 push_targets 里添加一条并启用，推送才可用。</p>
+    {% endif %}
+  {% else %}
+  <p class="hint">当前角色只读，不能推送报告。</p>
+  {% endif %}
+
+  {% if pushes %}
+  <table class="grid">
+    <thead>
+      <tr><th>目标</th><th>渠道</th><th>版本</th><th>状态</th><th>尝试次数</th><th>错误码</th><th>更新时间</th></tr>
+    </thead>
+    <tbody>
+      {% for push in pushes %}
+      <tr>
+        <td><code>{{ push.destination }}</code></td>
+        <td>{{ push.channel }}</td>
+        <td>v{{ push.version }}</td>
+        <td class="{{ 'ok-text' if push.status == 'sent' else 'error-text' }}">{{ push.status }}</td>
+        <td>{{ push.attempt }}</td>
+        <td>{{ push.error_code or "—" }}</td>
+        <td>{{ push.updated_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">还没有推送记录。</p>
+  {% endif %}
 </section>
 
 <section class="card">

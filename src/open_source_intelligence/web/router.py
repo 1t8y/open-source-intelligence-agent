@@ -18,9 +18,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.core.config import Settings
+from open_source_intelligence.notifications.errors import PushError
+from open_source_intelligence.notifications.service import (
+    PUSHABLE_STATUSES,
+    list_pushes,
+    list_targets,
+    push_report,
+)
 from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.identity import User
 from open_source_intelligence.persistence.models.intelligence import Topic
+from open_source_intelligence.persistence.models.notifications import PushTarget
 from open_source_intelligence.persistence.models.reporting import Report
 from open_source_intelligence.reports import queries
 from open_source_intelligence.reports.errors import ReportGenerationError, ReportPublishError
@@ -203,6 +211,15 @@ def _topic_name(session: Session, topic_id: int) -> str | None:
     return session.scalar(select(Topic.name).where(Topic.id == topic_id))
 
 
+def _push_context(session: Session, report_id: int) -> dict[str, Any]:
+    """Build the data the push card needs: the allowlist and this report's delivery trail."""
+    return {
+        "push_targets": list_targets(session),
+        "pushes": list_pushes(session, report_id=report_id, limit=20),
+        "push_statuses": sorted(PUSHABLE_STATUSES),
+    }
+
+
 # --------------------------------------------------------------------------------------
 # Session
 # --------------------------------------------------------------------------------------
@@ -357,6 +374,7 @@ def _panel(
             "flash": flash,
             "error": error,
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
+            **_push_context(session, report.id),
         },
         status_code=status_code,
     )
@@ -384,6 +402,7 @@ def report_page(
             "flash": None,
             "error": None,
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
+            **_push_context(session, report.id),
         },
         csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
     )
@@ -516,6 +535,52 @@ def publish_due_action(
         request,
         "partials/sweep_result.html",
         {"current_user": _identity(web.user), "message": message, "entries": released},
+    )
+
+
+@router.post("/reports/{report_id}/push", response_class=HTMLResponse)
+def push_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    report_id: int,
+    target_id: Annotated[int, Form()],
+    csrf: CsrfField = "",
+) -> HTMLResponse:
+    """Deliver the report to one allowlisted target and swap the refreshed panel back in.
+
+    The channel is read from the target row rather than from the form, so the browser cannot
+    ask for a channel the target does not use. Re-submitting the same target is the retry
+    path: the service replays a delivered push and advances the attempt count of a failed one.
+    """
+    _authorize_action(request, session, web, report_id, csrf)
+    target = session.get(PushTarget, target_id)
+    channel = target.channel if target is not None else ""
+    try:
+        outcome = push_report(
+            session,
+            report_id=report_id,
+            channel=channel,
+            target_id=target_id,
+            actor_id=web.user.id,
+        )
+    except PushError as exc:
+        return _panel(request, session, web, report_id, error=f"{exc.code}：{exc}")
+    if outcome.delivered:
+        replay = "（该版本与目标此前已推送，未重复发送）" if outcome.replayed else ""
+        return _panel(
+            request,
+            session,
+            web,
+            report_id,
+            flash=f"已推送到 {outcome.destination}（第 {outcome.attempt} 次尝试）{replay}",
+        )
+    return _panel(
+        request,
+        session,
+        web,
+        report_id,
+        error=(f"推送失败：{outcome.error_code}（第 {outcome.attempt} 次尝试，可再次推送重试）"),
     )
 
 

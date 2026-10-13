@@ -421,6 +421,20 @@ T12 已实现以下能力：
 - `web/` 提供服务端渲染的管理界面：Jinja2 模板 + 本地 vendored 的 HTMX（容器无外网也可用），登录、报告列表（状态/可见范围筛选 + 分页）、报告详情（验证结论、引用与证据、版本历史、审核记录、编辑表单）与全部动作。界面复用 `api` 层同一套服务，自己不发 SQL。
 - UI 会话是 `HttpOnly` Cookie 里的 JWT（`docs/security-and-privacy.md` §3.1），写操作额外走 CSRF 双提交（随机值同时存 Cookie 与表单隐藏字段，`secrets.compare_digest` 比对）；动作的守卫顺序固定为 **CSRF → 写角色 → 报告读权限 → 调用服务**，因此越权动作不会先落库再被拒。
 
+### 9.10 T13 邮件/Webhook 推送
+
+T13 已实现以下能力：
+
+- `notifications/` 是报告唯一的出站通道，且渠道无关：`NotificationChannel` Protocol（`OutboundMessage` / `DeliveryReceipt`）与 `email`、`webhook` 两个投递适配器，构造入口只有 `build_channel`。`push_delivery` 有两档：默认 `offline` 用确定性 digest 桩（无网络，部署默认值），`live` 才走 `smtplib` 或 `httpx` 的 HTTPS POST 并带 `X-OSIA-Signature: sha256=<hex>`（HMAC-SHA256）。
+- 推送的守卫顺序固定为 **状态 → 敏感审批 → 允许列表**：状态只接受 `PUSHABLE_STATUSES = {approved, published}`；`CONFIDENTIAL` 报告还必须存在针对**同一版本**的 `approve` 审核记录（`REQUIREMENTS.md` §7 要求敏感材料的外部投递走 `MANUAL`）；目标必须启用、渠道与请求一致，并被显式开过 `allow_private` / `allow_confidential`（两开关默认关闭，新目标默认安全）。任一违规抛异常并渲染为 RFC 7807。
+- **传输失败不是异常**：`DeliveryReceipt(ok=False)` 是被记录的可重试结果，`POST /reports/{report_id}/push` 返回 `200` + `status="failed"` + 稳定 `error_code`，与 `publish-due` 对"被拦发布"的返回形状一致；只有守卫违规才抛异常。适配器内部异常也在 `_deliver` 里收成回执，因为推送挂在发布链路上，适配器缺陷不能把一次成功的发布变成崩溃。
+- 幂等键 `ReportPush.key_for(report_id, version, target_id)` 带唯一约束：同一 `(报告, 版本, 目标)` 三元组只投递一次，重复请求返回 `replayed=True` 且不重发；重试**推进同一行的 `attempt`** 而非新增行，`attempt` 用尽后停手。
+- 允许列表是 `push_targets` 表（`name` 唯一、启用开关、两个 `allow_*` 开关），投递记录是 `report_pushes` 表（`target_id` 为 `ON DELETE RESTRICT`，反规范化 `channel` / `destination`，`pipeline_run_id` 为 `ON DELETE SET NULL`）。新增 `push` 运行类型：ORM 的 `CheckConstraint`、迁移里的 CHECK、`pipeline/runs.py:TOPIC_RUN_TYPES` 三处同步。
+- `push_after_publish` 挂在 `publish_report` 末尾，覆盖所有发布路径且**永不抛异常**：不可用目标写 `report.push` / `denied` 审计后继续，因为一次通知失败不能回退一次已经发生的发布；失败行交给重试扫描。
+- Celery 新增独立 beat 条目 `retry-failed-pushes`（`PUSH_RETRY_TASK`，间隔 `PUSH_RETRY_INTERVAL_MINUTES` 默认 15 分钟），与 `publish-due-reports` 解耦，避免邮件服务器拖慢到期发布；`retry_failed_pushes` 的单条失败被跳过并记 `denied`，不中断整批，与 `publish_due_reports` 一致。
+- 三处入口都是薄调用层、都不写 SQL：API 的 `POST /api/v1/reports/{report_id}/push` 与 `/api/v1/push/{targets,records,retry}`；CLI 的 `--action push --channel --target-id` 与 `--action push-retry`；管理界面详情页的推送卡片。UI 的推送渠道**从 `PushTarget` 行读取**（不接受表单传 `channel`），因此伪造的表单字段无法选择传输方式。允许列表与投递记录的读接口要求写角色（`ADMIN` / `EDITOR`），只读角色一律 `403`。
+- 推送的路径注册有一条硬约束：`/api/v1/push/*` 单独成组而非挂在 `/api/v1/reports` 下，否则字面量路径会被 `/{report_id}` 吞掉（与 `/reports/publish-due` 注册在 `/{report_id}` 之前是同一类陷阱）。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -432,7 +446,8 @@ T12 已实现以下能力：
 | 主题 | `/api/v1/topics` | 监控主题与筛选条件 |
 | 仓库 | `/api/v1/repositories`, `/api/v1/repositories/{id}/snapshots` | 仓库和趋势查询 |
 | Agent | `/api/v1/agent/runs`, `/api/v1/agent/runs/{id}` | 触发与查看研究轨迹 |
-| 报告 | `/api/v1/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/publish-due` | 查询、校验、审核、发布和回退 |
+| 报告 | `/api/v1/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 查询、校验、审核、发布、回退和推送 |
+| 推送 | `/api/v1/push/targets`、`/api/v1/push/records`、`/api/v1/push/retry` | 投递允许列表、投递记录与失败重试扫描，需写角色 |
 | 管理界面 | `/ui/login`、`/ui/reports`、`/ui/reports/{id}` | 服务端渲染的审核与运维界面，动作走 HTMX 片段替换 |
 | 评测 | `/api/v1/evaluations`, `/api/v1/evaluations/{id}/run` | 数据集、执行和指标 |
 | 审计 | `/api/v1/audit-logs` | 只读审计查询，限管理员 |
@@ -448,6 +463,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - 模型请求前执行基础敏感信息识别，数据库连接串、API Key、Cookie 和内部密码不得进入 Prompt 或日志。
 - 关键操作写入不可由普通管理员修改的审计日志。
 - 报告导出和下载需记录事件；首期不实现完整水印和端到端 DLP。
+- 报告出站（邮件/Webhook）只能走 `push_targets` 允许列表：目标必须启用、渠道一致，并被显式开过 `allow_private` / `allow_confidential`（默认关闭）；`CONFIDENTIAL` 报告额外要求同版本的 `approve` 审核，因此敏感材料的外部投递被强制走人工链路。允许列表与投递记录的读接口只对写角色开放。
 - 详细威胁与控制见 [docs/security-and-privacy.md](docs/security-and-privacy.md)。
 
 ## 12. 评测与可观测性
@@ -505,7 +521,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T10 报告生成与引用 — 依赖：T8 — 验证：关键数字可追溯，引用链接有效
 - [x] T11 Verifier 与发布策略 — 依赖：T10 — 验证：`AUTO`、`AUTO_WITH_DELAY`、`MANUAL` 状态机测试通过
 - [x] T12 报告 API 与管理界面 — 依赖：T3/T11 — 验证：可查看、编辑、审核、发布和回退报告
-- [ ] T13 邮件/Webhook 推送 — 依赖：T11/T12 — 验证：仅已批准报告可推送，失败可重试
+- [x] T13 邮件/Webhook 推送 — 依赖：T11/T12 — 验证：仅已批准报告可推送，失败可重试
 - [ ] T14 评测数据集与 Runner — 依赖：T8/T10 — 验证：Baseline、Agent、消融版本可输出统一报告
 - [ ] T15 监控指标与看板 — 依赖：T6/T10/T14 — 验证：任务、Token、延迟、失败率和评测结果可见
 - [ ] T16 数据回填与端到端演示 — 依赖：T4/T5/T14 — 验证：完成一次历史回填和完整周报生成
@@ -557,3 +573,6 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-13 | 修复两处 T12 真实缺陷：UI 表单的 CSRF 字段名未与处理函数参数对齐（所有 UI 表单动作返回 422 而非执行）；UI 发布动作缺少"撤销窗口是否已到期"的判断，导致对未到期报告提前调用发布并误报 `PUBLISH_POLICY_BLOCKED` | 9.9、14、15 | T12 | 两处均由真实应用冒烟复现后修复（CSRF 字段加 `alias`，发布判断补 `publish_at <= utc_now()`）；UI 测试与真实端到端复跑通过 |
 | 2026-10-13 | 修复 `changes_requested` 状态下重新生成报告会卡死的缺陷（`INTERFACES.md` §8 已声明的 `changes_requested -> draft` 边此前不可达） | 8.5、9.9、15 | T12 | 先复现后修复；`generate_report` 在 `changes_requested` 时显式回到 `draft` 并清空 `publish_at`，新增回归测试 |
 | 2026-10-13 | T8–T12 复查修复七处产品缺陷：① `rollback_report` 先写版本后校验状态，被拒时已污染 `Report` 对象（`current_version` +1、正文替换、staged 行）并被 UI 渲染；② `report_panel.html` 回滚按钮按"非 `failed`"显示，与状态机实际允许的 `draft`/`changes_requested`/`published` 不符（修复时把两个状态集从 `render()` 注入全部模板上下文，模板不再硬编码）；③ `report_verifications.details_json` 空值在模板里渲染为空串而非占位符；④ `generate_report` 与 `fail_publish` 直接赋值 `report.status` 绕过状态机；⑤ `record_review` 接受任意 `edited_version_id`（外键只保证行存在，不保证属于该报告），跨报告 id 被静默接受、未知 id 直接 500；⑥ 编辑路径不校验标题，含换行的标题会让报告永远无法通过 `verification` 的结构检查；⑦ 回滚入口状态从"仅排除 `failed`"收紧为精确等于状态机指向 `draft` 的边集 | 8.5、9.8、9.9、15 | T8–T12 复查 | ① 先用探针实证（`version 2 -> 3`、`content changed = True`）再修复，修复后 `2 -> 2`；七处各补回归测试，`ROLLBACKABLE_STATUSES` 由 `ALLOWED_TRANSITIONS` 派生断言保持一致；303 项测试、Ruff check 通过、Ruff format 152 文件、mypy 91 源文件 0 错误；真实应用 + 真实数据库端到端复跑，修复前后 payload 逐字一致且连续两次运行幂等 |
+| 2026-10-13 | 完成 T13 邮件/Webhook 推送：渠道无关的推送服务与 `offline`/`live` 两档投递、SMTP 与签名 Webhook 两个适配器、状态→敏感审批→允许列表三级守卫、幂等键与失败重试、发布链路自动扇出、独立 `retry-failed-pushes` 周期任务、API/CLI/UI 三处入口 | 5、7、9.10、10、11、14 | T13 | 361 项测试（含推送服务 24 项、推送 API、推送 UI）、Ruff check+format 通过、mypy 102 源文件 0 错误；`alembic heads` 单 head `d4f8b2c6a1e9`，升级/回滚 MySQL DDL 离线渲染与 ORM 元数据逐字段一致；真实 CLI + 真实 FastAPI 应用 + 真实数据库端到端跑通六条验收（非可推送状态被拒、允许列表外被拒、敏感报告需审批且需清空目标、重复请求重放不重发、失败行在**同一行**上重试且预算用尽后停手、发布后自动扇出到全部启用目标），连续两次运行 payload 逐字一致 |
+| 2026-10-13 | 新增 `push_targets` 与 `report_pushes` 两张表，并给 `pipeline_runs.run_type` 增加 `push` 取值 | 6、9.10、14 | T13 | 迁移 `d4f8b2c6a1e9`；`report_pushes.target_id` 为 `ON DELETE RESTRICT`、`pipeline_run_id` 为 `ON DELETE SET NULL`；幂等键 `report:{id}:v{version}:target:{target_id}` 唯一约束；`alembic heads` 单 head，`upgrade`/`downgrade` 的 MySQL DDL 离线渲染与 ORM 一致 |
+| 2026-10-13 | 自动推送接入发布链路：`publish_report` 末尾调用 `push_after_publish`，覆盖所有发布路径且保证不抛异常 | 9.10、14 | T13 | 不可用目标写 `report.push` / `denied` 审计后继续，发布结果不受影响；发布后自动扇出由真实端到端验证（一次发布向 4 个启用目标投递，报告最终 `published`） |

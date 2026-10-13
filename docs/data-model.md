@@ -28,6 +28,8 @@ users --< reports（owner_id）
 reports --< report_sources（按 report_id + version 归属）
 reports --< report_reviews
 reports --< report_verifications
+reports --< report_pushes >-- push_targets
+pipeline_runs --< report_pushes
 eval_datasets --< eval_cases --< eval_results >-- eval_runs
 users --< feedback
 users --< audit_logs
@@ -384,6 +386,53 @@ T11 落地。人对某个报告版本的审核决定，是 `MANUAL` 报告能否
 
 `approve` 把报告置为 `approved` 并使其可以进入发布队列；`request_changes` 置为 `changes_requested` 退回重写；`reject` 置为 `failed`，此后不能再发布。
 
+### `push_targets`
+
+T13 新增。报告出站的**允许列表**：除了落在本表里的目标，没有任何办法把一份报告发出去。目标默认是保守的 —— 两个 `allow_*` 开关都是 `false`，新目标不会自动获得投递 `PRIVATE` / `CONFIDENTIAL` 报告的权限。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 目标 ID |
+| `name` | VARCHAR(128) | UNIQUE, NOT NULL | 目标名，唯一 |
+| `channel` | VARCHAR(16) | NOT NULL | `email`、`webhook` |
+| `destination` | VARCHAR(512) | NOT NULL | 邮箱地址或 HTTPS 回调地址 |
+| `description` | VARCHAR(255) | NULL | 备注 |
+| `enabled` | BOOLEAN | NOT NULL, default true | 停用开关 |
+| `allow_private` | BOOLEAN | NOT NULL, default false | 是否允许投递 `PRIVATE` 报告 |
+| `allow_confidential` | BOOLEAN | NOT NULL, default false | 是否允许投递 `CONFIDENTIAL` 报告 |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+| `updated_at` | DATETIME(6) | NOT NULL | UTC |
+
+索引：`(channel, enabled)`。CHECK：`channel IN ('email','webhook')`。
+
+### `report_pushes`
+
+T13 新增。一次投递尝试的记录（不论成败），同时也是重试扫描的工作队列。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 投递 ID |
+| `report_id` | BIGINT UNSIGNED | FK reports.id, CASCADE | 被投递报告 |
+| `target_id` | BIGINT UNSIGNED | FK push_targets.id, **RESTRICT** | 投递目标；删除目标前必须先处理记录 |
+| `version` | INT | NOT NULL | 被投递的 `reports.current_version` |
+| `channel` | VARCHAR(16) | NOT NULL | 反规范化的渠道，便于目标变更后追溯 |
+| `destination` | VARCHAR(512) | NOT NULL | 反规范化的地址，同上 |
+| `status` | VARCHAR(16) | NOT NULL | `pending`、`sent`、`failed` |
+| `attempt` | INT | NOT NULL, default 1 | 已尝试次数，重试只推进该列 |
+| `idempotency_key` | VARCHAR(255) | UNIQUE, NOT NULL | `report:{report_id}:v{version}:target:{target_id}` |
+| `error_code` | VARCHAR(64) | NULL | 失败时的稳定错误码 |
+| `error_message` | VARCHAR(512) | NULL | 脱敏截断后的失败详情 |
+| `message_json` | JSON | NULL | 实际发出的载荷摘要 |
+| `response_excerpt` | VARCHAR(512) | NULL | 传输层返回摘要 |
+| `pipeline_run_id` | BIGINT UNSIGNED | FK pipeline_runs.id, SET NULL | 本次投递的运行记录 |
+| `sent_at` | DATETIME(6) | NULL | 送达时刻；未送达为 `NULL` |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+| `updated_at` | DATETIME(6) | NOT NULL | UTC |
+
+唯一约束：`UNIQUE(idempotency_key)`，同一 `(report, version, target)` 只有一行（重复请求重放该行，不重复发送）。索引：`(report_id, created_at)`、`(status, updated_at)`（后者服务于重试扫描）。CHECK：`version >= 1`、`attempt >= 0`、`status IN ('pending','sent','failed')`。
+
+`channel` 与 `destination` 刻意反规范化：目标行之后可能被改名或改地址，但历史投递记录必须能回答"当时发到了哪里、走的哪条通道"。
+
 ## 7. 评测与反馈
 
 ### `eval_datasets`
@@ -448,7 +497,7 @@ T11 落地。人对某个报告版本的审核决定，是 `MANUAL` 报告能否
 - `report_sources.report_id` 必须与报告所属主题一致。
 - `audit_logs` 的 `result=denied` 必须保留原始 `request_id`。
 - 用户状态、数据范围、角色代码、审计结果、主题发布模式和 Pipeline 状态由数据库 CHECK 约束限制为文档定义的合法值。
-- Pipeline 运行的 `agent` 和 `publish` 类型必须绑定主题；`collect`、`snapshot`、`rank` 允许全局运行。
+- Pipeline 运行的 `agent`、`publish` 和 `push` 类型必须绑定主题；`collect`、`snapshot`、`rank` 允许全局运行。
 - 仓库 star/fork、快照 star/fork/open issues、主题 star/window/candidate 阈值、候选 score/rank 和 Pipeline attempt 由数据库 CHECK 约束保证非负或正数范围。
 - `agent_configs.max_tokens` 必须为正数；`agent_runs.prompt_tokens` 与 `completion_tokens` 必须非负。
 - 审计日志、仓库快照和主题候选关系的 `created_at` 由 ORM 使用 UTC 时间自动填充；业务明确需要时可显式覆盖。
@@ -457,6 +506,9 @@ T11 落地。人对某个报告版本的审核决定，是 `MANUAL` 报告能否
 - `repository_contents` 唯一键为 `(repository_id, content_type)`，`content_type` 当前仅允许 `readme`。
 - `tool_calls` 必须关联 `agent_run_id`，只保存脱敏且截断后的 `arguments_json` 与 `result_summary`。
 - 五个 Agent 工具中只有 `save_report_section` 产生领域写入，且只写当前运行草稿；其余四个只读工具不得写入任何领域表（由注册表的只读写保护强制）。
+- 报告出站只能走 `push_targets` 允许列表；目标必须 `enabled`、渠道与请求一致，并被显式开过 `allow_private` / `allow_confidential`（默认关闭）。
+- 只有 `approved` / `published` 状态的报告可被推送；`CONFIDENTIAL` 报告额外要求存在针对 `current_version` 的 `approve` 审核记录。
+- 同一 `(report_id, version, target_id)` 只有一条 `report_pushes`；重复请求重放该行，重试只推进 `attempt` 而不新增行。
 
 ## 10. 写入方（T8）
 
@@ -473,9 +525,9 @@ T8 未新增表，但下列表的写入方自此明确：
 
 `reports` 与 `report_sources` 在 T8 仍为空：Write 只到草稿章节，报告合成与引用有效性校验属 T10。
 
-## 11. 写入方（T10 / T11 / T12）
+## 11. 写入方（T10 / T11 / T12 / T13）
 
-T10–T12 的写入方如下：
+T10–T13 的写入方如下：
 
 | 表 | 写入方 | 说明 |
 |---|---|---|
@@ -485,7 +537,12 @@ T10–T12 的写入方如下：
 | `report_verifications` | `reports/verification.py:verify_report()` | 按 `(report_id, version)` 刷新单行结论，并写 `report.verify` 审计事件 |
 | `report_reviews` | `reports/publishing.py:record_review()` | 每次人工决定追加一行，并写 `report.review` 审计事件 |
 | `pipeline_runs` | `reports/publishing.py`（`run_type=publish`） | 决策、阻塞与发布各留一条记录，`metrics_json.stage` 区分 `evaluate` 与 `publish` |
+| `push_targets` | 运维播种（暂无 API 写入方） | 允许列表是人工维护的表，T13 只读不写 |
+| `report_pushes` | `notifications/service.py:push_report()` | 每次投递尝试一行（幂等键唯一），重试推进同一行的 `attempt`，并写 `report.push` 审计事件 |
+| `pipeline_runs` | `notifications/service.py`（`run_type=push`） | 每次投递（含自动推送）一条运行记录，`metrics_json` 记录目标、渠道与结果 |
 
 T12 的读侧入口是 `reports/queries.py`：列表（带授权谓词与分页）、详情聚合、以及 8 个 API 端点与 `/ui` 页面共用的序列化。`api`、`web` 两层都不直接构造 SQL（`INTERFACES.md` §4）。
 
 `publish_due_reports()` 是延迟发布与批准后发布的唯一推进入口：先把 `approved` 报告置为 `scheduled`，再发布所有已到期的 `scheduled` 报告；单条报告被策略拦截时记 `failed` 并继续处理其余报告，不中断整批。
+
+T13 的出站链路只有一个写入口：`push_report()` 负责守卫、解析目标、投递与落库；`push_after_publish()`（挂在 `publish_report` 末尾）只是 `push_report()` 的扇出调用方，同样是唯一入口，**不允许**任何调用方绕过它直接写 `report_pushes`。失败行的重试同样回到 `push_report()`（`retry_push()` / `retry_failed_pushes()` 只是它的包装）。

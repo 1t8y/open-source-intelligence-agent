@@ -9,6 +9,7 @@ from open_source_intelligence.core.config import Settings
 from open_source_intelligence.workers.celery_app import (
     DAILY_PIPELINE_TASK,
     HEALTHCHECK_TASK,
+    PUSH_RETRY_TASK,
     build_beat_schedule,
     create_celery_app,
 )
@@ -47,6 +48,7 @@ def test_beat_schedule_registers_the_daily_pipeline() -> None:
         "system-healthcheck",
         "daily-deterministic-pipeline",
         "publish-due-reports",
+        "retry-failed-pushes",
     }
     assert schedule["system-healthcheck"]["task"] == HEALTHCHECK_TASK
 
@@ -80,7 +82,12 @@ def test_beat_schedule_can_disable_the_daily_pipeline() -> None:
     """Operators must be able to keep Beat on without scheduling the pipeline."""
     schedule = build_beat_schedule(build_settings(schedule_enabled=False))
 
-    assert set(schedule) == {"system-healthcheck", "publish-due-reports"}
+    assert set(schedule) == {
+        "system-healthcheck",
+        "publish-due-reports",
+        "retry-failed-pushes",
+    }
+    assert schedule["retry-failed-pushes"]["task"] == PUSH_RETRY_TASK
 
 
 def test_daily_pipeline_task_is_registered() -> None:

@@ -234,7 +234,7 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (
         CheckConstraint(
-            "run_type IN ('collect', 'snapshot', 'rank', 'agent', 'publish')",
+            "run_type IN ('collect', 'snapshot', 'rank', 'agent', 'publish', 'push')",
             name="run_type_valid",
         ),
         CheckConstraint(

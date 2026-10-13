@@ -1,7 +1,7 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T12 已对齐）
-> 文档版本：v0.10
+> 文档状态：实施基线（T1-T13 已对齐）
+> 文档版本：v0.11
 > 最后更新：2026-10-13
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -37,8 +37,9 @@
 | 主题 | `/topics`、`POST /topics/{id}/run` | ADMIN/EDITOR | 过滤条件、候选上限、发布模式 |
 | 仓库 | `/repositories`、`/repositories/{id}/snapshots` | 有主题权限 | 趋势和快照查询 |
 | Agent | `/agent/runs`、`/agent/runs/{id}/steps` | ADMIN/EDITOR | 运行状态、预算和轨迹 |
-| 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/publish-due`、`push` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
-| 管理界面 | `GET /ui/reports`、`/ui/reports/{id}`、`POST /ui/reports/{id}/{verify,review,publish,rollback,edit}`、`POST /ui/reports/publish-due`、`/ui/login`、`/ui/logout` | 同报告资源的读/写角色 | 服务端渲染页面，复用同一套服务层；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交 |
+| 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
+| 推送 | `/push/targets`、`/push/records`、`/push/retry` | ADMIN/EDITOR | 投递允许列表、投递记录与失败重试扫描 |
+| 管理界面 | `GET /ui/reports`、`/ui/reports/{id}`、`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/publish-due`、`/ui/login`、`/ui/logout` | 同报告资源的读/写角色 | 服务端渲染页面，复用同一套服务层；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；推送渠道取自目标行而非表单 |
 | 评测 | `/evaluations` | ADMIN/EDITOR | 数据集、执行、指标和基线差异 |
 | 监控 | `/metrics/overview` | ADMIN/EDITOR | 任务、Token、延迟、失败率 |
 | 审计 | `/audit-logs` | ADMIN | 只读，不可修改 |
@@ -161,7 +162,22 @@ resolve_citation(session, citation: CitationRef) -> ResolvedCitation
 generate_report(session, *, agent_run_id: int, title: str | None = None, now: datetime | None = None) -> ReportGenerationResult
 ```
 
-CLI 入口为 `python -m open_source_intelligence.reports.cli --agent-run-id <id>`。报告只从最新章节草稿合成；六个章节必须齐全且每节至少一条引用，含数字的章节至少一条 `metric` 引用。引用必须解析到 `repo_snapshots`、`repository_contents` 或已发布 `reports`。重复生成相同内容不新增版本，内容变化时递增 `reports.current_version` 并写入 `report_versions`。
+CLI 入口为 `python -m open_source_intelligence.reports.cli`，动作为 `--action {generate,verify,publish,review,publish-due,push,push-retry}`（`--agent-run-id` 单独使用等价于 `generate`，保持 T10 入口兼容）。报告只从最新章节草稿合成；六个章节必须齐全且每节至少一条引用，含数字的章节至少一条 `metric` 引用。引用必须解析到 `repo_snapshots`、`repository_contents` 或已发布 `reports`。重复生成相同内容不新增版本，内容变化时递增 `reports.current_version` 并写入 `report_versions`。`push` 额外接受 `--channel {email,webhook} --target-id <id>`，`push-retry` 接受 `--limit <n>`。
+
+推送接口（T13，`notifications.service` 是唯一出站入口）：
+
+```text
+push_report(session, *, report_id, channel, target_id, actor_id=None, settings=None, notifier=None, now=None) -> PushOutcome
+push_after_publish(session, *, report_id, actor_id=None, settings=None, notifier=None, now=None) -> list[PushOutcome]
+retry_push(session, *, push_id, actor_id=None, settings=None, notifier=None, now=None) -> PushOutcome
+retry_failed_pushes(session, *, limit=100, actor_id=None, settings=None, notifier=None, now=None) -> list[PushOutcome]
+list_targets(session, *, channel=None) -> Sequence[PushTarget]
+list_pushes(session, *, report_id=None, status=None, limit=50) -> Sequence[ReportPush]
+build_message(session, report) -> OutboundMessage
+build_channel(settings, channel) -> NotificationChannel
+```
+
+`push_report` 的守卫顺序固定为 **状态（`approved` / `published`）→ `CONFIDENTIAL` 需同版本 `approve` 审核 → 允许列表（启用 + 渠道一致 + `allow_private` / `allow_confidential`）**，任一违规抛 `PushError` 子类。传输失败**不抛异常**，返回 `status="failed"` 的 `PushOutcome` 并落库；`push_after_publish` 吞掉一切异常（写 `report.push` / `denied` 审计），因为它挂在发布链路里。`build_channel` 在 `live` 模式缺 `push_smtp_host` / `push_email_from` 时抛 `PushTargetNotAllowed`，且发生在写行之前。
 
 Pipeline 运行记录接口：
 
@@ -175,7 +191,7 @@ list_pipeline_runs(session, *, topic_id=None, run_type=None, status=None, limit=
 summarize_pipeline_run(run) -> PipelineRunSummary
 ```
 
-`run_type` 取值为 `collect`、`snapshot`、`rank`、`agent`、`publish`；`status` 取值为 `queued`、`running`、`succeeded`、`failed`、`partial`。`agent` 和 `publish` 必须提供 `topic_id`，与数据库 CHECK 约束一致。运行记录的每次状态变化立即提交，避免进程崩溃后丢失失败证据；`error_message` 写入前经过脱敏并截断到 2000 字符。
+`run_type` 取值为 `collect`、`snapshot`、`rank`、`agent`、`publish`、`push`；`status` 取值为 `queued`、`running`、`succeeded`、`failed`、`partial`。`agent`、`publish` 和 `push` 必须提供 `topic_id`，与数据库 CHECK 约束一致。运行记录的每次状态变化立即提交，避免进程崩溃后丢失失败证据；`error_message` 写入前经过脱敏并截断到 2000 字符。
 
 每日确定性 Pipeline 编排接口：
 
@@ -366,7 +382,7 @@ Agent 只能调用以下白名单工具：
 - 数据库事务在应用服务边界开启，跨多个 Repository 时使用统一工作单元。
 - 仓库唯一键为 `(source_id, provider_repo_id)`。
 - 快照唯一键为 `(repository_id, snapshot_date)`。
-- `pipeline_runs.attempt >= 1`，`finished_at` 不早于 `started_at`；`agent` 和 `publish` 运行必须绑定 `topic_id`。
+- `pipeline_runs.attempt >= 1`，`finished_at` 不早于 `started_at`；`agent`、`publish` 和 `push` 运行必须绑定 `topic_id`。
 - 每个阶段每次尝试只写一条 `pipeline_runs` 记录，禁止用同一行覆盖历史尝试。
 - `agent_steps` 在运行内按 `step_index` 唯一递增。
 - `agent_configs` 唯一键为 `(name, version)`；`agent_runs` 必须绑定 `pipeline_run_id`、`topic_id` 和 `agent_config_id`。
@@ -384,6 +400,9 @@ Agent 只能调用以下白名单工具：
 - 任何报告发布前，都必须存在针对其 `current_version` 且 `verdict=passed` 的 `report_verifications` 行（`INV-5`）。
 - 发布刻意按 `publish_mode` 收紧而不放宽：`publish_mode` 是上限，验证失败、敏感内容、首次配置、运行不干净等发现只会让决策更严格。
 - `publish_due_reports` 只发布 `scheduled` 且 `publish_at` 已到期的报告；`approved` 视为明确同意，跳过延迟窗口直接排队。
+- `push_targets` 是报告出站的唯一允许列表：`name` 唯一，`channel` 取 `email` / `webhook`，并带 `enabled`、`allow_private`、`allow_confidential` 三个开关；投递目标只有落入该表才可送达，两个 `allow_*` 开关默认关闭。
+- `report_pushes` 按 `idempotency_key` 唯一（`report:{report_id}:v{version}:target:{target_id}`），同一 `(报告, 版本, 目标)` 只有一行；`attempt >= 1`（`version >= 1` 同理），`status` 取 `pending` / `sent` / `failed`，重试只推进同一行的 `attempt`。`target_id` 为 `ON DELETE RESTRICT`（删除目标前必须先处理投递记录），`pipeline_run_id` 为 `ON DELETE SET NULL`。
+- `pipeline_runs.run_type` 新增 `push` 取值，与 `agent` / `publish` 一样按 `topic_id` 归属，并同步出现在 ORM 的 `CheckConstraint`、迁移里的 CHECK 与 `pipeline/runs.py:TOPIC_RUN_TYPES` 三处。
 
 ## 8. 错误码与状态机
 
@@ -441,6 +460,12 @@ failed            -> （终态，无出边）
 | `PUBLISH_POLICY_BLOCKED` | 报告不满足自动发布条件（缺通过验证、`MANUAL` 缺 `approve`、窗口未到期） |
 | `REPORT_STATE_INVALID` | 报告当前状态不允许该迁移或动作（含对 `failed` 报告回退） |
 | `NOT_FOUND` | 报告、报告版本或 UI 资源不存在 |
+| `PUSH_BLOCKED` | 报告不在可推送状态（只接受 `approved` / `published`） |
+| `PUSH_APPROVAL_REQUIRED` | `CONFIDENTIAL` 报告缺少同版本的 `approve` 审核记录 |
+| `PUSH_TARGET_NOT_ALLOWED` | 目标不在允许列表、已禁用、渠道不符，或未对该可见范围/敏感级别开放（含 `live` 渠道缺凭据） |
+| `PUSH_DELIVERY_FAILED` | 传输层拒绝或失败，已落库为可重试结果 |
+| `PUSH_DISABLED` | 推送能力被 `push_enabled` 关闭 |
+| `PUSH_ERROR` | 推送领域未分类错误 |
 
 报告资源（T12）的 HTTP 语义：
 
@@ -452,7 +477,11 @@ failed            -> （终态，无出边）
 | `POST /reports/{id}/review` | `200` | `400 VALIDATION_ERROR` 未知决定或 `edited_version_id` 不属于该报告；`409 REPORT_STATE_INVALID` 非 `pending_review` |
 | `POST /reports/{id}/publish` | `200` | `409 PUBLISH_POLICY_BLOCKED`（缺验证/缺审核）；`409 REPORT_STATE_INVALID`（状态或窗口） |
 | `POST /reports/{id}/rollback` | `200` | `400` 目标为当前版本；`404` 版本不存在；`409` 报告不在可回退状态（`draft` / `changes_requested` / `published` 之外，含 `failed`） |
+| `POST /reports/{id}/push` | `200`（`status` 为 `sent` 或 `failed`） | `400 PUSH_TARGET_NOT_ALLOWED`（未配置的 `live` 渠道/未知渠道）；`401` 未登录；`403 FORBIDDEN` 越权或只读角色；`404 NOT_FOUND`；`409 PUSH_BLOCKED` / `PUSH_APPROVAL_REQUIRED` / `PUSH_ERROR`；`502 PUSH_DELIVERY_FAILED`；`503 PUSH_DISABLED` |
+| `GET /api/v1/push/targets`、`/records`、`POST /api/v1/push/retry` | `200` | `401` 未登录；`403 FORBIDDEN`（只读角色不可读允许列表与投递记录，也不可驱动重试） |
 | UI 写操作 | `200` 渲染片段 | `403` CSRF 校验失败或角色只读；`409` 同上；`303` 未登录重定向到 `/ui/login` |
+
+推送的 HTTP 语义有两点与直觉不同：其一，**传输失败返回 `200`**，`status="failed"` 且带稳定 `error_code`（`PUSH_DELIVERY_FAILED`），因为它是被记录的可重试结果而非请求错误 —— 与 `publish-due` 对"被拦发布"的处理一致；只有守卫违规（状态、审批、允许列表）才抛异常并映射为 `4xx`/`5xx`。其二，`400` 保留给**部署配置错误**：`live` 渠道缺 SMTP 主机或发件人时在写行之前就被拒，避免把配置问题伪装成可重试的传输失败。
 
 发布策略原因码（T11，出现在 `publish_decision.reason_codes` 与 `report_verifications.reason_codes_json`）：
 

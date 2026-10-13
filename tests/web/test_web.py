@@ -303,8 +303,9 @@ def test_read_only_role_sees_no_actions(
     page = client.get(f"{BASE}/{case.report_id}")
 
     assert page.status_code == 200
-    assert "当前角色只读，不能验证、审核、发布、编辑或回退报告。" in page.text
+    assert "当前角色只读，不能验证、审核、发布、编辑、回退或推送报告。" in page.text
     assert f'action="{BASE}/{case.report_id}/verify"' not in page.text
+    assert f'action="{BASE}/{case.report_id}/push"' not in page.text
 
 
 def test_read_only_role_cannot_mutate(

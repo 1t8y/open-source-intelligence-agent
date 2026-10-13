@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.core.config import Settings, get_settings
+from open_source_intelligence.notifications.service import push_after_publish
 from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.agent import AgentConfig, AgentRun
 from open_source_intelligence.persistence.models.reporting import (
@@ -369,6 +370,11 @@ def publish_report(
         },
         finished_at=_run_closed_at(now, moment),
     )
+    # A release is the event a subscriber cares about, and every publishing path funnels through
+    # here, so the auto-push is wired once. It never raises: an unusable target or a refused
+    # transport is recorded on the push row and picked up by the retry sweep, because a failed
+    # notification must not be able to undo a release that already happened.
+    push_after_publish(session, report_id=report.id, now=now)
     return report
 
 
