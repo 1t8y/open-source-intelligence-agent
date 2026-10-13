@@ -30,7 +30,10 @@ reports --< report_reviews
 reports --< report_verifications
 reports --< report_pushes >-- push_targets
 pipeline_runs --< report_pushes
-eval_datasets --< eval_cases --< eval_results >-- eval_runs
+eval_datasets --< eval_cases；eval_datasets --< eval_runs
+eval_runs --< eval_results >-- eval_cases
+eval_runs >-- agent_configs（baseline 的 target_type 允许为 NULL）
+users --< eval_datasets（created_by）
 users --< feedback
 users --< audit_logs
 ```
@@ -435,31 +438,76 @@ T13 新增。一次投递尝试的记录（不论成败），同时也是重试�
 
 ## 7. 评测与反馈
 
+四张 `eval_*` 表各回答一个问题：`eval_datasets` 是冻结数据集的**身份**，`eval_cases` 是一个样本，`eval_runs` 是"某数据集 × 某变体"的**一次执行**，`eval_results` 是该运行内**一个样本的测量**。
+
 ### `eval_datasets`
 
-字段：`id`、`name`、`version`、`description`、`created_by`、`created_at`。唯一约束：`UNIQUE(name, version)`。
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 数据集版本 ID |
+| `name` | VARCHAR(128) | NOT NULL | 数据集名 |
+| `version` | VARCHAR(32) | NOT NULL | 版本号 |
+| `description` | VARCHAR(255) | NULL | 说明 |
+| `created_by` | BIGINT UNSIGNED | FK `users.id` `ON DELETE SET NULL`，NULL | 导入者 |
+
+唯一约束：`UNIQUE(name, version)`。索引：`(name, created_at)`。
 
 ### `eval_cases`
 
 | 字段 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `id` | BIGINT UNSIGNED | PK | 样本 ID |
-| `dataset_id` | BIGINT UNSIGNED | FK eval_datasets.id | 评测集 |
+| `dataset_id` | BIGINT UNSIGNED | FK `eval_datasets.id` `ON DELETE CASCADE` | 所属数据集版本 |
 | `case_key` | VARCHAR(64) | NOT NULL | 样本键 |
-| `input_json` | JSON | NOT NULL | 输入快照 |
-| `reference_json` | JSON | NULL | 人工参考结论 |
-| `rubric_json` | JSON | NULL | 评分规则 |
+| `input_json` | JSON | NOT NULL | 输入快照（主题、窗口、标签、备注） |
+| `reference_json` | JSON | NULL | 人工参考结论与 `facts` |
+| `rubric_json` | JSON | NULL | 评分规则（阈值） |
 | `enabled` | TINYINT(1) | NOT NULL | 是否启用 |
 
-唯一约束：`UNIQUE(dataset_id, case_key)`。
+唯一约束：`UNIQUE(dataset_id, case_key)`。索引：`(dataset_id, enabled)`。
+
+`enabled=false` 的样本被 runner **跳过**而不是记为 0 分，因此可以临时停用样本而不污染历史均值的分母。
 
 ### `eval_runs`
 
-字段：`id`、`dataset_id`、`target_type`、`agent_config_id`、`status`、`started_at`、`finished_at`、`summary_json`、`error_message`。
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 运行 ID |
+| `dataset_id` | BIGINT UNSIGNED | FK `eval_datasets.id` `ON DELETE CASCADE` | 数据集版本 |
+| `target_type` | VARCHAR(32) | NOT NULL，CHECK | 变体 |
+| `agent_config_id` | BIGINT UNSIGNED | FK `agent_configs.id` `ON DELETE SET NULL`，NULL | Agent 配置（baseline 为 NULL） |
+| `status` | VARCHAR(16) | NOT NULL | `pending/running/succeeded/failed` |
+| `started_at` / `finished_at` | DATETIME(6) | NULL | UTC；CHECK `finished_at >= started_at` |
+| `summary_json` | JSON | NULL | 该变体的聚合摘要（统一对比报告的一行） |
+| `error_message` | VARCHAR(512) | NULL | 运行级错误 |
+
+约束：`target_type` 只允许 `baseline_single_prompt` / `agent_full` / `agent_no_verifier` / `agent_no_tools` / `agent_no_history` 五个取值（数据库 CHECK，与 `evaluation/targets.py:TARGET_ORDER` 逐字一致）。
+
+索引：`(dataset_id, target_type)`、`(status, created_at)`。
+
+`summary_json` 让运维**读一行就拿到一个变体的全貌**，不必重新聚合数百条结果行。它是 `TargetSummary.to_dict()` 的落盘形态。
 
 ### `eval_results`
 
-字段：`id`、`eval_run_id`、`eval_case_id`、`citation_coverage`、`factual_consistency`、`task_completion`、`cost`、`latency_ms`、`human_score`、`details_json`。唯一约束：`UNIQUE(eval_run_id, eval_case_id)`。
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 测量 ID |
+| `eval_run_id` | BIGINT UNSIGNED | FK `eval_runs.id` `ON DELETE CASCADE` | 所属运行 |
+| `eval_case_id` | BIGINT UNSIGNED | FK `eval_cases.id` `ON DELETE CASCADE` | 被测量的样本 |
+| `status` | VARCHAR(16) | NOT NULL | `succeeded/failed` |
+| `citation_coverage` | NUMERIC(5,4) | NULL | 门禁指标 |
+| `factual_consistency` | NUMERIC(5,4) | NULL | 门禁指标 |
+| `task_completion` | NUMERIC(5,4) | NULL | 门禁指标 |
+| `cost` | NUMERIC(10,6) | NOT NULL，CHECK `>= 0` | 该样本成本 |
+| `latency_ms` | INT | NULL，CHECK `>= 0` | 该样本耗时 |
+| `human_score` | INT | NULL，CHECK `1..5` | 人工评分 |
+| `details_json` | JSON | NULL | 其余指标与运行级证据 |
+
+唯一约束：`UNIQUE(eval_run_id, eval_case_id)`。索引：`(eval_run_id, status)`。
+
+`details_json` 承载 `ScoredCase.to_dict()`，其中包含**不落列**的比率（`source_accuracy`、`tool_success_rate`、`prompt_injection_block_rate`）与运行级信号（`tool_call_total`、`tool_call_denied`、`verification_sufficient_rate`）。把这些留在 JSON 里意味着新增一个被测量的比率不需要迁移 —— 只有能阻断发布的指标才值得占列。
+
+三个门禁指标存为 `NUMERIC(5,4)`：它们都是 `0.0`–`1.0` 的比率，四位小数与评分器的量化位数一致，因此"评分得到的值"就是"落库的值"。
 
 ### `feedback`
 
@@ -509,6 +557,11 @@ T13 新增。一次投递尝试的记录（不论成败），同时也是重试�
 - 报告出站只能走 `push_targets` 允许列表；目标必须 `enabled`、渠道与请求一致，并被显式开过 `allow_private` / `allow_confidential`（默认关闭）。
 - 只有 `approved` / `published` 状态的报告可被推送；`CONFIDENTIAL` 报告额外要求存在针对 `current_version` 的 `approve` 审核记录。
 - 同一 `(report_id, version, target_id)` 只有一条 `report_pushes`；重复请求重放该行，重试只推进 `attempt` 而不新增行。
+- 同一 `(name, version)` 只有一条 `eval_datasets`：**数据集版本不可覆盖**。同名同版本但内容不同的导入被拒（`DATASET_VERSION_CONFLICT`），否则任何历史结果都不可复现。内容等价由规范化后的 SHA-256 指纹判定，重复导入只重放不新增。
+- 同一 `(dataset_id, case_key)` 只有一条 `eval_cases`；同一 `(eval_run_id, eval_case_id)` 只有一条 `eval_results`，重跑刷新测量而不追加行。
+- `eval_runs.target_type` 只允许五个变体取值；`eval_runs.status` 只允许 `pending/running/succeeded/failed`；`finished_at >= started_at`。
+- `eval_runs` 中只有 `baseline_single_prompt` 可以 `agent_config_id IS NULL`；四个 Agent 变体必须绑定一个配置。
+- 一个变体的"是否通过"由 `scored_case_count > 0` 与"无门禁失败且无回归"共同决定：**没有测量的变体不能通过**，因为全部样本失败产生的空 `gate_failures` 与"真的都达标"在数据上同形。
 
 ## 10. 写入方（T8）
 
@@ -525,7 +578,7 @@ T8 未新增表，但下列表的写入方自此明确：
 
 `reports` 与 `report_sources` 在 T8 仍为空：Write 只到草稿章节，报告合成与引用有效性校验属 T10。
 
-## 11. 写入方（T10 / T11 / T12 / T13）
+## 11. 写入方（T10 / T11 / T12 / T13 / T14）
 
 T10–T13 的写入方如下：
 
@@ -546,3 +599,19 @@ T12 的读侧入口是 `reports/queries.py`：列表（带授权谓词与分页�
 `publish_due_reports()` 是延迟发布与批准后发布的唯一推进入口：先把 `approved` 报告置为 `scheduled`，再发布所有已到期的 `scheduled` 报告；单条报告被策略拦截时记 `failed` 并继续处理其余报告，不中断整批。
 
 T13 的出站链路只有一个写入口：`push_report()` 负责守卫、解析目标、投递与落库；`push_after_publish()`（挂在 `publish_report` 末尾）只是 `push_report()` 的扇出调用方，同样是唯一入口，**不允许**任何调用方绕过它直接写 `report_pushes`。失败行的重试同样回到 `push_report()`（`retry_push()` / `retry_failed_pushes()` 只是它的包装）。
+
+T14 的写入方如下：
+
+| 表 | 写入方 | 说明 |
+|---|---|---|
+| `eval_datasets` | `evaluation/dataset.py:import_dataset()` | 只在首次导入某个 `(name, version)` 时建行；重复导入走指纹比对并返回 `replayed=True`，不建行 |
+| `eval_cases` | `evaluation/dataset.py:import_dataset()` | 随数据集版本一次性写入；版本内 `case_key` 唯一，不允许事后增删 |
+| `eval_runs` | `evaluation/runner.py:run_evaluation()` 建行；`build_comparison()` 写回 `status` / `summary_json` / `finished_at` | **每个变体各一行**（不是每个数据集一行）；重跑是新行，历史执行不被改写 |
+| `eval_results` | `evaluation/runner.py:_record_result()` | `UNIQUE(eval_run_id, eval_case_id)` 使重跑刷新自身测量而非追加行 |
+| `pipeline_runs` | 无 | 评测不写 `pipeline_runs`：评测运行有独立的 `eval_runs` 生命周期，混入 Pipeline 会让"运行时状态"与"测量"两套语义互相污染 |
+
+`run_evaluation()` 是评测执行的唯一入口，`api/routes/evaluations.py` 与 `evaluation/cli.py` 都只是它的调用方；`compare_latest()` 是只读入口（取每个变体最近一次运行重建报告），它**不执行任何变体、不写任何行**。
+
+评测层的读侧入口是 `evaluation/dataset.py` 的 `list_datasets()` / `list_cases()` / `resolve_dataset()` 与 `evaluation/runner.py` 的 `list_runs()` / `latest_runs_per_target()`：`api` 层不直接构造 SQL，只把结果序列化为响应模型。
+
+`evaluation/scorers.py` 是**纯只读**模块：它读 `repo_snapshots`、`repository_contents` 与 `reports` 来判断引用能否解析、事实是否一致，但不写任何领域表。

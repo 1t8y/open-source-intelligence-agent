@@ -37,6 +37,7 @@ from open_source_intelligence.agent.guards import GuardDecision, guard_tool_payl
 from open_source_intelligence.agent.llm.base import ModelClient
 from open_source_intelligence.agent.llm.errors import ModelClientError
 from open_source_intelligence.agent.llm.messages import ChatMessage, ToolSchema
+from open_source_intelligence.agent.profile import WRITE_TOOL
 from open_source_intelligence.agent.recording import StepRecorder, digest_text
 from open_source_intelligence.agent.state import (
     AgentState,
@@ -52,7 +53,9 @@ from open_source_intelligence.agent.tools.registry import ToolRegistry
 from open_source_intelligence.agent.tools.truncation import content_digest
 from open_source_intelligence.agent.writing import DraftPayloadError, parse_draft_payload
 
-SAVE_SECTION_TOOL = "save_report_section"
+#: The draft-writing tool. `profile.WRITE_TOOL` is the single definition; this alias keeps the
+#: name the graph has always exported for tests and documentation.
+SAVE_SECTION_TOOL = WRITE_TOOL
 TOKEN_DEGRADE_PERCENT = 80
 
 _INTENT_BY_TOOL: dict[str, ResearchIntent] = {
@@ -74,6 +77,7 @@ class GraphDependencies:
     context: ToolContext
     draft_prompt: str
     tool_schemas: tuple[ToolSchema, ...] = ()
+    run_verifier: bool = True
 
 
 def _elapsed_ms(started: float) -> int:
@@ -352,6 +356,29 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     least one candidate must have had its cached content read.
     """
     started = time.perf_counter()
+    if not deps.run_verifier:
+        # `agent_no_verifier` ablation (`docs/evaluation.md` §8): the coverage gate is removed
+        # so a run that would normally be held back for a human instead publishes whatever the
+        # evidence supports. The result is recorded as a normal verification so the graph and
+        # the run summary stay identical in shape to a verified run - the whole point of the
+        # ablation is to measure the gate's contribution, not to change the pipeline's contract.
+        permissive = VerificationResult(
+            sufficient=True,
+            reason="verifier disabled by execution profile",
+            covered_repo_ids=[],
+            missing_repo_ids=[],
+            content_repo_ids=[],
+            has_prior_baseline=False,
+            security_risk=False,
+        )
+        deps.recorder.record(
+            step_type="verify",
+            status="skipped",
+            summary=permissive.reason,
+            latency_ms=_elapsed_ms(started),
+        )
+        return {"verification": permissive}
+
     candidates = list(state.get("candidate_repo_ids") or [])
     evidence = list(state.get("evidence") or [])
     guard_triggered = bool(state.get("guard_triggered")) or any(

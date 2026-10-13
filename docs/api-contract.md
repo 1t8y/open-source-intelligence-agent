@@ -457,35 +457,188 @@
 
 ## 7. 评测
 
-### `POST /evaluations`
+前缀 `/api/v1/evaluations`。**全部端点要求写角色**（`ADMIN` / `EDITOR`）：运行一次评测会用真实数据执行 Agent，属于运维动作而非读取，因此 `VIEWER` 一律 `403`，匿名 `401`。
+
+路由声明顺序是契约的一部分：`/runs` 与 `/runs/{run_id}` 是字面量段，必须先于以路径参数开头的 `/{dataset_id}/...` 声明，否则 `/runs` 会被解析成 dataset id。
+
+| 端点 | 成功 | 失败语义 |
+|---|---|---|
+| `GET /evaluations` | `200` | `401` 未登录；`403` 只读角色 |
+| `GET /evaluations/runs` | `200` | 同上 |
+| `GET /evaluations/runs/{run_id}` | `200` | `404 NOT_FOUND` 运行不存在 |
+| `GET /evaluations/{dataset_id}/cases` | `200` | `404 NOT_FOUND` 数据集不存在 |
+| `POST /evaluations/{dataset_id}/run` | `200` | `400 UNKNOWN_TARGET` 变体非法；`404 NOT_FOUND` 数据集不存在或无启用样本；`409 DATASET_VERSION_CONFLICT`；`503 EVALUATION_DISABLED` |
+| `GET /evaluations/{dataset_id}/comparison` | `200` | `404 NOT_FOUND` 数据集不存在 |
+
+### `GET /evaluations`
 
 ```json
 {
-  "dataset_id": 11,
-  "target": "agent",
-  "agent_config_id": 3,
-  "scorers": ["citation_coverage", "factual_consistency", "task_completion", "cost"]
+  "items": [
+    {
+      "id": 1,
+      "name": "weekly-agent-quality",
+      "version": "v1",
+      "description": "周报质量基线数据集：覆盖正常增长、数据缺失、README 注入三类样本",
+      "created_by": 1,
+      "created_at": "2026-10-12T12:00:00+00:00"
+    }
+  ]
 }
 ```
 
-### `GET /evaluations/{evaluation_run_id}`
+`limit` 默认 `50`，上限 `200`，按创建时间倒序。
+
+### `GET /evaluations/runs`
+
+查询参数 `dataset_id`、`target_type`、`limit`（默认 `50`）。返回每个变体的一次执行，最新在前：
 
 ```json
 {
-  "id": 88,
-  "status": "completed",
-  "metrics": {
-    "citation_coverage": 0.96,
-    "factual_consistency": 0.92,
-    "task_completion_rate": 0.95,
-    "average_cost": 0.038
-  },
-  "baseline_delta": {
-    "citation_coverage": 0.13,
-    "factual_consistency": 0.08
+  "items": [
+    {
+      "id": 2,
+      "dataset_id": 1,
+      "target_type": "agent_full",
+      "status": "succeeded",
+      "agent_config_id": 1,
+      "started_at": "2026-10-12T12:00:00+00:00",
+      "finished_at": "2026-10-12T12:00:00+00:00",
+      "summary": { "target_type": "agent_full", "reference_target": "baseline_single_prompt", "...": "..." }
+    }
+  ]
+}
+```
+
+`status` ∈ `pending|running|succeeded|failed`。`baseline_single_prompt` 的 `agent_config_id` 为 `null`（它不是 Agent 配置），其余四个变体必须绑定一个。
+
+### `GET /evaluations/runs/{run_id}`
+
+在上面一条的基础上追加该运行的逐样本测量：
+
+```json
+{
+  "id": 2,
+  "dataset_id": 1,
+  "target_type": "agent_full",
+  "status": "succeeded",
+  "agent_config_id": 1,
+  "started_at": "...",
+  "finished_at": "...",
+  "summary": { "...": "..." },
+  "results": [
+    {
+      "id": 4,
+      "eval_case_id": 1,
+      "case_key": "growth-surge",
+      "status": "succeeded",
+      "citation_coverage": "1.0000",
+      "factual_consistency": "1.0000",
+      "task_completion": "1.0000",
+      "cost": "0.000000",
+      "latency_ms": 0,
+      "human_score": null,
+      "details": { "source_accuracy": "1.0000", "tool_success_rate": "1.0000", "...": "..." }
+    }
+  ]
+}
+```
+
+比率以字符串返回（四位小数），未行使的指标为 `null`（不是 `0`）。
+
+### `GET /evaluations/{dataset_id}/cases`
+
+查询参数 `enabled_only`（默认 `false`）。按 `case_key` 升序：
+
+```json
+{
+  "items": [
+    {"id": 1, "case_key": "growth-surge", "topic": "AI Agent", "enabled": true, "tags": ["growth", "happy-path"]}
+  ]
+}
+```
+
+样本不返回 `reference_json` / `rubric_json`：参考答案不通过 API 外泄，评分在服务端完成。
+
+### `POST /evaluations/{dataset_id}/run`
+
+请求体可省略；`targets` 省略表示按报告顺序执行全部五个变体：
+
+```json
+{"targets": ["agent_full", "baseline_single_prompt"]}
+```
+
+响应是统一对比报告（与 `GET .../comparison` 同构）：
+
+```json
+{
+  "dataset": {"id": 1, "name": "weekly-agent-quality", "version": "v1"},
+  "case_count": 3,
+  "targets": [
+    {
+      "target_type": "baseline_single_prompt",
+      "run_id": 1,
+      "status": "succeeded",
+      "case_count": 3,
+      "scored_case_count": 3,
+      "failed_case_count": 0,
+      "metrics": {
+        "citation_coverage": "0.0000",
+        "factual_consistency": "1.0000",
+        "task_completion": "1.0000",
+        "source_accuracy": null,
+        "tool_success_rate": null
+      },
+      "total_cost": "0.000000",
+      "total_tokens": 0,
+      "mean_latency_ms": 0,
+      "prompt_injection_block_rate": null,
+      "tool_call_total": 0,
+      "tool_call_denied": 0,
+      "verification_sufficient_rate": null,
+      "reference_target": null,
+      "deltas_vs_reference": {},
+      "gate_failures": [
+        "citation_coverage 0.0000 < target 0.95",
+        "factual_consistency 0.0000 < target 0.90"
+      ],
+      "regression": false
+    },
+    {
+      "target_type": "agent_full",
+      "run_id": 2,
+      "status": "succeeded",
+      "scored_case_count": 3,
+      "metrics": {"citation_coverage": "1.0000", "factual_consistency": "1.0000", "task_completion": "1.0000", "source_accuracy": "0.9630", "tool_success_rate": "0.9744"},
+      "tool_call_total": 36,
+      "tool_call_denied": 0,
+      "verification_sufficient_rate": "0.6667",
+      "reference_target": "baseline_single_prompt",
+      "deltas_vs_reference": {"citation_coverage": "1.0000", "factual_consistency": "1.0000", "task_completion": "0.0000"},
+      "gate_failures": [],
+      "regression": false
+    }
+  ],
+  "passed": true,
+  "regressions": ["agent_no_verifier", "agent_no_tools"],
+  "failed_gates": {
+    "baseline_single_prompt": ["citation_coverage 0.0000 < target 0.95", "factual_consistency 0.0000 < target 0.90"],
+    "agent_no_tools": ["citation_coverage 0.0000 < target 0.95", "factual_consistency 0.0000 < target 0.90"],
+    "agent_no_verifier": ["citation_coverage 0.0000 < target 0.95", "factual_consistency 0.0000 < target 0.90"]
   }
 }
 ```
+
+契约要点：
+
+- `reference_target` 决定 `deltas_vs_reference` 与 `regression` 的参照对象：`agent_full` 参照 `baseline_single_prompt`，三个消融参照 `agent_full`，`baseline_single_prompt` 为 `null` 且差值为空对象。这是"消融回答 `docs/evaluation.md` §8、候选回答 §9"两条问题在数据上的体现。
+- `passed` **只裁决 `agent_full`**（`PROMOTION_TARGETS`）；消融是对照，其损失通过自身 `deltas_vs_reference` 与 `failed_gates` 呈现，不会否决发布。`regressions` 则列出**所有**发生质量回退的变体（因此 `passed=true` 与 `regressions` 非空可以同时成立）。无 `agent_full` 的诊断性 sweep 按其包含的全部变体裁决；任何变体的 `scored_case_count` 为 `0` 时 `passed` 为 `false`。
+- `failed_gates` 的文案形如 `<metric> <actual> < target <threshold>`，阈值来自 `ARCHITECTURE.md` §12；`gate_failures` 为空的变体才可能通过。
+- 每个变体独立一行 `eval_runs`，逐样本测量受 `UNIQUE(eval_run_id, eval_case_id)` 约束 —— 重跑刷新测量而不追加行，但**每次 sweep 都为每个变体新建一运行行**，因此历史执行不被改写。
+
+### `GET /evaluations/{dataset_id}/comparison`
+
+返回该数据集上**每个变体最近一次运行**的对比报告，不触发任何执行。响应与 `POST .../run` 同构，可复现同一份指标与差值，用于只读复核。
 
 ## 8. 监控与审计
 

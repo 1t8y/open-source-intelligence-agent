@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from open_source_intelligence.evaluation.errors import EvaluationError
 from open_source_intelligence.notifications.errors import PushError
 from open_source_intelligence.reports.errors import (
     PublishPolicyBlocked,
@@ -57,6 +58,12 @@ DOMAIN_PROBLEM_STATUS: dict[str, int] = {
     # retry budget is spent; both are upstream conditions rather than caller mistakes.
     "PUSH_DISABLED": status.HTTP_503_SERVICE_UNAVAILABLE,
     "PUSH_DELIVERY_FAILED": status.HTTP_502_BAD_GATEWAY,
+    # Evaluation failures. A malformed dataset or an unknown variant is the caller's mistake; a
+    # conflicting version is a conflict; a switched-off subsystem is unavailable.
+    "DATASET_INVALID": status.HTTP_400_BAD_REQUEST,
+    "UNKNOWN_TARGET": status.HTTP_400_BAD_REQUEST,
+    "DATASET_VERSION_CONFLICT": status.HTTP_409_CONFLICT,
+    "EVALUATION_DISABLED": status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
 
@@ -187,6 +194,24 @@ def add_problem_handlers(app: FastAPI) -> None:
 
         Registering the base class covers the whole hierarchy, so a new push failure only has to
         declare a `code` and a mapping to become a correct Problem Details response.
+        """
+        return problem_response(
+            request,
+            status_code=_domain_status(exc.code, status.HTTP_409_CONFLICT),
+            code=exc.code,
+            detail=str(exc),
+        )
+
+    @app.exception_handler(EvaluationError)
+    async def evaluation_error_handler(
+        request: Request,
+        exc: EvaluationError,
+    ) -> JSONResponse:
+        """Render an evaluation failure with its own stable code.
+
+        The base handler covers the whole evaluation hierarchy: `NOT_FOUND` lands on `404`, the
+        caller-mistake codes on `400`, a version conflict on `409`, and a disabled subsystem on
+        `503`, all from the one mapping table above.
         """
         return problem_response(
             request,

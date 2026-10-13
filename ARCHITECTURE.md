@@ -130,6 +130,7 @@ open-source-intelligence-agent/
 │   ├── workers/                 # Celery Tasks 和调度定义
 │   └── core/                    # 配置、日志、异常和共享类型
 ├── prompts/                     # 版本化 Prompt 和评分 Rubric
+├── datasets/                    # 版本化评测集文件（T14，冻结后不可覆盖）
 ├── alembic.ini                  # Alembic CLI 配置
 ├── migrations/                  # 数据库迁移环境和版本脚本
 ├── tests/                       # 单元、集成、端到端、安全与评测测试
@@ -151,7 +152,7 @@ open-source-intelligence-agent/
 | `pipeline_runs` | 采集、筛选、报告任务的运行记录 |
 | `agent_configs`, `agent_runs`, `agent_steps`, `tool_calls` | Agent 版本、状态、轨迹和工具调用 |
 | `reports`, `report_versions`, `report_sources`, `report_verifications`, `report_reviews` | 报告、当前版本与不可变版本、按版本归属的证据引用、验证结论和人工审核 |
-| `eval_datasets`, `eval_cases`, `eval_runs`, `eval_results` | 评测集、执行和指标 |
+| `eval_datasets`, `eval_cases`, `eval_runs`, `eval_results` | 评测集、样本、按变体执行与逐样本指标 |
 | `feedback` | 人工反馈和 Bad Case |
 | `audit_logs` | 权限、配置、审核、发布和导出审计 |
 
@@ -435,6 +436,24 @@ T13 已实现以下能力：
 - 三处入口都是薄调用层、都不写 SQL：API 的 `POST /api/v1/reports/{report_id}/push` 与 `/api/v1/push/{targets,records,retry}`；CLI 的 `--action push --channel --target-id` 与 `--action push-retry`；管理界面详情页的推送卡片。UI 的推送渠道**从 `PushTarget` 行读取**（不接受表单传 `channel`），因此伪造的表单字段无法选择传输方式。允许列表与投递记录的读接口要求写角色（`ADMIN` / `EDITOR`），只读角色一律 `403`。
 - 推送的路径注册有一条硬约束：`/api/v1/push/*` 单独成组而非挂在 `/api/v1/reports` 下，否则字面量路径会被 `/{report_id}` 吞掉（与 `/reports/publish-due` 注册在 `/{report_id}` 之前是同一类陷阱）。
 
+### 9.11 T14 评测数据集与 Runner
+
+T14 已实现以下能力：
+
+- `evaluation/` 提供离线评测全部环节：`dataset.py`（版本化数据集与幂等导入）、`targets.py`（五个变体的执行）、`scorers.py`（确定性评分）、`runner.py`（执行、聚合与统一对比报告）、`cli.py`（导入/运行/对比）与 `errors.py`（稳定错误码）。`api/routes/evaluations.py` 只是薄调用层，`api` 层不写 SQL，读侧复用 `evaluation` 的查询函数。
+- **数据集是冻结的版本化文件**，落在 `datasets/<name>.<version>.json`（`DATASET_SCHEMA_VERSION=1`），`--dataset-dir` 默认 `datasets`。`import_dataset` 用 `_fingerprint`（对规范化后的 `DatasetSpec` 取 SHA-256）判定导入是否等价：同 `/` 同版本、同内容重复导入返回 `replayed=True` 且不新增行；同名字、同版本但内容不同抛 `DatasetVersionConflict`（`409 DATASET_VERSION_CONFLICT`）。**版本不可覆盖**是硬约束 —— 否则任何历史结果都不可复现。`(name, version)` 唯一，`(dataset_id, case_key)` 唯一。
+- **五个评测目标逐字对应 `docs/evaluation.md` §1**，`TARGET_ORDER`（= `EVAL_TARGET_TYPES`）为 `baseline_single_prompt`、`agent_full`、`agent_no_verifier`、`agent_no_tools`、`agent_no_history`。`resolve_targets` 只接受这五个，未知值抛 `UnknownTarget`（`400 UNKNOWN_TARGET`），并按 `TARGET_ORDER` 归一化排序（调用方传入顺序不影响报告顺序）。
+- **消融 = 真实 graph + 开关，不是重新实现**：`agent/profile.py` 的 `ExecutionProfile(name, run_verifier, disabled_tools)` 是唯一开关面，`profile_for_target()` 把 `target_type` 映射到 profile。`agent_no_verifier` 置 `run_verifier=False`，`graph._verify_node` 此时返回恒 `sufficient` 的 `VerificationResult` 并把步骤记为 `status="skipped"`；`agent_no_tools` 禁用全部读工具，`agent_no_history` 只禁用 `search_prior_reports`。**写入工具 `save_report_section`（`WRITE_TOOL`）永不可禁** —— 没有草稿的消融什么也测不到，运行时会保留它。生产运行恒用 `AGENT_FULL`。
+- **评分全部是确定性规则**，无模型参与：`citation_coverage`（含数字的章节是否带可解析引用）、`source_accuracy`（引用能否在库中解析）、`factual_consistency`（`reference_json.facts` 逐条与真实快照比对）、`task_completion`（必需章节是否齐全）、`tool_success_rate`（工具调用成功比例）、`prompt_injection_blocked`（注入探针是否被拦截）。**未行使的指标返回 `None` 而不是 `0`**，聚合时把 `None` 从均值里剔除 —— 把"没测"当作"测成 0"会把一个更窄的消融误判为更差。`score_failed_case` 让失败的样本仍留下可读证据，而不是让整批 sweep 崩掉（`run_evaluation` 对单样本异常兜底为 failed 结果）。
+- **门禁指标与明细指标分离**：`COLUMN_METRICS = ("citation_coverage","factual_consistency","task_completion")` 落真实列（它们有绝对阈值、能否决发布）；`DETAIL_METRICS = ("source_accuracy","tool_success_rate")` 存 `details_json`（暂无阈值，加一个被测量的比率不需要迁移）。`GATED_METRICS` 与 `ARCHITECTURE.md` §12 的验收目标一一对应，`METRIC_TARGETS` 给出阈值。
+- **参照链：`baseline_single_prompt <- agent_full <- agent_no_*`。** 每个变体相对"它所改动的那个变体"衡量：`agent_full` 相对 baseline（回答 `docs/evaluation.md` §9 的"是否值得上线"），每个消融相对 `agent_full`（回答 §8 的"去掉这个能力代价多大"）。`_reference_summary` 实现这条链并把结果写进 `TargetSummary.reference_target`，差值写在 `deltas_vs_reference`。**把消融也拿去和 baseline 比会彻底掩盖损失** —— baseline 本来就停在该消融跌到的地板上。
+- **`passed` 只裁决候选**：`PROMOTION_TARGETS = ("agent_full",)`。消融是**对照**不是候选，一个得分很差的对照正是实验的目的，因此它不能否决发布；它的损失通过自身 `deltas_vs_reference` 与 `gate_failures` 呈现。无候选的 sweep（只跑 baseline 或只跑消融的诊断性运行）按其包含的全部变体评判。**`scored_case_count > 0` 是必要条件**：全部样本都失败的运行 `gate_failures` 为空，若不设这一条就会"因为没有测量"而通过 —— 这是发布门禁最危险的失效模式。回归判定用 `settings.eval_regression_tolerance`（默认 `0.02`，即 2 个百分点）。
+- **运行级证据信号**汇入 `TargetSummary`，让消融可被报告区分，而不只靠指标值：`tool_call_total` / `tool_call_denied`（`agent_no_tools` 读操作恒为 0；`agent_no_history` 每次放弃历史报告都记一次 denial）与 `verification_sufficient_rate`（`agent_no_verifier` 恒为 `1.0000`，因为它移除了那道门）。这些计数从 `details_json` 汇总，不占结果表的列。
+- **结果幂等**：`_record_result` 靠 `UNIQUE(eval_run_id, eval_case_id)` 存在即更新，重跑同一变体只刷新自身测量而不追加重复行；而 `run_evaluation` **每次都为每个变体新建一条 `eval_runs` 行**（`latest_runs_per_target` 取每变体最新一行），因此"重跑"是一次新执行而不是改写历史。`build_comparison` 在同一循环内先定终态、再构造 `TargetSummary`、最后写回 `run.status` / `run.summary_json` / `run.finished_at`，避免摘要里出现滞后状态。
+- 三处入口都不写 SQL：API 的 `GET /api/v1/evaluations`（数据集列表）、`GET /api/v1/evaluations/runs`、`GET /api/v1/evaluations/runs/{run_id}`、`GET /api/v1/evaluations/{dataset_id}/cases`、`POST /api/v1/evaluations/{dataset_id}/run`、`GET /api/v1/evaluations/{dataset_id}/comparison`；CLI 的 `--action list|import|run|compare`。**所有评测端点都要求写角色**（运行一次评测会用真实数据执行 Agent，是运维动作而非读），`VIEWER` 得到 `403`、匿名得到 `401`。
+- 路由注册有与 `/reports/publish-due` 同类的陷阱：`/runs`、`/runs/{run_id}` 是字面量段，`/{dataset_id}/...` 以路径参数开头，**必须把字面量路由声明在前**，否则 `/runs` 会被当成 dataset id 解析。
+- `list_cases` 按 `case_key` 排序返回（文件顺序不持久化），因此报告与 API 的用例顺序稳定且可断言，不依赖 JSON 书写次序。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -449,7 +468,7 @@ T13 已实现以下能力：
 | 报告 | `/api/v1/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 查询、校验、审核、发布、回退和推送 |
 | 推送 | `/api/v1/push/targets`、`/api/v1/push/records`、`/api/v1/push/retry` | 投递允许列表、投递记录与失败重试扫描，需写角色 |
 | 管理界面 | `/ui/login`、`/ui/reports`、`/ui/reports/{id}` | 服务端渲染的审核与运维界面，动作走 HTMX 片段替换 |
-| 评测 | `/api/v1/evaluations`, `/api/v1/evaluations/{id}/run` | 数据集、执行和指标 |
+| 评测 | `/api/v1/evaluations`、`/runs`、`/runs/{id}`、`/{dataset_id}/cases`、`/{dataset_id}/run`、`/{dataset_id}/comparison` | 数据集版本、样本、按变体执行与统一对比报告，全部需写角色 |
 | 审计 | `/api/v1/audit-logs` | 只读审计查询，限管理员 |
 
 API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支持 `page`、`page_size`，并限制最大 `page_size`。所有写操作需要 CSRF 防护或 Bearer 认证，所有报告读取执行 ACL。
@@ -486,7 +505,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | Agent 相对 Baseline 的引用覆盖率提升 | >= 10 个百分点 |
 | 常规报告人工阻塞率 | 接近 0，异常报告除外 |
 
-详细协议见 [docs/evaluation.md](docs/evaluation.md)。
+详细协议见 [docs/evaluation.md](docs/evaluation.md)；实现见 §9.11。上表的引用覆盖率、事实一致性与任务完成率三条阈值就是 `evaluation/runner.py:METRIC_TARGETS` 的代码化版本，构成 `GATED_METRICS`（能阻断发布的三个指标）。"关键数字准确率"以 `citation_coverage`（含数字的章节是否有引用）与 `source_accuracy`（引用能否在库中解析）两个可测比率落地；Prompt Injection 阻断率被真实测量但暂不设门禁，存 `details_json`；"Agent 相对 Baseline 的引用覆盖率提升"由统一对比报告的 `deltas_vs_reference` 直接给出，无需另设阈值。常规报告人工阻塞率由 T11 发布链路的 `pending_review` / `MANUAL` 占比观测，属 T15 看板范围。
 
 ## 13. 架构决策记录
 
@@ -522,7 +541,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T11 Verifier 与发布策略 — 依赖：T10 — 验证：`AUTO`、`AUTO_WITH_DELAY`、`MANUAL` 状态机测试通过
 - [x] T12 报告 API 与管理界面 — 依赖：T3/T11 — 验证：可查看、编辑、审核、发布和回退报告
 - [x] T13 邮件/Webhook 推送 — 依赖：T11/T12 — 验证：仅已批准报告可推送，失败可重试
-- [ ] T14 评测数据集与 Runner — 依赖：T8/T10 — 验证：Baseline、Agent、消融版本可输出统一报告
+- [x] T14 评测数据集与 Runner — 依赖：T8/T10 — 验证：Baseline、Agent、消融版本可输出统一报告
 - [ ] T15 监控指标与看板 — 依赖：T6/T10/T14 — 验证：任务、Token、延迟、失败率和评测结果可见
 - [ ] T16 数据回填与端到端演示 — 依赖：T4/T5/T14 — 验证：完成一次历史回填和完整周报生成
 - [ ] T17 安全测试与故障演练 — 依赖：T3/T9/T13 — 验证：越权、Prompt Injection、API 失败和重复任务均被正确处理
@@ -576,3 +595,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-13 | 完成 T13 邮件/Webhook 推送：渠道无关的推送服务与 `offline`/`live` 两档投递、SMTP 与签名 Webhook 两个适配器、状态→敏感审批→允许列表三级守卫、幂等键与失败重试、发布链路自动扇出、独立 `retry-failed-pushes` 周期任务、API/CLI/UI 三处入口 | 5、7、9.10、10、11、14 | T13 | 361 项测试（含推送服务 24 项、推送 API、推送 UI）、Ruff check+format 通过、mypy 102 源文件 0 错误；`alembic heads` 单 head `d4f8b2c6a1e9`，升级/回滚 MySQL DDL 离线渲染与 ORM 元数据逐字段一致；真实 CLI + 真实 FastAPI 应用 + 真实数据库端到端跑通六条验收（非可推送状态被拒、允许列表外被拒、敏感报告需审批且需清空目标、重复请求重放不重发、失败行在**同一行**上重试且预算用尽后停手、发布后自动扇出到全部启用目标），连续两次运行 payload 逐字一致 |
 | 2026-10-13 | 新增 `push_targets` 与 `report_pushes` 两张表，并给 `pipeline_runs.run_type` 增加 `push` 取值 | 6、9.10、14 | T13 | 迁移 `d4f8b2c6a1e9`；`report_pushes.target_id` 为 `ON DELETE RESTRICT`、`pipeline_run_id` 为 `ON DELETE SET NULL`；幂等键 `report:{id}:v{version}:target:{target_id}` 唯一约束；`alembic heads` 单 head，`upgrade`/`downgrade` 的 MySQL DDL 离线渲染与 ORM 一致 |
 | 2026-10-13 | 自动推送接入发布链路：`publish_report` 末尾调用 `push_after_publish`，覆盖所有发布路径且保证不抛异常 | 9.10、14 | T13 | 不可用目标写 `report.push` / `denied` 审计后继续，发布结果不受影响；发布后自动扇出由真实端到端验证（一次发布向 4 个启用目标投递，报告最终 `published`） |
+| 2026-10-13 | 完成 T14 评测数据集与 Runner：版本化数据集与幂等导入（指纹判定 + `409 DATASET_VERSION_CONFLICT`）、五个变体目标（消融 = 真实 graph + `ExecutionProfile` 开关）、六个纯确定性 Scorer、统一对比报告与发布裁决、API 六端点与 CLI 四动作、`EVAL_ENABLED` / `EVAL_REGRESSION_TOLERANCE` 两个配置项 | 5、6、7、9.11、10、12、14 | T14 | 485 项测试（含 runner 28、API 25、CLI 19）、Ruff check+format 188 文件、mypy 112 源文件 0 错误；`alembic heads` 单 head `f1a7c9d3b582`；真实 runner + 真实 CLI 子进程 + 真实 FastAPI 应用 + 真实数据库端到端跑通七条验收（版本冻结与冲突、一次 sweep 覆盖全部变体且各存自身摘要、候选与对照分离、指标来自数据库、结果幂等、坏样本记为证据而非崩溃、CLI/API 与 runner 一致），连续两次运行 payload 逐字一致 |
+| 2026-10-13 | 新增 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results` 四张表 | 6、7、9.11、14 | T14 | 迁移 `f1a7c9d3b582`（`down_revision` = `d4f8b2c6a1e9`）；`(name, version)` 与 `(dataset_id, case_key)` 与 `(eval_run_id, eval_case_id)` 三处唯一约束；三个门禁指标落真实列，其余指标存 `details_json`；`alembic heads` 单 head，`upgrade`/`downgrade` 的 MySQL DDL 离线渲染与 ORM 元数据逐字段一致 |
+| 2026-10-13 | 修正 T14 两处评测语义缺陷：① 消融此前相对 baseline 衡量，导致 `agent_no_tools` 的差值恒为 `0` —— 因为 baseline 本就在消融跌到的地板上，损失被完全掩盖；② 全部样本失败的 run 因 `gate_failures` 为空而 `passed=true` —— 把"没有测量"误判为"通过" | 9.11、14、15 | T14 | ① 引入参照链 `baseline_single_prompt <- agent_full <- agent_no_*`（`_reference_summary`），`agent_no_tools` 差值变为 `-1.0000`；② `passed` 增加 `scored_case_count > 0` 必要条件。两处均先复现后修，各补回归测试（`test_an_ablation_is_measured_against_the_agent_not_the_baseline`、`test_a_wholly_failed_run_cannot_pass`），并同步 `PROMOTION_TARGETS = ("agent_full",)` 使消融作为对照不否决发布 |
+| 2026-10-13 | 修正 T14 两处夹具缺陷（不影响产品代码）：评测夹具的种子快照日期落在数据集样本窗口之外，导致 `query_repo_metrics` 静默返回空、所有样本 `citation_coverage=0`；历史报告 `generated_at` 等于窗口结束时刻，不满足 `search_prior_reports` 的 `< before` 条件而对 Agent 不可见 | 9.11、15 | T14 | 快照日期与 `SMOKE_NOW` 移入 2026-10 窗口，历史报告改用独立时刻 `PRIOR_REPORT_AT`；给冒烟脚本补 `_validate_world` 自检（校验主题存在、快照落在窗口内、历史报告早于窗口结束、stars/forks 取值匹配）以防再次静默失效；新增回归测试 `test_the_prior_report_is_actually_visible_to_the_agent`，修正后单元夹具与冒烟的 `source_accuracy` 一致为 `0.9630` |

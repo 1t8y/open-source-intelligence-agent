@@ -40,7 +40,7 @@
 | 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
 | 推送 | `/push/targets`、`/push/records`、`/push/retry` | ADMIN/EDITOR | 投递允许列表、投递记录与失败重试扫描 |
 | 管理界面 | `GET /ui/reports`、`/ui/reports/{id}`、`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/publish-due`、`/ui/login`、`/ui/logout` | 同报告资源的读/写角色 | 服务端渲染页面，复用同一套服务层；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；推送渠道取自目标行而非表单 |
-| 评测 | `/evaluations` | ADMIN/EDITOR | 数据集、执行、指标和基线差异 |
+| 评测 | `/evaluations`、`/evaluations/runs`、`/evaluations/runs/{id}`、`/evaluations/{dataset_id}/cases`、`/evaluations/{dataset_id}/run`、`/evaluations/{dataset_id}/comparison` | ADMIN/EDITOR（全部，含读） | 数据集版本、样本、按变体执行与统一对比报告；未知变体 `400`、版本冲突 `409`、关闭时 `503` |
 | 监控 | `/metrics/overview` | ADMIN/EDITOR | 任务、Token、延迟、失败率 |
 | 审计 | `/audit-logs` | ADMIN | 只读，不可修改 |
 
@@ -75,10 +75,11 @@ api/web
 | `agent.graph` | 有界状态图 `plan→tool→observe→verify→write` | agent.runtime |
 | `agent.llm` | `ModelClient` 协议与两个 Adapter（离线桩 / OpenAI-compatible）、消息契约 | agent.graph |
 | `agent.prompts` | 版本化 Prompt 资产发现与加载 | agent.graph |
+| `agent.profile` | 执行档案 `ExecutionProfile` 与消融开关，`profile_for_target` 映射 | evaluation/api |
 | `agent.tools` | 白名单工具 | agent.runtime |
 | `reports` | 草稿、验证、策略决策和发布 | api/workers |
 | `security` | 登录、授权、脱敏和审计 | 所有模块 |
-| `evaluation` | 数据集、Scorer 和回归 | api/workers |
+| `evaluation` | 数据集版本化与导入、五个评测变体、确定性 Scorer、执行与统一对比报告 | api/cli |
 | `workers` | Celery 应用、周期任务和 Worker 入口 | 部署/调度 |
 | `persistence` | Repository 和事务边界 | 所有业务模块 |
 | `migrations` | Alembic 升级、回滚和 schema drift 检查 | 开发/部署 |
@@ -104,7 +105,7 @@ create_session_factory(engine: Engine) -> sessionmaker[Session]
 Base.metadata
 ```
 
-首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`，共 19 张表。
+首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`；此后 T10 追加 `report_versions`，T11 追加 `report_verifications`、`report_reviews`，T13 追加 `push_targets`、`report_pushes`，T14 追加 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results`，元数据共 **28 张表**（`feedback` 属计划内、尚未实现）。
 
 Security 接口：
 
@@ -179,6 +180,65 @@ build_channel(settings, channel) -> NotificationChannel
 
 `push_report` 的守卫顺序固定为 **状态（`approved` / `published`）→ `CONFIDENTIAL` 需同版本 `approve` 审核 → 允许列表（启用 + 渠道一致 + `allow_private` / `allow_confidential`）**，任一违规抛 `PushError` 子类。传输失败**不抛异常**，返回 `status="failed"` 的 `PushOutcome` 并落库；`push_after_publish` 吞掉一切异常（写 `report.push` / `denied` 审计），因为它挂在发布链路里。`build_channel` 在 `live` 模式缺 `push_smtp_host` / `push_email_from` 时抛 `PushTargetNotAllowed`，且发生在写行之前。
 
+Evaluation 接口（T14）：
+
+```text
+# 数据集（dataset.py）
+parse_dataset(document: Any) -> DatasetSpec
+load_dataset_file(path: str | Path) -> DatasetSpec
+discover_dataset_files(directory: str | Path = "datasets") -> list[Path]
+import_dataset(session, spec: DatasetSpec, *, created_by: int | None = None) -> DatasetImportResult
+resolve_dataset(session, *, dataset_id=None, name=None, version=None) -> EvalDataset
+list_datasets(session, *, limit=50) -> Sequence<EvalDataset>
+list_cases(session, *, dataset_id: int, enabled_only: bool = False) -> Sequence[EvalCase]
+
+# 目标变体（targets.py）
+profile_for_target(target_type: str) -> ExecutionProfile | None      # agent/profile.py
+run_target(session, *, case: EvalCase, target_type: str, settings, client=None, now=None) -> VariantOutput
+
+# 评分（scorers.py）
+score_case(session, *, case: EvalCase, output: VariantOutput) -> ScoredCase
+score_failed_case(*, case_key, status, error_code, error_message) -> ScoredCase
+
+# 运行与报告（runner.py）
+resolve_targets(target_types: Sequence[str] | None) -> tuple[str, ...]
+run_evaluation(session, *, dataset_id=None, name=None, version=None,
+               target_types: Sequence[str] | None = None, settings=None,
+               client=None, now=None) -> ComparisonReport
+aggregate_run(session, *, run: EvalRun) -> TargetSummary
+build_comparison(session, *, dataset: EvalDataset, runs: Sequence[EvalRun]) -> ComparisonReport
+latest_runs_per_target(session, *, dataset_id: int) -> list[EvalRun]
+list_runs(session, *, dataset_id=None, target_type=None, limit=50) -> Sequence[EvalRun]
+compare_latest(session, *, dataset_id: int) -> ComparisonReport
+collect_datasets(session, *, limit=50) -> Sequence[EvalDataset]
+```
+
+```text
+python -m open_source_intelligence.evaluation.cli --action {list,import,run,compare}
+  [--dataset-file PATH] [--dataset-dir DIR] [--dataset-id ID]
+  [--name NAME] [--version VERSION] [--target TARGET ...] [--limit N] [--actor-id ID]
+```
+
+`--action run` 是唯一真正执行 Agent 的动作；`list` 与 `compare` 只读，供运维在无 API 的情况下查看数据集与最近一次对比。每个动作**打印一个 JSON 文档**，与其他 CLI 一致；失败时打印 `{action, code, error}` 并 `exit 1`，`code` 是稳定错误码，脚本按它分支而无需匹配英文文案。
+
+`TARGET_ORDER` 逐字等于 `EVAL_TARGET_TYPES`：`baseline_single_prompt`、`agent_full`、`agent_no_verifier`、`agent_no_tools`、`agent_no_history`。`resolve_targets(None)` 返回全部五个；传入未知值抛 `UnknownTarget`；传入合法子集时按 `TARGET_ORDER` 归一化排序，因此报告顺序不随调用方参数顺序变化。
+
+**参照链与发布裁决**：`TargetSummary.reference_target` 记录该变体的参照对象 —— `agent_full` 参照 `baseline_single_prompt`，三个消融参照 `agent_full`，`baseline_single_prompt` 无参照（`None`）。`deltas_vs_reference` 是与该参照的差值。`ComparisonReport.passed` 只裁决 `PROMOTION_TARGETS = ("agent_full",)`：消融是对照而非候选，其损失只通过自身差值呈现，不会否决发布；无候选的 sweep 按其包含的全部变体评判。**`passed` 额外要求 `scored_case_count > 0`**，未产生任何可评分样本的变体不能通过。
+
+**指标分层**：`COLUMN_METRICS = ("citation_coverage", "factual_consistency", "task_completion")` 落真实列；`DETAIL_METRICS = ("source_accuracy", "tool_success_rate")` 与运行级信号（`tool_call_total`、`tool_call_denied`、`verification_sufficient_rate`）存 `details_json`。未行使的指标为 `None`，聚合时被剔除均值之外，绝不计作 `0`。
+
+Evaluation 错误码（`evaluation/errors.py`，`EvaluationError` 为基类，API 统一映射为 RFC 7807，CLI 打印 `code`）：
+
+| 错误码 | 场景 | API 状态 |
+|---|---|---:|
+| `DATASET_INVALID` | 数据集文件缺字段、类型错或内部不自洽 | 400 |
+| `UNKNOWN_TARGET` | 目标变体不在五个之内 | 400 |
+| `DATASET_VERSION_CONFLICT` | 同 `name` + `version` 内容不同（版本不可覆盖） | 409 |
+| `EVALUATION_DISABLED` | `eval_enabled=false`，评测层被关闭 | 503 |
+| `NOT_FOUND` | 数据集、样本或 `eval_run` 不存在 | 404 |
+
+CLI 的 `NOT_FOUND` 还覆盖 `run_evaluation` 遇到"数据集没有启用样本"的情形；API 侧同一情况同样渲染为 `404 NOT_FOUND`。
+
 Pipeline 运行记录接口：
 
 ```text
@@ -242,7 +302,9 @@ run_research_agent(session, *, topic_id: int, settings: Settings,
                    client: ModelClient | None = None, registry: ToolRegistry | None = None,
                    pipeline_run_id: int | None = None, window_start: datetime | None = None,
                    window_end: datetime | None = None, max_candidates: int | None = None,
-                   now: datetime | None = None) -> AgentRunResult
+                   now: datetime | None = None,
+                   profile: ExecutionProfile = AGENT_FULL) -> AgentRunResult
+apply_profile(configured_tools: tuple[str, ...], profile: ExecutionProfile) -> tuple[str, ...]
 resolve_allowed_tools(policy: Mapping) -> tuple<string, ...>
 load_or_create_config(session, settings) -> AgentConfig
 load_candidate_repo_ids(session, *, topic_id: int, limit: int) -> list<int>
@@ -358,6 +420,87 @@ AgentRunResult {
 }
 ```
 
+评测对象（T14）：
+
+```text
+ExecutionProfile {
+  name: string
+  run_verifier: boolean          # false = agent_no_verifier
+  disabled_tools: frozenset<string>
+}
+
+VariantOutput {
+  target_type: string
+  case_key: string
+  status: string                 # succeeded | failed
+  error_code: string | null
+  error_message: string | null
+  topic_id: integer | null
+  sections: tuple<SectionDraft>
+  tool_call_total: integer
+  tool_call_succeeded: integer
+  tool_call_denied: integer
+  tool_call_read: integer        # 只有读工具计入；注入面仅来自读
+  prompt_tokens: integer
+  completion_tokens: integer
+  cost: decimal
+  latency_ms: integer
+  guard_triggered: boolean
+  verification_sufficient: boolean | null
+  agent_run_id: integer | null
+  notes: tuple<string>
+}
+
+SectionDraft { section_key: string; content_markdown: string; citations: tuple<CitationRef> }
+
+ScoredCase {
+  case_key: string
+  citation_coverage: decimal | null
+  factual_consistency: decimal | null
+  task_completion: decimal | null
+  source_accuracy: decimal | null
+  tool_success_rate: decimal | null
+  prompt_injection_blocked: boolean | null
+  cost: decimal
+  latency_ms: integer
+  status: string
+  details: object
+}
+
+TargetSummary {
+  target_type: string
+  run_id: integer
+  status: string
+  case_count: integer
+  scored_case_count: integer
+  failed_case_count: integer
+  metrics: map<string, decimal | null>
+  total_cost: decimal
+  total_tokens: integer
+  mean_latency_ms: integer
+  prompt_injection_block_rate: decimal | null
+  tool_call_total: integer
+  tool_call_denied: integer
+  verification_sufficient_rate: decimal | null
+  reference_target: string | null
+  deltas_vs_reference: map<string, decimal | null>
+  gate_failures: list<string>
+  regression: boolean
+}
+
+ComparisonReport {
+  dataset_id: integer
+  dataset_name: string
+  dataset_version: string
+  case_count: integer
+  targets: tuple<TargetSummary>
+  replayed: boolean
+  passed: boolean                 # 派生属性，只裁决 PROMOTION_TARGETS
+}
+```
+
+`ExecutionProfile` 由 `agent/profile.py` 定义，是消融的唯一开关面；`run_verifier=False` 时图仍走真实 `verify` 节点，只是恒返回 `sufficient` 并把步骤记为 `skipped`。`VariantOutput.verification_sufficient` 为 `None` 表示该变体的运行没有产生验证结论（例如运行失败），与 `false`（验证过但不充分）不同。`ScoredCase` 中所有可空比率遵循同一条约定：`null` 表示"该样本没有行使这个指标"，聚合时被剔除而不是计作 `0`。`TargetSummary.metrics` 与 `deltas_vs_reference` 的字符串化与舍入在 `to_dict()` 里统一到小数点后 4 位（`RATE_PLACES`），与 `eval_results` 的 `Numeric(5, 4)` 列一致。
+
 详细数据库对象见 [data-model.md](docs/data-model.md)。
 
 ## 6. Agent Tool 接口
@@ -403,6 +546,10 @@ Agent 只能调用以下白名单工具：
 - `push_targets` 是报告出站的唯一允许列表：`name` 唯一，`channel` 取 `email` / `webhook`，并带 `enabled`、`allow_private`、`allow_confidential` 三个开关；投递目标只有落入该表才可送达，两个 `allow_*` 开关默认关闭。
 - `report_pushes` 按 `idempotency_key` 唯一（`report:{report_id}:v{version}:target:{target_id}`），同一 `(报告, 版本, 目标)` 只有一行；`attempt >= 1`（`version >= 1` 同理），`status` 取 `pending` / `sent` / `failed`，重试只推进同一行的 `attempt`。`target_id` 为 `ON DELETE RESTRICT`（删除目标前必须先处理投递记录），`pipeline_run_id` 为 `ON DELETE SET NULL`。
 - `pipeline_runs.run_type` 新增 `push` 取值，与 `agent` / `publish` 一样按 `topic_id` 归属，并同步出现在 ORM 的 `CheckConstraint`、迁移里的 CHECK 与 `pipeline/runs.py:TOPIC_RUN_TYPES` 三处。
+- `eval_datasets` 按 `(name, version)` 唯一，`eval_cases` 按 `(dataset_id, case_key)` 唯一，`eval_results` 按 `(eval_run_id, eval_case_id)` 唯一：数据集版本与逐样本测量都不可覆写，重跑刷新自身测量。
+- `eval_runs.target_type` 只允许五个变体取值，`status` 只允许 `pending` / `running` / `succeeded` / `failed`，且 `finished_at >= started_at`；五个变体中只有 `baseline_single_prompt` 允许 `agent_config_id IS NULL`。
+- 评测门禁指标（`citation_coverage`、`factual_consistency`、`task_completion`）落 `eval_results` 真实列（`Numeric(5,4)`）；无阈值的比率与运行级证据（`source_accuracy`、`tool_success_rate`、`prompt_injection_block_rate`、`tool_call_total`、`tool_call_denied`、`verification_sufficient_rate`）存 `details_json`。**未行使的指标以 `None` 表示，不得写成 `0`。**
+- 一个变体"通过"的前提是它真的被测量过：`passed` 要求 `scored_case_count > 0`，否则全部样本失败产生的空 `gate_failures` 会被误读成"全部达标"。
 
 ## 8. 错误码与状态机
 

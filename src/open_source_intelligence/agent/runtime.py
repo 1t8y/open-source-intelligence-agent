@@ -33,7 +33,9 @@ from open_source_intelligence.agent.llm.messages import (
     TOPIC_TAG,
     WINDOW_TAG,
     ChatMessage,
+    ToolSchema,
 )
+from open_source_intelligence.agent.profile import AGENT_FULL, WRITE_TOOL, ExecutionProfile
 from open_source_intelligence.agent.prompts import load_prompt
 from open_source_intelligence.agent.recording import StepRecorder
 from open_source_intelligence.agent.state import AgentState, VerificationResult
@@ -131,6 +133,38 @@ def resolve_allowed_tools(policy: dict[str, Any]) -> tuple[str, ...]:
         return WHITELIST
     names = {item for item in requested if isinstance(item, str)}
     return tuple(name for name in WHITELIST if name in names)
+
+
+def apply_profile(
+    configured_tools: tuple[str, ...],
+    profile: ExecutionProfile,
+) -> tuple[str, ...]:
+    """Narrow an already-authorized tool set by an execution profile.
+
+    Order matters: the config narrows the whitelist, and the profile narrows the result, so an
+    ablation can only ever remove capability. `save_report_section` is re-added if the config
+    had granted it, because an ablation that produced no draft at all would measure nothing.
+    """
+    allowed = tuple(name for name in configured_tools if profile.allows(name))
+    if WRITE_TOOL in configured_tools and WRITE_TOOL not in allowed:
+        allowed = (*allowed, WRITE_TOOL)
+    return allowed
+
+
+def _plan_schemas(
+    registry: ToolRegistry,
+    allowed_tools: tuple[str, ...],
+) -> tuple[ToolSchema, ...]:
+    """Return the schemas a run may plan with.
+
+    Draft writing is never a planned action - the graph calls it directly once the research
+    stage is over - so it is withheld from the model even when the run may use it.
+    """
+    return tuple(
+        schema
+        for schema in build_tool_schemas(registry)
+        if schema.name in allowed_tools and schema.name != WRITE_TOOL
+    )
 
 
 def load_or_create_config(session: Session, settings: Settings) -> AgentConfig:
@@ -277,8 +311,13 @@ def run_research_agent(
     window_end: datetime | None = None,
     max_candidates: int | None = None,
     now: datetime | None = None,
+    profile: ExecutionProfile = AGENT_FULL,
 ) -> AgentRunResult:
-    """Execute one bounded research run and return its summary."""
+    """Execute one bounded research run and return its summary.
+
+    `profile` is the ablation switch the evaluation runner uses; a production run leaves it at
+    `AGENT_FULL`, where it changes nothing.
+    """
     topic = session.get(Topic, topic_id)
     if topic is None:
         raise ValueError(f"topic {topic_id} does not exist")
@@ -295,7 +334,7 @@ def run_research_agent(
         limit=max_candidates or settings.agent_max_candidates,
     )
     config = load_or_create_config(session, settings)
-    allowed_tools = resolve_allowed_tools(config.tool_policy_json)
+    allowed_tools = apply_profile(resolve_allowed_tools(config.tool_policy_json), profile)
     resolved_client = client or build_model_client(settings)
     resolved_registry = registry or build_default_registry()
 
@@ -344,7 +383,8 @@ def run_research_agent(
         recorder=recorder,
         context=context,
         draft_prompt=load_prompt("draft", config.prompt_version, settings.agent_prompts_dir),
-        tool_schemas=build_tool_schemas(resolved_registry),
+        tool_schemas=_plan_schemas(resolved_registry, allowed_tools),
+        run_verifier=profile.run_verifier,
     )
     graph = build_research_graph(deps)
     initial_state: AgentState = {

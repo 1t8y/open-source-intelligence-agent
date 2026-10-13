@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     push_smtp_password: SecretStr | None = None
     push_smtp_starttls: bool = True
     push_webhook_signing_secret: SecretStr | None = None
+    eval_enabled: bool = True
+    eval_regression_tolerance: float = Field(default=0.02, ge=0.0, le=1.0)
     docs_enabled: bool = True
 
     @field_validator("app_timezone")
