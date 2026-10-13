@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-12 ｜ 文档版本：v0.8.4
+> 最后更新：2026-10-13 ｜ 文档版本：v0.9.0
 
 ## 1. 概述与目标
 
@@ -261,6 +261,8 @@ VerificationResult  { sufficient: boolean, reason: string, covered_repo_ids: lis
 
 “低风险常规周报不需要人工审核”是本项目的效率原则。人工审核用于异常处理、风险门禁和 Bad Case 积累，不作为所有报告的默认阻塞步骤。
 
+**实现状态**：T11 已按本表实现三档模式与状态机。配置的 `publish_mode` 是上限，具体发现只能让决策更严格；`AUTO` 额外要求可见范围为 `INTERNAL`，首次配置（主题尚无已发布报告）一律转人工。
+
 ## 9. 数据与工程流程
 
 ```text
@@ -282,6 +284,7 @@ Celery Beat
 - 所有写入采用事务和唯一约束；重复执行不能产生重复数据。
 - 采集失败记录到 `pipeline_runs`，不因单个仓库失败中断整批任务。
 - 报告发布采用状态机：`draft -> pending_review -> approved -> scheduled -> published -> failed`。
+- 发布链路（`verify_report` -> `evaluate_publish_policy` -> `publish_or_request_review`）由 Policy Engine 与 Publishing Service 执行，发布动作不是 Agent Tool；延迟窗口与到期释放由独立的 `publish_due_reports` 扫描推进。
 - Redis 故障时，API 仍可读取已入库报告；只影响新任务入队，不影响历史数据读取。
 - 首期每日和每周任务频率可配置，时区统一保存 UTC，展示时转换为 `Asia/Shanghai`。
 
@@ -387,6 +390,20 @@ T10 已实现以下能力：
 - 每次生成替换该报告的 `report_sources` 当前集合，保证引用与当前版本一致；成功后将 `report_drafts.status` 置为 `promoted`。
 - `python -m open_source_intelligence.reports.cli --agent-run-id <id>` 提供手动生成入口。
 
+### 9.8 T11 Verifier 与发布策略
+
+T11 已实现以下能力：
+
+- `reports/verification.py` 在发布前对**已持久化报告**重跑 `A-004` 的四项检查（结构、引用、数字、敏感内容），而不是信任撰写期的草稿；因此定稿后被人为删改引用或正文也会被拦下。
+- 结构检查要求六个固定章节与标题行齐全；引用检查要求每节至少一条引用且所有引用可解析；数字检查要求含数字的章节至少一条 `metric` 引用；敏感检查复用 `core/logging.py` 的脱敏规则识别凭据形态内容，并拒绝 `CONFIDENTIAL` 报告以 `INTERNAL` 可见的错配。
+- 每次验证写一行 `report_verifications`（`UNIQUE(report_id, version)`，重复验证刷新），四个布尔列直接对应四项检查，是 `INV-5` 的可查询证据。
+- `reports/publishing.py` 实现策略引擎：`publish_mode` 是上限，验证失败、低引用覆盖率、敏感内容、`CONFIDENTIAL` 报告、运行不干净、命中 Prompt Injection、首次配置、模型/Prompt/工具策略变化、`AUTO` 下非内部可见，都会让决策收紧为 `pending_review`。
+- 状态机严格按 `INTERFACES.md` §8 的合法边迁移，非法迁移抛 `REPORT_STATE_INVALID`；`published` 与 `failed` 为终态；已经进入下游状态的报告在重复评估时不会被静默推进。
+- `MANUAL` 报告除通过验证外，还必须存在针对同一版本的 `approve` 审核记录才能发布，否则抛 `PUBLISH_POLICY_BLOCKED`；延迟窗口在 `publish_report` 内部强制，任何调用路径都无法提前释放。
+- `publish_due_reports()` 是唯一的推进器：先把 `approved` 报告（视为明确同意、跳过窗口）置为 `scheduled`，再发布所有 `publish_at` 已到期的 `scheduled` 报告；单条报告被策略拦截时记 `failed` 并写稳定错误码后继续，不中断整批。
+- `reports/cli.py` 扩展为 `--action {generate,verify,publish,review,publish-due}`，保留 `--agent-run-id` 单独使用等于 `generate` 的 T10 入口兼容；Celery 新增恒在的 `publish-due-reports` 周期任务（`PUBLISH_SWEEP_MINUTES`，默认 15 分钟）。
+- `pipeline_runs` 的 `publish` 记录同时承载决策与发布两个阶段（`metrics_json.stage` 为 `evaluate` 或 `publish`）；调用方指定了时刻时，`started_at` 与 `finished_at` 都使用该时刻，以满足 `finished_at >= started_at`。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -467,7 +484,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T8 LangGraph Research Agent — 依赖：T7 — 验证：完成一条 Research→Tool→Observe→Verify→Write 轨迹，17 步、13 次工具调用、6 个草稿章节，两条降级路径均干净收敛
 - [x] T9 Prompt Guard 与运行预算 — 依赖：T8 — 验证：循环、工具、Token 超限时安全停止
 - [x] T10 报告生成与引用 — 依赖：T8 — 验证：关键数字可追溯，引用链接有效
-- [ ] T11 Verifier 与发布策略 — 依赖：T10 — 验证：`AUTO`、`AUTO_WITH_DELAY`、`MANUAL` 状态机测试通过
+- [x] T11 Verifier 与发布策略 — 依赖：T10 — 验证：`AUTO`、`AUTO_WITH_DELAY`、`MANUAL` 状态机测试通过
 - [ ] T12 报告 API 与管理界面 — 依赖：T3/T11 — 验证：可查看、编辑、审核、发布和回退报告
 - [ ] T13 邮件/Webhook 推送 — 依赖：T11/T12 — 验证：仅已批准报告可推送，失败可重试
 - [ ] T14 评测数据集与 Runner — 依赖：T8/T10 — 验证：Baseline、Agent、消融版本可输出统一报告
@@ -512,3 +529,6 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-12 | 完成 T9 Prompt Guard、80%/100% Token 预算与 Token 计数持久化 | 8.4、9.6、14 | T9 | 184 项测试、Ruff、mypy；迁移 `c4a9e2f1d6b8` 升级和 drift 检查通过；MySQL 冒烟验证正常 Token 持久化、80% 降级撰写、100% 硬停止和注入风险复核均通过 |
 | 2026-10-12 | 修复 T6 迁移回滚的 MySQL 外键顺序，并让 T2 验证脚本按 ORM 元数据动态计算表数量 | 9.2、14、15 | T2/T6 回归 | `verify_t2.ps1` 完成升级、回滚 base、再次升级；19 张 ORM 表加 `alembic_version` 共 20 张，临时库已清理 |
 | 2026-10-12 | 完成 T10 报告合成、不可变版本和引用校验 | 7、9.7、14 | T10 | 191 项测试、Ruff、mypy 80 文件；迁移 `d9e4b7c1a2f3` 升级/回滚/再次升级和 drift 检查通过；MySQL 冒烟生成 16 条可追溯引用，幂等、版本递增和伪造引用拒绝均通过 |
+| 2026-10-13 | 完成 T11 Verifier 与发布策略：四项发布前校验与 `report_verifications` 证据、策略引擎与发布状态机、`report_reviews` 人工审核、`publish_due_reports` 到期释放与 Celery 周期任务、报告 CLI 五动作 | 8.5、9.8、14 | T11 | 232 项测试、Ruff check+format 137 文件、mypy 82 文件 0 错误；迁移 `e5b1c8a3f7d2` 新增两张表，链为单 head，升级/回滚 DDL 离线渲染正确；真实端到端验证伪造引用被拦（`CITATION_UNRESOLVED`）、`AUTO_WITH_DELAY` 窗口前不发布窗口后发布、`MANUAL` 缺 `approve` 记录不可发布 |
+| 2026-10-13 | 新增 `report_verifications`、`report_reviews` 两张表 | 6、9.8、14 | T11 | 迁移 `e5b1c8a3f7d2`；`alembic heads` 单 head，`upgrade`/`downgrade` 的 MySQL DDL 离线渲染与 ORM 元数据逐字段一致 |
+| 2026-10-13 | `finish_pipeline_run` / `fail_pipeline_run` 支持调用方注入收口时刻 | 9.8、14 | T11 | 新增回归测试；发布链路注入时钟时 `started_at` 与 `finished_at` 同源，满足 `pipeline_runs.finished_at >= started_at` |

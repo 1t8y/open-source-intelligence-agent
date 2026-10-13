@@ -1,8 +1,8 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：T1-T10 已完成，进入 T11
-> 文档版本：v0.9
-> 最后更新：2026-10-12
+> 项目状态：T1-T11 已完成，进入 T12
+> 文档版本：v0.10
+> 最后更新：2026-10-13
 
 ## 最终版路径
 
@@ -45,11 +45,11 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T10 已完成：Agent 的 6 个草稿章节可合成为正式报告，指标、README 和历史报告引用会逐条验证并写入 `report_sources`；同一草稿重复生成保持幂等，内容变化时生成不可变的新版本。
+当前 T11 已完成：报告发布前会重跑结构、引用、数字和敏感内容四项校验（结论落在 `report_verifications`），再由策略引擎按 `AUTO / AUTO_WITH_DELAY / MANUAL` 决定「进入发布队列」还是「转人工」；`MANUAL` 报告缺少 `approve` 审核记录时无法发布，延迟窗口与到期释放由独立的 `publish_due_reports` 扫描推进。
 
 模型接入采用可插拔 Adapter：默认 `AGENT_PROVIDER=offline` 使用确定性离线桩，无需网络与 API Key 即可端到端验证；`OpenAICompatibleClient` 通过同一个 `ModelClient` 接口对接真实供应商。
 
-发布决策、人工审核和自动发布策略仍属于 T11。下一步进入 T11 Verifier 与发布策略。
+T12 报告 API 与管理界面尚未开始（需要把验证结论、发布决策和审核记录暴露为 HTTP 资源）。
 
 T1 验证命令：
 
@@ -130,6 +130,14 @@ T10 验证命令：
 ```
 
 该脚本在真实 MySQL 上先跑通 Agent 草稿，再验证六章节报告合成、16 条可追溯引用、metric 快照绑定、重复生成幂等、内容变化版本递增，以及伪造引用在写入前被拒绝。
+
+T11 验证命令：
+
+```powershell
+.\scripts\verify_t11.ps1
+```
+
+该脚本执行 pytest、Ruff、mypy、五服务重建、迁移升级/回滚/再次升级与 drift 检查，然后在真实 MySQL 上验证三条验收：伪造引用被 Verifier 拦截、`AUTO_WITH_DELAY` 报告在窗口前不发布且窗口后自动发布、`MANUAL` 报告缺少审核记录时无法发布。
 
 ## 开发原则
 

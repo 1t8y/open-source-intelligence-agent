@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -41,6 +42,8 @@ REPORT_SENSITIVITIES = ("PUBLIC", "INTERNAL", "CONFIDENTIAL")
 REPORT_PUBLISH_MODES = ("AUTO", "AUTO_WITH_DELAY", "MANUAL")
 REPORT_SOURCE_TYPES = ("metric", "readme", "prior_report")
 REPORT_DRAFT_STATUSES = ("draft", "superseded", "promoted")
+REPORT_VERIFICATION_VERDICTS = ("passed", "failed")
+REPORT_REVIEW_DECISIONS = ("approve", "reject", "request_changes")
 
 
 class Report(Base):
@@ -208,3 +211,80 @@ class ReportSection(Base, TimestampMixin):
     content_markdown: Mapped[str] = mapped_column(medium_text(), nullable=False)
     content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     citations_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+
+
+class ReportVerification(Base):
+    """One Verifier verdict on a report version, recorded before any publish decision.
+
+    The row is the queryable proof behind `INV-5`: a report may only be published after a
+    verification verdict exists for its current version. The four booleans mirror the
+    `A-004` checks, so an operator can see which check blocked publication without parsing
+    the JSON detail.
+    """
+
+    __tablename__ = "report_verifications"
+    __table_args__ = (
+        CheckConstraint("verdict IN ('passed', 'failed')", name="verdict_valid"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint("report_id", "version"),
+        Index("ix_report_verifications_report_created", "report_id", "created_at"),
+    )
+
+    id: Mapped[uint64_pk]
+    report_id: Mapped[int] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    structure_ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    citations_ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    numbers_ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sensitivity_ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reason_codes_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    details_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+    )
+
+
+class ReportReview(Base):
+    """One human review decision on a report version."""
+
+    __tablename__ = "report_reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('approve', 'reject', 'request_changes')",
+            name="decision_valid",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("ix_report_reviews_report_created", "report_id", "created_at"),
+    )
+
+    id: Mapped[uint64_pk]
+    report_id: Mapped[int] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    reviewer_id: Mapped[int | None] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    edited_version_id: Mapped[int | None] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("report_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+    )

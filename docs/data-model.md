@@ -26,6 +26,7 @@ agent_runs --< report_drafts --< report_sections
 agent_runs --< reports --< report_versions
 reports --< report_sources
 reports --< report_reviews
+reports --< report_verifications
 eval_datasets --< eval_cases --< eval_results >-- eval_runs
 users --< feedback
 users --< audit_logs
@@ -333,9 +334,46 @@ T7 新增。草稿内的章节版本，幂等保存与版本递增都在这里�
 
 幂等语义：`(report_draft_id, section_key, content_digest)` 已存在时返回原有版本而不新增行；内容变化时 `version` 取该章节当前最大值加一。
 
+### `report_verifications`
+
+T11 新增。Verifier 对某个报告版本的一次结论，是 `INV-5`「发布前必须有通过的验证结论」的可查询证据。表结构逐字段见下。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 验证 ID |
+| `report_id` | BIGINT UNSIGNED | FK reports.id, CASCADE | 被验证报告 |
+| `version` | INT | NOT NULL | 被验证的 `reports.current_version` |
+| `verdict` | VARCHAR(16) | NOT NULL | `passed`、`failed` |
+| `structure_ok` | BOOLEAN | NOT NULL | 六个固定章节与标题均存在 |
+| `citations_ok` | BOOLEAN | NOT NULL | 每节至少一条引用，且所有引用可解析 |
+| `numbers_ok` | BOOLEAN | NOT NULL | 含数字的章节至少一条 `metric` 引用 |
+| `sensitivity_ok` | BOOLEAN | NOT NULL | 无凭据形态内容，且敏感级别与可见范围一致 |
+| `reason_codes_json` | JSON | NULL | 命中的原因码列表 |
+| `details_json` | JSON | NULL | 缺失标题、未解析引用、覆盖率等明细 |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+
+唯一约束：`UNIQUE(report_id, version)`，同一版本只保留一条结论（重复验证刷新该行，不新增）。索引：`(report_id, created_at)`。CHECK：`verdict IN ('passed','failed')`、`version >= 1`。
+
+四个布尔字段与 `A-004` 的「结构、数字、引用、敏感内容」四项检查一一对应，便于运维不解析 JSON 就能看出是哪一项拦住了发布。
+
 ### `report_reviews`
 
-字段：`id`、`report_id`、`reviewer_id`、`decision`、`comment`、`edited_version_id`、`created_at`。`decision` 取值为 `approve`、`reject`、`request_changes`。
+T11 落地。人对某个报告版本的审核决定，是 `MANUAL` 报告能否发布的第二个前置条件。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 审核 ID |
+| `report_id` | BIGINT UNSIGNED | FK reports.id, CASCADE | 被审核报告 |
+| `version` | INT | NOT NULL | 被审核的 `reports.current_version` |
+| `reviewer_id` | BIGINT UNSIGNED | FK users.id, SET NULL | 审核人 |
+| `decision` | VARCHAR(32) | NOT NULL | `approve`、`reject`、`request_changes` |
+| `comment` | TEXT | NULL | 审核意见 |
+| `edited_version_id` | BIGINT UNSIGNED | FK report_versions.id, SET NULL | 审核时基于的版本 |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+
+索引：`(report_id, created_at)`。CHECK：`decision IN ('approve','reject','request_changes')`、`version >= 1`。
+
+`approve` 把报告置为 `approved` 并使其可以进入发布队列；`request_changes` 置为 `changes_requested` 退回重写；`reject` 置为 `failed`，此后不能再发布。
 
 ## 7. 评测与反馈
 
@@ -394,6 +432,10 @@ T7 新增。草稿内的章节版本，幂等保存与版本递增都在这里�
 - 同一 `(repository_id, snapshot_date)` 只能存在一个快照。
 - `agent_steps.step_index` 在同一运行内唯一且递增。
 - `MANUAL` 报告没有 `approve` 审核记录时不能发布。
+- 报告发布前必须存在针对其 `current_version` 的 `report_verifications` 行且 `verdict=passed`；`report_verifications` 按 `(report_id, version)` 唯一，重复验证刷新而不新增。
+- 发布策略只能收紧、不能放宽：`topics.publish_mode` 是上限，具体发现（验证失败、敏感内容、首次配置、运行不干净等）只会让决策更严格。
+- `publish_due_reports` 只能发布处于 `scheduled` 且 `publish_at` 已到期的报告；`approved` 报告视为已获明确同意，在同一轮扫描中直接排队并发布。
+- 发布链路写入的 `pipeline_runs` 若由调用方指定了时刻，`started_at` 与 `finished_at` 均使用该时刻，以满足 `finished_at >= started_at`。
 - `report_sources.report_id` 必须与报告所属主题一致。
 - `audit_logs` 的 `result=denied` 必须保留原始 `request_id`。
 - 用户状态、数据范围、角色代码、审计结果、主题发布模式和 Pipeline 状态由数据库 CHECK 约束限制为文档定义的合法值。
@@ -421,3 +463,18 @@ T8 未新增表，但下列表的写入方自此明确：
 | `report_drafts` / `report_sections` | `save_report_section` | 每个 `agent_run` 一个草稿，每个草稿 6 个章节 |
 
 `reports` 与 `report_sources` 在 T8 仍为空：Write 只到草稿章节，报告合成与引用有效性校验属 T10。
+
+## 11. 写入方（T10 / T11）
+
+T10 与 T11 的写入方如下：
+
+| 表 | 写入方 | 说明 |
+|---|---|---|
+| `reports` | `reports/composition.py:generate_report()` 建行；`reports/publishing.py` 推进 `status` / `publish_at` / `published_at` | 首次生成写 `status=draft`；发布链路按状态机迁移 |
+| `report_versions` | `reports/composition.py` | 内容变化时写不可变版本；同内容重复生成不新增 |
+| `report_sources` | `reports/composition.py` | 每次生成整体替换为当前版本的引用集合 |
+| `report_verifications` | `reports/verification.py:verify_report()` | 按 `(report_id, version)` 刷新单行结论，并写 `report.verify` 审计事件 |
+| `report_reviews` | `reports/publishing.py:record_review()` | 每次人工决定追加一行，并写 `report.review` 审计事件 |
+| `pipeline_runs` | `reports/publishing.py`（`run_type=publish`） | 决策、阻塞与发布各留一条记录，`metrics_json.stage` 区分 `evaluate` 与 `publish` |
+
+`publish_due_reports()` 是延迟发布与批准后发布的唯一推进入口：先把 `approved` 报告置为 `scheduled`，再发布所有已到期的 `scheduled` 报告；单条报告被策略拦截时记 `failed` 并继续处理其余报告，不中断整批。

@@ -29,7 +29,7 @@
 | 报告生成与引用 | 已完成 | 六章节合成、不可变版本、指标/README/历史报告引用校验和幂等生成通过真实 MySQL 冒烟 |
 | 本地运行环境 | 可用 | Python 3.12.7、Docker Desktop 4.94.0、Compose v5.5.1 和 WSL 2 已验证 |
 
-结论：**T1-T10 均已完成，数据库、认证、真实数据采集、每日快照、规则候选排序、Celery 定时调度、Pipeline 运行记录、受限工具层、LangGraph 研究 Agent、Prompt Guard、运行预算和报告引用闭环已落地，可以进入 T11 Verifier 与发布策略。**
+结论：**T1-T11 均已完成，数据库、认证、真实数据采集、每日快照、规则候选排序、Celery 定时调度、Pipeline 运行记录、受限工具层、LangGraph 研究 Agent、Prompt Guard、运行预算、报告引用闭环和风险分级发布已落地，可以进入 T12 报告 API 与管理界面。**
 
 ## 2. 开工前最终确认
 
@@ -214,6 +214,6 @@ T1 完成后暂停，向用户展示实际启动结果，再进入 T2。
 | 学习路径明确 | 已完成 | 按 T1 前置项准备 |
 | 运行环境可用 | 已完成 | Docker Linux Engine 运行于 WSL 2，国内镜像已验证 |
 | 外部凭证可用 | GitHub/HF 已验证；模型 Key 待准备 | 切到 `AGENT_PROVIDER=openai_compatible` 前准备模型 Key |
-| 业务代码 | T1-T10 已完成 | 下一步进入 T11 Verifier 与发布策略 |
+| 业务代码 | T1-T11 已完成 | 下一步进入 T12 报告 API 与管理界面 |
 
-当前 T10 已完成：草稿章节按固定模板合成正式报告，引用逐条解析到指标快照、README 缓存或已发布报告；重复生成幂等，内容变化时写入不可变版本。下一步进入 T11，实现发布前验证、风险分级和 `AUTO / AUTO_WITH_DELAY / MANUAL` 状态机。
+当前 T11 已完成：发布前重跑结构、引用、数字和敏感内容四项校验并落 `report_verifications`；策略引擎按 `AUTO / AUTO_WITH_DELAY / MANUAL` 决定进入发布队列还是转人工，`MANUAL` 缺少 `approve` 记录时无法发布；延迟窗口与到期释放由 `publish_due_reports` 扫描推进。下一步进入 T12，把验证结论、发布决策与审核记录暴露为 HTTP 资源。

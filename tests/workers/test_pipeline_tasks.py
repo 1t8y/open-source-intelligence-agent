@@ -43,7 +43,11 @@ def test_beat_schedule_registers_the_daily_pipeline() -> None:
     """The daily deterministic pipeline must run on the configured hour and minute."""
     schedule = build_beat_schedule(build_settings())
 
-    assert set(schedule) == {"system-healthcheck", "daily-deterministic-pipeline"}
+    assert set(schedule) == {
+        "system-healthcheck",
+        "daily-deterministic-pipeline",
+        "publish-due-reports",
+    }
     assert schedule["system-healthcheck"]["task"] == HEALTHCHECK_TASK
 
     entry = schedule["daily-deterministic-pipeline"]
@@ -76,7 +80,7 @@ def test_beat_schedule_can_disable_the_daily_pipeline() -> None:
     """Operators must be able to keep Beat on without scheduling the pipeline."""
     schedule = build_beat_schedule(build_settings(schedule_enabled=False))
 
-    assert set(schedule) == {"system-healthcheck"}
+    assert set(schedule) == {"system-healthcheck", "publish-due-reports"}
 
 
 def test_daily_pipeline_task_is_registered() -> None:

@@ -374,7 +374,12 @@ Agent 只能调用以下白名单工具：
 - `tool_calls` 必须关联 `agent_run_id`，只保存脱敏且截断后的参数与结果摘要；工具预算与白名单由 `agent_configs.tool_policy_json` 提供，运行时再收敛为 `ToolContext.allowed_tools`。
 - 五个工具中只有 `save_report_section` 写数据且只写当前运行草稿；其余四个工具不得产生任何领域写入，由注册表的只读写保护强制并在冒烟中验证。
 - `report_versions` 按 `(report_id, version)` 唯一，保存每次正式报告内容的不可变快照；`report_sources` 始终描述 `reports.current_version` 的引用集合。
+- `report_verifications` 按 `(report_id, version)` 唯一，保存该版本的验证结论（四个布尔检查 + 原因码）；重复验证刷新同一行。
+- `report_reviews` 记录人对某个版本的审核决定，`decision` 取 `approve`、`reject`、`request_changes`。
 - `MANUAL` 报告缺少 `approve` 审核记录时不能发布。
+- 任何报告发布前，都必须存在针对其 `current_version` 且 `verdict=passed` 的 `report_verifications` 行（`INV-5`）。
+- 发布刻意按 `publish_mode` 收紧而不放宽：`publish_mode` 是上限，验证失败、敏感内容、首次配置、运行不干净等发现只会让决策更严格。
+- `publish_due_reports` 只发布 `scheduled` 且 `publish_at` 已到期的报告；`approved` 视为明确同意，跳过延迟窗口直接排队。
 
 ## 8. 错误码与状态机
 
@@ -388,7 +393,33 @@ draft
   -> published
 ```
 
-异常分支：`failed`；退回分支：`changes_requested`。
+异常分支：`failed`；退回分支：`changes_requested`。合法迁移边为：
+
+```text
+draft             -> pending_review | scheduled | failed
+pending_review    -> approved | changes_requested | failed
+approved          -> scheduled | failed
+scheduled         -> published | failed
+changes_requested -> draft
+published / failed -> （终态，无出边）
+```
+
+`pending_review` 只能由人清除（`approve` / `reject` / `request_changes`），重复评估发布策略不会把已经进入下游状态（`pending_review` / `approved` / `scheduled` / `published`）的报告静默推进。
+
+发布决策对象 `publish_decision`：
+
+```json
+{
+  "report_id": 12,
+  "mode": "AUTO_WITH_DELAY",
+  "resolution": "scheduled",
+  "reason_codes": [],
+  "requires_review": false,
+  "publish_at": "2026-10-12T13:00:00+00:00"
+}
+```
+
+`resolution` 取 `scheduled`（进入发布队列）或 `pending_review`（等人工）。`reason_codes` 为空表示策略没有发现任何需要收紧的问题；非空时 `requires_review` 必为 `true`。`MANUAL` 模式即使没有任何发现也恒为 `pending_review`。
 
 常见业务错误：
 
@@ -400,7 +431,22 @@ draft
 | `CONFLICT` | 唯一约束或状态机冲突 |
 | `AGENT_BUDGET_EXCEEDED` | 超出循环、工具或 Token 预算 |
 | `AGENT_PROMPT_INJECTION` | 不可信内容包含指令式文本，运行进入人工复核 |
-| `PUBLISH_POLICY_BLOCKED` | 报告不满足自动发布条件 |
+| `PUBLISH_POLICY_BLOCKED` | 报告不满足自动发布条件（缺通过验证、`MANUAL` 缺 `approve`、窗口未到期） |
+| `REPORT_STATE_INVALID` | 报告当前状态不允许该迁移或动作 |
+
+发布策略原因码（T11，出现在 `publish_decision.reason_codes` 与 `report_verifications.reason_codes_json`）：
+
+| 原因码 | 含义 |
+|---|---|
+| `VERIFICATION_FAILED` | 该版本验证未通过 |
+| `LOW_CITATION_COVERAGE` | 引用覆盖率低于 `PUBLISH_MIN_CITATION_COVERAGE` |
+| `SENSITIVE_CONTENT` | 正文命中凭据形态内容 |
+| `SENSITIVE_REPORT` | 报告敏感级别为 `CONFIDENTIAL` |
+| `AGENT_RUN_NOT_CLEAN` | 生成运行非 `completed` 或带错误码 |
+| `SECURITY_RISK` | 生成运行命中 `AGENT_PROMPT_INJECTION` |
+| `FIRST_RUN` | 该主题尚无已发布报告，缺少基线 |
+| `MODEL_OR_PROMPT_CHANGED` | 模型、Prompt 版本或工具策略与上一份已发布报告不同 |
+| `NOT_INTERNAL_VISIBILITY` | `AUTO` 模式但可见范围不是 `INTERNAL` |
 
 Agent 运行终态与错误码（T8）：
 

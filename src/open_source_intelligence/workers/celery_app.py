@@ -1,5 +1,6 @@
 """Celery application factory and shared runtime configuration."""
 
+from datetime import timedelta
 from typing import Any
 
 from celery import Celery
@@ -10,15 +11,25 @@ from open_source_intelligence.core.config import Settings, get_settings
 HEALTHCHECK_TASK = "open_source_intelligence.workers.tasks.healthcheck"
 DAILY_PIPELINE_TASK = "open_source_intelligence.workers.tasks.run_daily_pipeline"
 RESEARCH_AGENT_TASK = "open_source_intelligence.workers.tasks.run_research_agent"
+PUBLISH_DUE_TASK = "open_source_intelligence.workers.tasks.publish_due_reports"
 
 
 def build_beat_schedule(settings: Settings) -> dict[str, dict[str, Any]]:
-    """Return the periodic schedule, including the daily deterministic pipeline."""
+    """Return the periodic schedule for the pipeline and the publishing sweep.
+
+    The publishing sweep is always on: releasing reports whose withdrawal window has
+    elapsed consumes no model budget, and leaving it manual would defeat the point of
+    `AUTO_WITH_DELAY`.
+    """
     schedule: dict[str, dict[str, Any]] = {
         "system-healthcheck": {
             "task": HEALTHCHECK_TASK,
             "schedule": 60.0,
-        }
+        },
+        "publish-due-reports": {
+            "task": PUBLISH_DUE_TASK,
+            "schedule": timedelta(minutes=settings.publish_sweep_minutes),
+        },
     }
     if settings.pipeline_schedule_enabled:
         schedule["daily-deterministic-pipeline"] = {

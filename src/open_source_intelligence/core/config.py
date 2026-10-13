@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     agent_max_candidates: int = Field(default=5, ge=1, le=30)
     agent_request_timeout_seconds: int = Field(default=60, ge=1, le=600)
     agent_prompts_dir: str | None = None
+    publish_delay_minutes: int = Field(default=60, ge=0, le=10080)
+    publish_min_citation_coverage: float = Field(default=1.0, ge=0.0, le=1.0)
+    publish_sweep_minutes: int = Field(default=15, ge=1, le=1440)
     docs_enabled: bool = True
 
     @field_validator("app_timezone")

@@ -12,7 +12,15 @@ from .intelligence import (
     Topic,
     TopicRepository,
 )
-from .reporting import Report, ReportDraft, ReportSection, ReportSource, ReportVersion
+from .reporting import (
+    Report,
+    ReportDraft,
+    ReportReview,
+    ReportSection,
+    ReportSource,
+    ReportVerification,
+    ReportVersion,
+)
 
 __all__ = [
     "AgentConfig",
@@ -23,8 +31,10 @@ __all__ = [
     "PipelineRun",
     "Report",
     "ReportDraft",
+    "ReportReview",
     "ReportSection",
     "ReportSource",
+    "ReportVerification",
     "ReportVersion",
     "Repository",
     "RepositoryContent",

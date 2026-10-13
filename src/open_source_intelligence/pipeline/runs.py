@@ -158,16 +158,23 @@ def finish_pipeline_run(
     metrics_json: dict[str, Any] | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
+    finished_at: datetime | None = None,
 ) -> PipelineRun:
-    """Close a run with a terminal status, metrics, and optional error detail."""
+    """Close a run with a terminal status, metrics, and optional error detail.
+
+    `finished_at` exists for callers that pin the clock: the run was started at a moment
+    they supplied, and `pipeline_runs` requires `finished_at >= started_at`, so closing it
+    from the wall clock would make the record self-inconsistent. Callers that do not pin a
+    clock leave it unset and the run closes on the wall clock as usual.
+    """
     validate_run_status(status)
     if status not in TERMINAL_STATUSES:
         raise ValueError(f"{status} is not a terminal status")
-    finished_at = _utc_now()
+    closed_at = finished_at or _utc_now()
     run.status = status
     if run.started_at is None:
-        run.started_at = finished_at
-    run.finished_at = finished_at
+        run.started_at = closed_at
+    run.finished_at = closed_at
     if metrics_json:
         merged: dict[str, Any] = dict(run.metrics_json or {})
         merged.update(metrics_json)
@@ -187,6 +194,7 @@ def fail_pipeline_run(
     error_code: str,
     error_message: str,
     metrics_json: dict[str, Any] | None = None,
+    finished_at: datetime | None = None,
 ) -> PipelineRun:
     """Close a run as failed with a stable error code and redacted message."""
     return finish_pipeline_run(
@@ -196,6 +204,7 @@ def fail_pipeline_run(
         metrics_json=metrics_json,
         error_code=error_code,
         error_message=error_message,
+        finished_at=finished_at,
     )
 
 

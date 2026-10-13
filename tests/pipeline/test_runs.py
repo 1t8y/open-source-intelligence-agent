@@ -1,6 +1,6 @@
 """Tests for PipelineRun lifecycle, error redaction, and run history queries."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import create_engine
@@ -87,6 +87,38 @@ def test_run_lifecycle_records_status_and_metrics() -> None:
         assert summary.started_at is not None
         assert summary.finished_at >= summary.started_at
         assert datetime.fromisoformat(summary.finished_at).tzinfo is not None
+
+
+def test_pinned_clock_closes_the_run_on_the_same_instant() -> None:
+    """A caller that pins the clock gets run timestamps that satisfy the time-order CHECK."""
+    pinned = datetime(2099, 6, 5, 12, 0, tzinfo=UTC)
+    session_factory = build_session_factory()
+    with session_factory() as session:
+        topic = add_topic(session)
+
+        succeeded = start_pipeline_run(session, run_type="publish", topic_id=topic.id, attempt=1)
+        mark_pipeline_run_running(session, succeeded, started_at=pinned)
+        finish_pipeline_run(session, succeeded, status="succeeded", finished_at=pinned)
+        assert succeeded.started_at == pinned
+        assert succeeded.finished_at == pinned
+
+        failed = start_pipeline_run(session, run_type="publish", topic_id=topic.id, attempt=1)
+        mark_pipeline_run_running(session, failed, started_at=pinned)
+        fail_pipeline_run(
+            session,
+            failed,
+            error_code=ERROR_COLLECTOR_FAILED,
+            error_message="blocked",
+            finished_at=pinned,
+        )
+        assert failed.finished_at == pinned
+
+        # Without a pinned clock the run still closes on the wall clock.
+        default_clock = start_pipeline_run(session, run_type="snapshot", attempt=1)
+        mark_pipeline_run_running(session, default_clock)
+        finish_pipeline_run(session, default_clock, status="succeeded")
+        assert default_clock.finished_at is not None
+        assert default_clock.finished_at >= default_clock.started_at
 
 
 def test_failed_run_rejects_invalid_transition_and_keeps_error() -> None:

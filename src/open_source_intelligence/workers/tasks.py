@@ -20,7 +20,17 @@ from open_source_intelligence.persistence.session import (
 )
 from open_source_intelligence.pipeline.daily import PipelineStageError
 from open_source_intelligence.pipeline.daily import run_daily_pipeline as execute_daily_pipeline
-from open_source_intelligence.workers.celery_app import DAILY_PIPELINE_TASK, RESEARCH_AGENT_TASK
+from open_source_intelligence.reports.publishing import (
+    PUBLISH_BATCH_LIMIT,
+)
+from open_source_intelligence.reports.publishing import (
+    publish_due_reports as execute_publish_due_reports,
+)
+from open_source_intelligence.workers.celery_app import (
+    DAILY_PIPELINE_TASK,
+    PUBLISH_DUE_TASK,
+    RESEARCH_AGENT_TASK,
+)
 
 
 def resolve_business_date(value: str | None, settings: Settings) -> date:
@@ -176,3 +186,32 @@ def run_research_agent(
     payload: dict[str, Any] = result.to_dict()
     payload["task"] = RESEARCH_AGENT_TASK
     return payload
+
+
+@shared_task(name=PUBLISH_DUE_TASK)  # type: ignore[misc]
+def publish_due_reports(limit: int = PUBLISH_BATCH_LIMIT) -> dict[str, Any]:
+    """Release the reports whose withdrawal window has elapsed.
+
+    The sweep is idempotent: a report is only released while it is `scheduled` and past its
+    `publish_at`, so a repeated run finds nothing left to do. A report that turns out to
+    violate the publish policy is marked `failed` with its stable error code instead of
+    aborting the batch.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    settings = get_settings()
+    engine = create_database_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+    try:
+        with session_factory() as session:
+            released = execute_publish_due_reports(session, limit=limit)
+    finally:
+        engine.dispose()
+    published_count = sum(1 for item in released if item["status"] == "published")
+    return {
+        "status": "ok",
+        "task": PUBLISH_DUE_TASK,
+        "released_count": published_count,
+        "blocked_count": len(released) - published_count,
+        "released": released,
+    }

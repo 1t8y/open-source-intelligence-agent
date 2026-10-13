@@ -204,9 +204,12 @@
   "model_call_count": 3,
   "estimated_cost": 0.042,
   "publish_decision": {
+    "report_id": 42,
     "mode": "MANUAL",
-    "reason_codes": ["LOW_CITATION_COVERAGE"],
-    "requires_review": true
+    "resolution": "pending_review",
+    "reason_codes": ["VERIFICATION_FAILED", "LOW_CITATION_COVERAGE"],
+    "requires_review": true,
+    "publish_at": null
   }
 }
 ```
@@ -259,7 +262,13 @@
 
 ### `POST /reports/{report_id}/publish`
 
-发布前检查状态、目标读者、审核记录、关键指标验证和推送目标允许列表。`MANUAL` 报告在审核通过前不得发布。
+发布前检查状态机合法边、目标读者、审核记录、验证结论和推送目标允许列表。具体前置条件（T11 已实现，路由在 T12 暴露）：
+
+- 报告必须处于 `scheduled`，且 `publish_at` 已到期，否则 `REPORT_STATE_INVALID`。
+- 必须存在针对 `current_version` 且 `verdict=passed` 的 `report_verifications` 行，否则 `PUBLISH_POLICY_BLOCKED`。
+- `MANUAL` 报告在审核通过（存在同一版本的 `approve` 记录）前不得发布，否则 `PUBLISH_POLICY_BLOCKED`。
+
+决策结果以 `publish_decision` 返回：`resolution=scheduled` 表示已进入发布队列，`resolution=pending_review` 表示已转人工且 `publish_at` 为空。
 
 ### `POST /reports/{report_id}/push`
 
