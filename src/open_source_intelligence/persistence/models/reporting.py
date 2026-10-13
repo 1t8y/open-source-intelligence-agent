@@ -47,7 +47,12 @@ REPORT_REVIEW_DECISIONS = ("approve", "reject", "request_changes")
 
 
 class Report(Base):
-    """A published or in-review weekly report generated from an Agent run."""
+    """A published or in-review weekly report generated from an Agent run.
+
+    `owner_id` is the accountable editor for the report. It is the only handle the
+    `PRIVATE` visibility has: without it a private report would be readable by every
+    authenticated user, so the column is what makes the narrowest scope meaningful.
+    """
 
     __tablename__ = "reports"
     __table_args__ = (
@@ -69,6 +74,7 @@ class Report(Base):
         Index("ix_reports_topic_status", "topic_id", "status"),
         Index("ix_reports_publish_at", "publish_at"),
         Index("ix_reports_visibility_sensitivity", "visibility", "sensitivity"),
+        Index("ix_reports_owner_status", "owner_id", "status"),
     )
 
     id: Mapped[uint64_pk]
@@ -81,6 +87,11 @@ class Report(Base):
         unsigned_bigint(),
         ForeignKey("topics.id", ondelete="RESTRICT"),
         nullable=False,
+    )
+    owner_id: Mapped[int | None] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -127,7 +138,13 @@ class ReportVersion(Base):
 
 
 class ReportSource(Base):
-    """One traceable evidence reference backing a report section."""
+    """One traceable evidence reference backing a report section.
+
+    Rows are keyed by the report version they belong to, not just by the report, because
+    `report_versions` keeps every version immutable: rolling back to an earlier version must
+    restore the evidence that backed *that* version, and `INV-10` must be checkable against
+    the version actually being published.
+    """
 
     __tablename__ = "report_sources"
     __table_args__ = (
@@ -135,7 +152,8 @@ class ReportSource(Base):
             "source_type IN ('metric', 'readme', 'prior_report')",
             name="source_type_valid",
         ),
-        Index("ix_report_sources_report_section", "report_id", "section_key"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("ix_report_sources_report_section", "report_id", "version", "section_key"),
         Index("ix_report_sources_repository", "repository_id"),
     )
 
@@ -145,6 +163,7 @@ class ReportSource(Base):
         ForeignKey("reports.id", ondelete="CASCADE"),
         nullable=False,
     )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     repository_id: Mapped[int | None] = mapped_column(unsigned_bigint(), nullable=True)
     section_key: Mapped[str] = mapped_column(String(64), nullable=False)
     claim_text: Mapped[str | None] = mapped_column(Text, nullable=True)

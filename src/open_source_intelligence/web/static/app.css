@@ -1,0 +1,148 @@
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --ink: #1c1f24;
+  --muted: #626b7a;
+  --line: #dfe3ea;
+  --accent: #1f6feb;
+  --ok: #167c4a;
+  --warn: #8a5a00;
+  --error: #b3261e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+a { color: var(--accent); }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 24px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { font-weight: 600; text-decoration: none; color: var(--ink); }
+
+.topnav { display: flex; align-items: center; gap: 16px; }
+.topnav form { display: inline; }
+.who { color: var(--muted); font-size: 13px; }
+
+.page { max-width: 1100px; margin: 24px auto 64px; padding: 0 24px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+
+.card.narrow { max-width: 420px; margin: 48px auto; }
+
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 0 0 12px; }
+
+.meta, .hint { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
+
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.row.start { align-items: flex-start; }
+.space-between { justify-content: space-between; }
+.inline-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.badges { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #f0f2f6;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-published { background: #e3f5ea; color: var(--ok); border-color: #b6e0c8; }
+.status-scheduled, .status-approved { background: #e8f0fe; color: var(--accent); border-color: #c3d6fb; }
+.status-pending_review, .status-changes_requested { background: #fdf3e2; color: var(--warn); border-color: #f0dcb4; }
+.status-failed { background: #fdeceb; color: var(--error); border-color: #f4c7c3; }
+
+.alert { padding: 8px 12px; border-radius: 8px; font-size: 14px; }
+.alert.ok { background: #e6f6ec; color: var(--ok); }
+.alert.error { background: #fdeceb; color: var(--error); }
+
+.ok-text { color: var(--ok); }
+.error-text { color: var(--error); }
+
+.facts { display: flex; flex-wrap: wrap; gap: 24px; margin: 12px 0; }
+.facts div { margin: 0; }
+.facts dt { color: var(--muted); font-size: 12px; }
+.facts dd { margin: 0; font-size: 14px; }
+
+.grid { width: 100%; border-collapse: collapse; margin: 8px 0 4px; }
+.grid th, .grid td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  vertical-align: top;
+}
+.grid th { color: var(--muted); font-weight: 600; }
+.grid code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+.pager { margin-top: 12px; font-size: 13px; color: var(--muted); }
+
+form label { display: block; margin-bottom: 12px; }
+form label > span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+
+input[type="text"], input[type="password"], select, textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+textarea { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+
+button {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.link-button { border: none; background: none; color: var(--accent); padding: 0; }
+
+.actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+
+.content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+  background: #fafbfc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 0;
+  max-height: 640px;
+  overflow: auto;
+}
+
+.filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 12px 0; }
+.filters label { margin: 0; }

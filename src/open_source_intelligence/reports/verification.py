@@ -30,7 +30,7 @@ from open_source_intelligence.security.audit import record_audit_event
 
 from .citations import resolve_citation
 from .composition import SECTION_TITLES
-from .errors import ReportGenerationError
+from .errors import ReportGenerationError, ReportNotFoundError
 
 #: Mirrors `CitationRef.source_type`; a stored row is a plain string, so it must be narrowed.
 SourceType = Literal["metric", "readme", "prior_report"]
@@ -140,8 +140,13 @@ def _check_citations(
     session: Session,
     report: Report,
 ) -> tuple[bool, float, list[str], list[str]]:
-    """Return citation health plus the per-section coverage ratio."""
-    rows = session.scalars(select(ReportSource).where(ReportSource.report_id == report.id)).all()
+    """Return citation health plus the per-section coverage ratio for the current version."""
+    rows = session.scalars(
+        select(ReportSource).where(
+            ReportSource.report_id == report.id,
+            ReportSource.version == report.current_version,
+        )
+    ).all()
     covered = {row.section_key for row in rows}
     missing_sections = [key for key in REPORT_SECTION_KEYS if key not in covered]
     unresolved: list[str] = []
@@ -201,13 +206,14 @@ def verify_report(
     moment = now or utc_now()
     report = session.get(Report, report_id)
     if report is None:
-        raise ReportGenerationError(f"report {report_id} does not exist")
+        raise ReportNotFoundError(f"report {report_id} does not exist")
 
     bodies = split_section_bodies(report.content_markdown)
     metric_sections = set(
         session.scalars(
             select(ReportSource.section_key).where(
                 ReportSource.report_id == report.id,
+                ReportSource.version == report.current_version,
                 ReportSource.source_type == "metric",
             )
         ).all()

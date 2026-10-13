@@ -3,7 +3,7 @@
 > 数据库：MySQL 8.0+  
 > ORM：SQLAlchemy 2.x  
 > 迁移：Alembic  
-> 最后更新：2026-10-12
+> 最后更新：2026-10-13
 
 ## 1. 设计原则
 
@@ -24,7 +24,8 @@ agent_configs --< agent_runs --< agent_steps --< tool_calls
 pipeline_runs --< agent_runs；topics --< agent_runs
 agent_runs --< report_drafts --< report_sections
 agent_runs --< reports --< report_versions
-reports --< report_sources
+users --< reports（owner_id）
+reports --< report_sources（按 report_id + version 归属）
 reports --< report_reviews
 reports --< report_verifications
 eval_datasets --< eval_cases --< eval_results >-- eval_runs
@@ -260,6 +261,7 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 | `id` | BIGINT UNSIGNED | PK | 报告 ID |
 | `agent_run_id` | BIGINT UNSIGNED | FK agent_runs.id | 生成运行 |
 | `topic_id` | BIGINT UNSIGNED | FK topics.id | 主题 |
+| `owner_id` | BIGINT UNSIGNED | FK users.id, SET NULL, NULL | 报告负责人，`PRIVATE` 可见范围的唯一抓手 |
 | `title` | VARCHAR(255) | NOT NULL | 标题 |
 | `current_version` | INT | NOT NULL DEFAULT 1 | 当前版本 |
 | `content_markdown` | MEDIUMTEXT | NOT NULL | 当前内容 |
@@ -272,15 +274,19 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 | `published_at` | DATETIME(6) | NULL | 发布时间 |
 | `approved_by` | BIGINT UNSIGNED | NULL | 审核人 |
 
-索引：`(topic_id, status)`、`(publish_at)`、`(visibility, sensitivity)`。
+索引：`(topic_id, status)`、`(publish_at)`、`(visibility, sensitivity)`、`(owner_id, status)`。
 
-报告状态机：`draft -> pending_review -> approved -> scheduled -> published`，失败分支为 `failed`，退回分支为 `changes_requested`。
+报告状态机：`draft -> pending_review -> approved -> scheduled -> published`，失败分支为 `failed`（终态），退回分支为 `changes_requested`；T12 新增 `published -> draft`，用于撤回或回退已发布的报告。撤回与回退都以"追加新版本"实现。
+
+`owner_id` 为 `NULL` 的 `PRIVATE` 报告只有 `ADMIN` 可读——这是"没有负责人的私有内容按最窄范围处理"的安全默认值，而不是"人人可读"。
 
 ### `report_versions`
 
 字段：`id`、`report_id`、`version`、`content_markdown`、`created_by`、`change_reason`、`created_at`。唯一约束：`UNIQUE(report_id, version)`。
 
-T10 已实现该表：相同草稿内容重复生成不新增版本；章节内容变化时 `reports.current_version` 递增，并写入对应不可变版本。`report_sources` 在每次生成时替换为当前版本的引用集合。
+T10 已实现该表：相同草稿内容重复生成不新增版本；章节内容变化时 `reports.current_version` 递增，并写入对应不可变版本。
+
+T12 扩展了写入路径：人工编辑正文与回退历史版本都**追加**新版本（`change_reason` 分别为 `manual_edit` 与 `rollback_to_v<n>`），并同时复制被继承版本的引用集合，不覆盖任何历史行。
 
 ### `report_sources`
 
@@ -288,6 +294,7 @@ T10 已实现该表：相同草稿内容重复生成不新增版本；章节内�
 |---|---|---|---|
 | `id` | BIGINT UNSIGNED | PK | 来源 ID |
 | `report_id` | BIGINT UNSIGNED | FK reports.id | 报告 |
+| `version` | INT | NOT NULL DEFAULT 1, CHECK >= 1 | 该引用所属的报告版本 |
 | `repository_id` | BIGINT UNSIGNED | NULL | 可选仓库 |
 | `section_key` | VARCHAR(64) | NOT NULL | 报告章节 |
 | `claim_text` | TEXT | NULL | 关键结论摘要 |
@@ -297,7 +304,9 @@ T10 已实现该表：相同草稿内容重复生成不新增版本；章节内�
 | `metric_snapshot_id` | BIGINT UNSIGNED | NULL | 指标来源 |
 | `created_at` | DATETIME(6) | NOT NULL | UTC |
 
-索引：`(report_id, section_key)`、`(repository_id)`。
+索引：`(report_id, version, section_key)`、`(repository_id)`。
+
+T12 新增 `version`，引用集合因此**按版本归属**：回退到历史版本时能恢复该版本自己的证据，`INV-10` 也总能对正在发布的版本校验。验证器、合成器与 `search_prior_reports` 的引用读写一律带 `version == reports.current_version` 限定。
 
 ### `report_drafts`
 
@@ -464,17 +473,19 @@ T8 未新增表，但下列表的写入方自此明确：
 
 `reports` 与 `report_sources` 在 T8 仍为空：Write 只到草稿章节，报告合成与引用有效性校验属 T10。
 
-## 11. 写入方（T10 / T11）
+## 11. 写入方（T10 / T11 / T12）
 
-T10 与 T11 的写入方如下：
+T10–T12 的写入方如下：
 
 | 表 | 写入方 | 说明 |
 |---|---|---|
-| `reports` | `reports/composition.py:generate_report()` 建行；`reports/publishing.py` 推进 `status` / `publish_at` / `published_at` | 首次生成写 `status=draft`；发布链路按状态机迁移 |
-| `report_versions` | `reports/composition.py` | 内容变化时写不可变版本；同内容重复生成不新增 |
-| `report_sources` | `reports/composition.py` | 每次生成整体替换为当前版本的引用集合 |
+| `reports` | `reports/composition.py:generate_report()` 建行；`reports/publishing.py` 推进 `status` / `publish_at` / `published_at`；`reports/revisions.py` 推进 `status` / `current_version` / `owner_id` 无关的元数据 / `visibility` / `sensitivity` | 首次生成写 `status=draft`；发布链路按状态机迁移 |
+| `report_versions` | `reports/composition.py`、`reports/revisions.py` | 内容变化、人工编辑正文与回退历史版本都追加不可变版本；同内容重复生成不新增 |
+| `report_sources` | `reports/composition.py`、`reports/revisions.py` | 整体替换**该版本**的引用集合，并把上一版的集合复制到新版本 |
 | `report_verifications` | `reports/verification.py:verify_report()` | 按 `(report_id, version)` 刷新单行结论，并写 `report.verify` 审计事件 |
 | `report_reviews` | `reports/publishing.py:record_review()` | 每次人工决定追加一行，并写 `report.review` 审计事件 |
 | `pipeline_runs` | `reports/publishing.py`（`run_type=publish`） | 决策、阻塞与发布各留一条记录，`metrics_json.stage` 区分 `evaluate` 与 `publish` |
+
+T12 的读侧入口是 `reports/queries.py`：列表（带授权谓词与分页）、详情聚合、以及 8 个 API 端点与 `/ui` 页面共用的序列化。`api`、`web` 两层都不直接构造 SQL（`INTERFACES.md` §4）。
 
 `publish_due_reports()` 是延迟发布与批准后发布的唯一推进入口：先把 `approved` 报告置为 `scheduled`，再发布所有已到期的 `scheduled` 报告；单条报告被策略拦截时记 `failed` 并继续处理其余报告，不中断整批。

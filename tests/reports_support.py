@@ -1,8 +1,9 @@
-"""Seeding helpers shared by the Verifier and publishing tests.
+"""Seeding helpers shared by the report, API, and web tests.
 
-They live here rather than in `conftest.py` because the test directory has no
-`__init__.py`, so tests import them as a plain top-level module (the same pattern the Agent
-tests use with `agent_support`).
+They sit next to `support.py` at the top of `tests/` because pytest puts `tests` on
+`sys.path` (`pythonpath` in `pyproject.toml`), so every test directory can import them as a
+plain top-level module. A sibling of `conftest.py` inside `tests/reports/` would only be
+importable from that one directory.
 """
 
 from __future__ import annotations

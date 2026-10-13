@@ -1,8 +1,8 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T9 已对齐）
-> 文档版本：v0.8
-> 最后更新：2026-10-12
+> 文档状态：实施基线（T1-T12 已对齐）
+> 文档版本：v0.9
+> 最后更新：2026-10-13
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
 ## 1. 契约范围
@@ -37,7 +37,8 @@
 | 主题 | `/topics`、`POST /topics/{id}/run` | ADMIN/EDITOR | 过滤条件、候选上限、发布模式 |
 | 仓库 | `/repositories`、`/repositories/{id}/snapshots` | 有主题权限 | 趋势和快照查询 |
 | Agent | `/agent/runs`、`/agent/runs/{id}/steps` | ADMIN/EDITOR | 运行状态、预算和轨迹 |
-| 报告 | `/reports`、`review`、`publish`、`push` | ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
+| 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/publish-due`、`push` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
+| 管理界面 | `GET /ui/reports`、`/ui/reports/{id}`、`POST /ui/reports/{id}/{verify,review,publish,rollback,edit}`、`POST /ui/reports/publish-due`、`/ui/login`、`/ui/logout` | 同报告资源的读/写角色 | 服务端渲染页面，复用同一套服务层；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交 |
 | 评测 | `/evaluations` | ADMIN/EDITOR | 数据集、执行、指标和基线差异 |
 | 监控 | `/metrics/overview` | ADMIN/EDITOR | 任务、Token、延迟、失败率 |
 | 审计 | `/audit-logs` | ADMIN | 只读，不可修改 |
@@ -373,9 +374,11 @@ Agent 只能调用以下白名单工具：
 - `repository_contents` 唯一键为 `(repository_id, content_type)`。
 - `tool_calls` 必须关联 `agent_run_id`，只保存脱敏且截断后的参数与结果摘要；工具预算与白名单由 `agent_configs.tool_policy_json` 提供，运行时再收敛为 `ToolContext.allowed_tools`。
 - 五个工具中只有 `save_report_section` 写数据且只写当前运行草稿；其余四个工具不得产生任何领域写入，由注册表的只读写保护强制并在冒烟中验证。
-- `report_versions` 按 `(report_id, version)` 唯一，保存每次正式报告内容的不可变快照；`report_sources` 始终描述 `reports.current_version` 的引用集合。
+- `report_versions` 按 `(report_id, version)` 唯一，保存每次正式报告内容的不可变快照；`report_sources` 的引用集合**按版本归属**（`report_sources.version`），描述的是该版本的证据，因此回退到历史版本能恢复该版本自己的引用，`INV-10` 也总能对正在发布的版本校验。
+- `reports.owner_id` 是 `PRIVATE` 可见范围的唯一抓手：`PRIVATE` 报告仅负责人可读，`owner_id` 为 `NULL` 时只有 `ADMIN` 可读。列表的权限过滤必须发生在数据库查询阶段，不得先取全量再在应用层过滤。
 - `report_verifications` 按 `(report_id, version)` 唯一，保存该版本的验证结论（四个布尔检查 + 原因码）；重复验证刷新同一行。
 - `report_reviews` 记录人对某个版本的审核决定，`decision` 取 `approve`、`reject`、`request_changes`。
+- 报告编辑只允许在 `draft` / `changes_requested` 状态下进行，且只追加不可变的 `report_versions` 行，不覆盖历史版本；回退历史版本同样追加新版本，不重写历史。
 - `MANUAL` 报告缺少 `approve` 审核记录时不能发布。
 - 任何报告发布前，都必须存在针对其 `current_version` 且 `verdict=passed` 的 `report_verifications` 行（`INV-5`）。
 - 发布刻意按 `publish_mode` 收紧而不放宽：`publish_mode` 是上限，验证失败、敏感内容、首次配置、运行不干净等发现只会让决策更严格。
@@ -401,8 +404,11 @@ pending_review    -> approved | changes_requested | failed
 approved          -> scheduled | failed
 scheduled         -> published | failed
 changes_requested -> draft
-published / failed -> （终态，无出边）
+published         -> draft
+failed            -> （终态，无出边）
 ```
+
+`published -> draft` 同时承载两种语义：撤回已发布的报告，以及回退到历史版本。两种动作都**追加新版本**并清空 `publish_at` / `published_at`，不重写历史；回退的具体版本号记在该版本的 `change_reason`（`rollback_to_v<n>`）里。`failed` 是唯一终态：被拒绝的报告不能通过回退复活。
 
 `pending_review` 只能由人清除（`approve` / `reject` / `request_changes`），重复评估发布策略不会把已经进入下游状态（`pending_review` / `approved` / `scheduled` / `published`）的报告静默推进。
 
@@ -432,7 +438,20 @@ published / failed -> （终态，无出边）
 | `AGENT_BUDGET_EXCEEDED` | 超出循环、工具或 Token 预算 |
 | `AGENT_PROMPT_INJECTION` | 不可信内容包含指令式文本，运行进入人工复核 |
 | `PUBLISH_POLICY_BLOCKED` | 报告不满足自动发布条件（缺通过验证、`MANUAL` 缺 `approve`、窗口未到期） |
-| `REPORT_STATE_INVALID` | 报告当前状态不允许该迁移或动作 |
+| `REPORT_STATE_INVALID` | 报告当前状态不允许该迁移或动作（含对 `failed` 报告回退） |
+| `NOT_FOUND` | 报告、报告版本或 UI 资源不存在 |
+
+报告资源（T12）的 HTTP 语义：
+
+| 动作 | 成功 | 失败语义 |
+|---|---|---|
+| `GET /reports`、`GET /reports/{id}` | `200` | `401` 未登录；`403 FORBIDDEN` 越权（不泄露标题）；`404 NOT_FOUND` 不存在 |
+| `PATCH /reports/{id}` | `200` | `409 REPORT_STATE_INVALID` 非可编辑状态；`422 VALIDATION_ERROR` 字段非法 |
+| `POST /reports/{id}/verify` | `200` | `404 NOT_FOUND` |
+| `POST /reports/{id}/review` | `200` | `400 VALIDATION_ERROR` 未知决定；`409 REPORT_STATE_INVALID` 非 `pending_review` |
+| `POST /reports/{id}/publish` | `200` | `409 PUBLISH_POLICY_BLOCKED`（缺验证/缺审核）；`409 REPORT_STATE_INVALID`（状态或窗口） |
+| `POST /reports/{id}/rollback` | `200` | `400` 目标为当前版本；`404` 版本不存在；`409` 报告为 `failed` |
+| UI 写操作 | `200` 渲染片段 | `403` CSRF 校验失败或角色只读；`409` 同上；`303` 未登录重定向到 `/ui/login` |
 
 发布策略原因码（T11，出现在 `publish_decision.reason_codes` 与 `report_verifications.reason_codes_json`）：
 

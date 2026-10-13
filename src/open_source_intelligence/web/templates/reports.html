@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}报告中心 · 开源情报周报平台{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="row space-between">
+    <h1>报告中心</h1>
+    <form method="post" action="/ui/reports/publish-due" hx-post="/ui/reports/publish-due"
+          hx-target="#sweep-result" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">释放到期报告</button>
+    </form>
+  </div>
+  <div id="sweep-result"></div>
+
+  <form class="filters" method="get" action="/ui/reports">
+    <label>
+      <span>状态</span>
+      <select name="status">
+        <option value="" {% if not status_filter %}selected{% endif %}>全部</option>
+        {% for value in ["draft", "pending_review", "approved", "scheduled", "published", "failed", "changes_requested"] %}
+        <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      <span>可见范围</span>
+      <select name="visibility">
+        <option value="" {% if not visibility_filter %}selected{% endif %}>全部</option>
+        {% for value in ["PRIVATE", "TEAM", "INTERNAL"] %}
+        <option value="{{ value }}" {% if visibility_filter == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">筛选</button>
+  </form>
+
+  {% if page.items %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>ID</th><th>标题</th><th>主题</th><th>状态</th><th>可见范围</th>
+        <th>模式</th><th>版本</th><th>生成时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in page.items %}
+      <tr>
+        <td>{{ item.id }}</td>
+        <td><a href="/ui/reports/{{ item.id }}">{{ item.title }}</a></td>
+        <td>{{ topic_names.get(item.topic_id, "—") }}</td>
+        <td><span class="badge status-{{ item.status }}">{{ item.status }}</span></td>
+        <td><span class="badge">{{ item.visibility }}</span></td>
+        <td>{{ item.publish_mode }}</td>
+        <td>v{{ item.current_version }}</td>
+        <td>{{ item.generated_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="row space-between pager">
+    <span>共 {{ page.total }} 条，第 {{ page.page }} 页，每页 {{ page.page_size }} 条</span>
+    <span class="row">
+      {% if page.page > 1 %}
+      <a href="/ui/reports?page={{ page.page - 1 }}&status={{ status_filter }}&visibility={{ visibility_filter }}">上一页</a>
+      {% endif %}
+      {% if page.page * page.page_size < page.total %}
+      <a href="/ui/reports?page={{ page.page + 1 }}&status={{ status_filter }}&visibility={{ visibility_filter }}">下一页</a>
+      {% endif %}
+    </span>
+  </div>
+  {% else %}
+  <p class="hint">当前权限范围内没有匹配的报告。</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -26,6 +26,7 @@ from open_source_intelligence.security.audit import record_audit_event
 
 from .citations import ResolvedCitation, resolve_citation
 from .errors import ReportGenerationError
+from .state import transition_report
 
 SECTION_TITLES = {
     "summary": "本周摘要",
@@ -182,6 +183,13 @@ def generate_report(
         report.title = resolved_title
         report.topic_id = draft.topic_id
         report.publish_mode = topic.publish_mode
+        if report.status == "changes_requested":
+            # A reviewer asked for changes; regenerating is the response, so the report has
+            # to re-enter the draft queue even when the Agent lands on identical content.
+            # Without this the documented `changes_requested -> draft` edge is unreachable
+            # and the report is stuck in a state nothing may publish from.
+            transition_report(report, "draft")
+            report.publish_at = None
         if report.content_markdown != markdown:
             report.current_version += 1
             report.content_markdown = markdown
@@ -207,11 +215,20 @@ def generate_report(
             )
         )
 
-    session.execute(delete(ReportSource).where(ReportSource.report_id == report.id))
+    # Only this version's citation rows are replaced. Earlier versions keep theirs so a
+    # rollback can restore the evidence that backed that version, and `INV-10` can always be
+    # checked against the version actually being published.
+    session.execute(
+        delete(ReportSource).where(
+            ReportSource.report_id == report.id,
+            ReportSource.version == version,
+        )
+    )
     for (section_key, _), citation in resolved_sources.items():
         session.add(
             ReportSource(
                 report_id=report.id,
+                version=version,
                 repository_id=citation.repository_id,
                 section_key=section_key,
                 source_type=citation.source_type,

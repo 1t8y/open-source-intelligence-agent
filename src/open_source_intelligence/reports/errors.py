@@ -5,6 +5,16 @@ class ReportGenerationError(ValueError):
     """Raised when a draft cannot be promoted into a traceable report."""
 
 
+class ReportNotFoundError(ReportGenerationError):
+    """Raised when the addressed report or report version does not exist.
+
+    It is separate from the generic generation failure so the API can answer `404` for a
+    missing resource and `400` for a rejected request without matching on message text.
+    """
+
+    code = "NOT_FOUND"
+
+
 class ReportPublishError(ValueError):
     """Raised when a report cannot reach the requested publishing state.
 

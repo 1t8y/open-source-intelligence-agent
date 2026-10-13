@@ -1,0 +1,17 @@
+{% if message %}<p class="alert ok">{{ message }}</p>{% endif %}
+{% if entries %}
+<table class="grid">
+  <thead><tr><th>报告</th><th>结果</th><th>模式</th><th>错误码</th><th>发布时间</th></tr></thead>
+  <tbody>
+    {% for entry in entries %}
+    <tr>
+      <td><a href="/ui/reports/{{ entry.report_id }}">#{{ entry.report_id }}</a></td>
+      <td>{{ entry.status }}</td>
+      <td>{{ entry.publish_mode }}</td>
+      <td>{{ entry.error_code or "—" }}</td>
+      <td>{{ entry.published_at or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}

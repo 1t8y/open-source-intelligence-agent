@@ -1,7 +1,7 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：T1-T11 已完成，进入 T12
-> 文档版本：v0.10
+> 项目状态：T1-T12 已完成，进入 T13
+> 文档版本：v0.11
 > 最后更新：2026-10-13
 
 ## 最终版路径
@@ -45,11 +45,13 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T11 已完成：报告发布前会重跑结构、引用、数字和敏感内容四项校验（结论落在 `report_verifications`），再由策略引擎按 `AUTO / AUTO_WITH_DELAY / MANUAL` 决定「进入发布队列」还是「转人工」；`MANUAL` 报告缺少 `approve` 审核记录时无法发布，延迟窗口与到期释放由独立的 `publish_due_reports` 扫描推进。
+当前 T12 已完成：报告能力已经可以作为 HTTP 资源和管理界面使用——`GET/PATCH /api/v1/reports`、`verify`、`review`、`publish`、`rollback`、`publish-due` 八个端点覆盖「查看、编辑、审核、发布、回退报告」全路径，错误统一为 RFC 7807 Problem Details；`/ui` 另外提供 Jinja2 + HTMX 的服务端渲染界面（列表、详情、验证结论、引用与证据、版本历史、审核记录、编辑表单），会话走 `HttpOnly` Cookie，写操作强制 CSRF 双提交。
+
+报告的读取权限集中在 `security/authorization.py`：`ADMIN` 全读，`INTERNAL` 任意登录用户，`TEAM` 需要 `data_scope=team`，`PRIVATE` 需要 `reports.owner_id` 命中本人；列表的权限过滤在数据库查询阶段完成。编辑正文与回退历史版本都**追加不可变版本**并复制引用集合，然后退回 `draft` 等待重新验证；`report_sources.version` 让引用集合按版本归属，因此回退能恢复该版本自己的证据。
 
 模型接入采用可插拔 Adapter：默认 `AGENT_PROVIDER=offline` 使用确定性离线桩，无需网络与 API Key 即可端到端验证；`OpenAICompatibleClient` 通过同一个 `ModelClient` 接口对接真实供应商。
 
-T12 报告 API 与管理界面尚未开始（需要把验证结论、发布决策和审核记录暴露为 HTTP 资源）。
+T13 邮件/Webhook 推送尚未开始。
 
 T1 验证命令：
 
@@ -138,6 +140,14 @@ T11 验证命令：
 ```
 
 该脚本执行 pytest、Ruff、mypy、五服务重建、迁移升级/回滚/再次升级与 drift 检查，然后在真实 MySQL 上验证三条验收：伪造引用被 Verifier 拦截、`AUTO_WITH_DELAY` 报告在窗口前不发布且窗口后自动发布、`MANUAL` 报告缺少审核记录时无法发布。
+
+T12 验证命令：
+
+```powershell
+.\scripts\verify_t12.ps1
+```
+
+该脚本执行 pytest、Ruff、mypy、五服务重建、迁移升级/回滚/再次升级与 drift 检查，然后在真实 MySQL 上启动**真实 FastAPI 应用**跑通 T12 验收：报告列表按可见范围在数据库层过滤（`VIEWER` 看不到 `PRIVATE`，`ADMIN` 全见）、详情页与 API 的越权读取返回 `403` 且不泄露标题、CSRF 缺失/不匹配与只读角色写操作均返回 `403`、编辑正文追加不可变版本并回到 `draft`、`MANUAL` 走完「转人工 → 退回修改 → 再编辑 → 通过 → 发布」、已发布报告可回退为新的 `draft` 版本，并检查六类审计事件与验证/审核证据落库。
 
 ## 开发原则
 

@@ -150,7 +150,7 @@ open-source-intelligence-agent/
 | `repositories`, `repo_snapshots` | 仓库主数据和每日时间序列 |
 | `pipeline_runs` | 采集、筛选、报告任务的运行记录 |
 | `agent_configs`, `agent_runs`, `agent_steps`, `tool_calls` | Agent 版本、状态、轨迹和工具调用 |
-| `reports`, `report_versions`, `report_sources`, `report_reviews` | 报告、当前版本、不可变版本、证据引用和审核 |
+| `reports`, `report_versions`, `report_sources`, `report_verifications`, `report_reviews` | 报告、当前版本与不可变版本、按版本归属的证据引用、验证结论和人工审核 |
 | `eval_datasets`, `eval_cases`, `eval_runs`, `eval_results` | 评测集、执行和指标 |
 | `feedback` | 人工反馈和 Bad Case |
 | `audit_logs` | 权限、配置、审核、发布和导出审计 |
@@ -404,6 +404,20 @@ T11 已实现以下能力：
 - `reports/cli.py` 扩展为 `--action {generate,verify,publish,review,publish-due}`，保留 `--agent-run-id` 单独使用等于 `generate` 的 T10 入口兼容；Celery 新增恒在的 `publish-due-reports` 周期任务（`PUBLISH_SWEEP_MINUTES`，默认 15 分钟）。
 - `pipeline_runs` 的 `publish` 记录同时承载决策与发布两个阶段（`metrics_json.stage` 为 `evaluate` 或 `publish`）；调用方指定了时刻时，`started_at` 与 `finished_at` 都使用该时刻，以满足 `finished_at >= started_at`。
 
+### 9.9 T12 报告 API 与管理界面
+
+T12 已实现以下能力：
+
+- `reports/queries.py` 是报告读侧的唯一入口：列表把授权谓词**放进 `WHERE` 子句**再分页与计数（`docs/api-contract.md` §6 要求权限过滤不得发生在取数之后），详情一次聚合报告、全量版本、当前版本的引用、当前版本的验证结论与全部审核记录，避免页面出现 N+1 查询。
+- `security/authorization.py` 集中报告 ACL：`admin` 全读；`INTERNAL` 任意登录用户可读；`TEAM` 需要 `data_scope=team`；`PRIVATE` 需要 `owner_id == user.id`，没有负责人的 `PRIVATE` 报告只有 `ADMIN` 可读。越权读取抛 `403 FORBIDDEN` 且不泄露标题，并写 `report.read` / `denied` 审计。
+- `reports/revisions.py` 提供编辑与回退：内容变化时**追加**不可变版本并复制上一版的引用集合，随后把报告退回 `draft` 等待重新验证；只改元数据（标题、可见范围、敏感级别、`publish_at`）不产生新版本。回退历史版本同样追加新版本，`change_reason` 记为 `rollback_to_v<n>`；`failed` 报告不可回退。
+- 状态机收敛到 `reports/state.py`（`ALLOWED_TRANSITIONS` + `transition_report`），供 `publishing`、`revisions`、`composition` 共用，消除了 `publishing ↔ composition` 的循环导入。相对 T11 新增 `published -> draft` 边，使"撤回/回退已发布报告"成为合法迁移，同时保留 `failed` 为唯一终态。
+- `report_sources.version` 让引用集**按版本归属**：回退能恢复被回退版本自己的证据，`INV-10` 也总能在正在发布的版本上校验；`verification`、`composition` 与 `search_prior_reports` 的引用读写全部按 `version` 限定。
+- `api/errors.py` 把 FastAPI/Starlette 异常与领域异常统一渲染为 RFC 7807 Problem Details（`type` / `title` / `status` / `detail` / `instance` / `code` / `request_id`），`code` 稳定可判断，客户端无需解析英文文案。
+- `api/routes/reports.py` 暴露 `/api/v1/reports` 八个端点：列表、详情、编辑（`PATCH`）、`verify`、`review`、`publish`、`rollback`、`publish-due`。发布端点复用 T11 的策略引擎；只有当报告**已过**撤回窗口时才会真正尝试释放，使 `INV-5` 拦截以真实的 `409 PUBLISH_POLICY_BLOCKED` 暴露，而不是只回一句"已排队"。
+- `web/` 提供服务端渲染的管理界面：Jinja2 模板 + 本地 vendored 的 HTMX（容器无外网也可用），登录、报告列表（状态/可见范围筛选 + 分页）、报告详情（验证结论、引用与证据、版本历史、审核记录、编辑表单）与全部动作。界面复用 `api` 层同一套服务，自己不发 SQL。
+- UI 会话是 `HttpOnly` Cookie 里的 JWT（`docs/security-and-privacy.md` §3.1），写操作额外走 CSRF 双提交（随机值同时存 Cookie 与表单隐藏字段，`secrets.compare_digest` 比对）；动作的守卫顺序固定为 **CSRF → 写角色 → 报告读权限 → 调用服务**，因此越权动作不会先落库再被拒。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -415,7 +429,8 @@ T11 已实现以下能力：
 | 主题 | `/api/v1/topics` | 监控主题与筛选条件 |
 | 仓库 | `/api/v1/repositories`, `/api/v1/repositories/{id}/snapshots` | 仓库和趋势查询 |
 | Agent | `/api/v1/agent/runs`, `/api/v1/agent/runs/{id}` | 触发与查看研究轨迹 |
-| 报告 | `/api/v1/reports`, `/api/v1/reports/{id}/review`, `/publish` | 查询、审核和发布 |
+| 报告 | `/api/v1/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/publish-due` | 查询、校验、审核、发布和回退 |
+| 管理界面 | `/ui/login`、`/ui/reports`、`/ui/reports/{id}` | 服务端渲染的审核与运维界面，动作走 HTMX 片段替换 |
 | 评测 | `/api/v1/evaluations`, `/api/v1/evaluations/{id}/run` | 数据集、执行和指标 |
 | 审计 | `/api/v1/audit-logs` | 只读审计查询，限管理员 |
 
@@ -424,7 +439,8 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 ## 11. 安全与隐私架构
 
 - 外部采集内容是不可信输入，必须隔离、截断并标记来源。
-- 首期角色为 `ADMIN`、`EDITOR`、`VIEWER`；报告可见范围为 `PRIVATE`、`TEAM`、`INTERNAL`。
+- 首期角色为 `ADMIN`、`EDITOR`、`VIEWER`；报告可见范围为 `PRIVATE`、`TEAM`、`INTERNAL`。报告的读写判定集中在 `security/authorization.py`，列表的权限过滤在数据库查询阶段完成，越权读取返回 `403` 且不泄露资源标题。
+- 管理界面用 `HttpOnly` Cookie 承载 JWT，写操作强制 CSRF 双提交；守卫顺序为 CSRF → 写角色 → 资源读权限 → 调用服务，越权请求不会产生任何数据变更。
 - 机密报告默认禁止发送给未经批准的外部模型；Provider Adapter 必须读取模型数据策略。
 - 模型请求前执行基础敏感信息识别，数据库连接串、API Key、Cookie 和内部密码不得进入 Prompt 或日志。
 - 关键操作写入不可由普通管理员修改的审计日志。
@@ -485,7 +501,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T9 Prompt Guard 与运行预算 — 依赖：T8 — 验证：循环、工具、Token 超限时安全停止
 - [x] T10 报告生成与引用 — 依赖：T8 — 验证：关键数字可追溯，引用链接有效
 - [x] T11 Verifier 与发布策略 — 依赖：T10 — 验证：`AUTO`、`AUTO_WITH_DELAY`、`MANUAL` 状态机测试通过
-- [ ] T12 报告 API 与管理界面 — 依赖：T3/T11 — 验证：可查看、编辑、审核、发布和回退报告
+- [x] T12 报告 API 与管理界面 — 依赖：T3/T11 — 验证：可查看、编辑、审核、发布和回退报告
 - [ ] T13 邮件/Webhook 推送 — 依赖：T11/T12 — 验证：仅已批准报告可推送，失败可重试
 - [ ] T14 评测数据集与 Runner — 依赖：T8/T10 — 验证：Baseline、Agent、消融版本可输出统一报告
 - [ ] T15 监控指标与看板 — 依赖：T6/T10/T14 — 验证：任务、Token、延迟、失败率和评测结果可见
@@ -532,3 +548,8 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-13 | 完成 T11 Verifier 与发布策略：四项发布前校验与 `report_verifications` 证据、策略引擎与发布状态机、`report_reviews` 人工审核、`publish_due_reports` 到期释放与 Celery 周期任务、报告 CLI 五动作 | 8.5、9.8、14 | T11 | 232 项测试、Ruff check+format 137 文件、mypy 82 文件 0 错误；迁移 `e5b1c8a3f7d2` 新增两张表，链为单 head，升级/回滚 DDL 离线渲染正确；真实端到端验证伪造引用被拦（`CITATION_UNRESOLVED`）、`AUTO_WITH_DELAY` 窗口前不发布窗口后发布、`MANUAL` 缺 `approve` 记录不可发布 |
 | 2026-10-13 | 新增 `report_verifications`、`report_reviews` 两张表 | 6、9.8、14 | T11 | 迁移 `e5b1c8a3f7d2`；`alembic heads` 单 head，`upgrade`/`downgrade` 的 MySQL DDL 离线渲染与 ORM 元数据逐字段一致 |
 | 2026-10-13 | `finish_pipeline_run` / `fail_pipeline_run` 支持调用方注入收口时刻 | 9.8、14 | T11 | 新增回归测试；发布链路注入时钟时 `started_at` 与 `finished_at` 同源，满足 `pipeline_runs.finished_at >= started_at` |
+| 2026-10-13 | 完成 T12 报告 API 与管理界面：报告 ACL 与读侧查询、编辑/回退服务、RFC 7807 错误处理、`/api/v1/reports` 八端点、Jinja2+HTMX 管理界面（Cookie 会话 + CSRF 双提交） | 5、6、7、9.9、10、11、14 | T12 | 279 项测试（含 API 23 项、UI 24 项）、Ruff check+format 151 文件、mypy 91 文件 0 错误；`alembic heads` 单 head `b7d2f4a91c63`，升级/回滚 MySQL DDL 离线渲染与 ORM 一致；真实应用 + 真实数据库端到端通过「查看/编辑/审核/发布/回退」全路径 |
+| 2026-10-13 | `reports` 新增 `owner_id`（FK `users.id`，`ON DELETE SET NULL`）；`report_sources` 新增 `version` 并按 `(report_id, version, section_key)` 建索引 | 6、7、9.9、14 | T12 | 迁移 `b7d2f4a91c63`；`owner_id` 是 `PRIVATE` 可见范围的唯一抓手，`version` 让引用集按版本归属；DDL 双向离线渲染通过 |
+| 2026-10-13 | 报告状态机新增 `published -> draft` 边，状态迁移表收敛到 `reports/state.py` | 8.5、9.9、14 | T12 | 撤回与回退均以"追加新版本"实现，`failed` 保持唯一终态；非法迁移仍抛 `REPORT_STATE_INVALID`，新增回归测试覆盖 |
+| 2026-10-13 | 修复两处 T12 真实缺陷：UI 表单的 CSRF 字段名未与处理函数参数对齐（所有 UI 表单动作返回 422 而非执行）；UI 发布动作缺少"撤销窗口是否已到期"的判断，导致对未到期报告提前调用发布并误报 `PUBLISH_POLICY_BLOCKED` | 9.9、14、15 | T12 | 两处均由真实应用冒烟复现后修复（CSRF 字段加 `alias`，发布判断补 `publish_at <= utc_now()`）；UI 测试与真实端到端复跑通过 |
+| 2026-10-13 | 修复 `changes_requested` 状态下重新生成报告会卡死的缺陷（`INTERFACES.md` §8 已声明的 `changes_requested -> draft` 边此前不可达） | 8.5、9.9、15 | T12 | 先复现后修复；`generate_report` 在 `changes_requested` 时显式回到 `draft` 并清空 `publish_at`，新增回归测试 |

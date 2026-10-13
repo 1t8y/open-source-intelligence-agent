@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}登录 · 开源情报周报平台{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>登录</h1>
+  {% if error %}<p class="alert error">{{ error }}</p>{% endif %}
+  <form method="post" action="/ui/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>
+      <span>用户名</span>
+      <input type="text" name="username" autocomplete="username" required autofocus>
+    </label>
+    <label>
+      <span>密码</span>
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="primary">登录</button>
+  </form>
+  <p class="hint">会话保存在 HttpOnly Cookie 中，表单提交带 CSRF 校验。</p>
+</section>
+{% endblock %}

@@ -46,9 +46,11 @@ from open_source_intelligence.security.audit import record_audit_event
 from .errors import (
     PublishPolicyBlocked,
     ReportGenerationError,
+    ReportNotFoundError,
     ReportPublishError,
     ReportStateError,
 )
+from .state import transition_report
 from .verification import (
     REASON_LOW_CITATION_COVERAGE,
     REASON_SENSITIVE_CONTENT,
@@ -77,17 +79,6 @@ AGENT_RUN_COMPLETED: Final[str] = "completed"
 REVIEW_APPROVE: Final[str] = "approve"
 REVIEW_REJECT: Final[str] = "reject"
 REVIEW_REQUEST_CHANGES: Final[str] = "request_changes"
-
-#: Legal report-status transitions. Terminal states have no outgoing edges.
-ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
-    "draft": frozenset({"pending_review", "scheduled", "failed"}),
-    "pending_review": frozenset({"approved", "changes_requested", "failed"}),
-    "approved": frozenset({"scheduled", "failed"}),
-    "scheduled": frozenset({"published", "failed"}),
-    "changes_requested": frozenset({"draft"}),
-    "published": frozenset(),
-    "failed": frozenset(),
-}
 
 #: Upper bound on reports released by one `publish_due_reports` pass.
 PUBLISH_BATCH_LIMIT: Final[int] = 100
@@ -160,14 +151,6 @@ class ReviewOutcome:
             "decision": self.decision,
             "status": self.status,
         }
-
-
-def _transition(report: Report, target: str) -> None:
-    """Move a report to `target`, rejecting any edge the state machine forbids."""
-    allowed = ALLOWED_TRANSITIONS.get(report.status, frozenset())
-    if target not in allowed:
-        raise ReportStateError(f"report {report.id} cannot move from {report.status} to {target}")
-    report.status = target
 
 
 def _run_closed_at(now: datetime | None, moment: datetime) -> datetime | None:
@@ -246,7 +229,7 @@ def evaluate_publish_policy(
     moment = now or utc_now()
     report = session.get(Report, report_id)
     if report is None:
-        raise ReportGenerationError(f"report {report_id} does not exist")
+        raise ReportNotFoundError(f"report {report_id} does not exist")
     outcome = verification or verify_report(
         session,
         report_id=report_id,
@@ -300,8 +283,8 @@ def schedule_report(session: Session, *, report_id: int, now: datetime | None = 
     moment = now or utc_now()
     report = session.get(Report, report_id)
     if report is None:
-        raise ReportGenerationError(f"report {report_id} does not exist")
-    _transition(report, "scheduled")
+        raise ReportNotFoundError(f"report {report_id} does not exist")
+    transition_report(report, "scheduled")
     report.publish_at = moment
     session.commit()
     return report
@@ -322,7 +305,7 @@ def publish_report(
     moment = now or utc_now()
     report = session.get(Report, report_id)
     if report is None:
-        raise ReportGenerationError(f"report {report_id} does not exist")
+        raise ReportNotFoundError(f"report {report_id} does not exist")
     if report.status != "scheduled":
         raise ReportStateError(
             f"report {report.id} is {report.status}; only a scheduled report can be published"
@@ -360,7 +343,7 @@ def publish_report(
         attempt=1,
     )
     mark_pipeline_run_running(session, pipeline_run, started_at=moment)
-    _transition(report, "published")
+    transition_report(report, "published")
     report.published_at = moment
     record_audit_event(
         session,
@@ -400,12 +383,17 @@ def publish_or_request_review(
     The `publish` run written here tracks the *decision*, not the eventual release: it
     succeeds whenever the policy was applied cleanly, even when the outcome is
     `pending_review`, because asking for a human is a normal result rather than an error.
+
+    A report already past the decision is not silently advanced, with one deliberate
+    exception: an `approved` report is queued for immediate release, because a human
+    approval is explicit consent and skipping the withdrawal window is the documented
+    consequence.
     """
     resolved_settings = settings or get_settings()
     moment = now or utc_now()
     report = session.get(Report, report_id)
     if report is None:
-        raise ReportGenerationError(f"report {report_id} does not exist")
+        raise ReportNotFoundError(f"report {report_id} does not exist")
     if report.status in {"changes_requested", "failed"}:
         raise ReportStateError(
             f"report {report.id} is {report.status}; regenerate it before publishing"
@@ -432,15 +420,25 @@ def publish_or_request_review(
         now=moment,
     )
 
-    if report.status in {"pending_review", "approved", "scheduled", "published"}:
-        # Already parked downstream of the decision: re-evaluating must not silently move
-        # it, because `pending_review` may only be cleared by a human reviewer.
+    if report.status == "pending_review":
+        # Only a human reviewer clears this state; re-evaluating must not advance it.
         pass
+    elif report.status == "published":
+        # Already out; there is nothing left to decide.
+        pass
+    elif report.status == "scheduled":
+        # Already queued; the release driver owns `publish_at`.
+        pass
+    elif report.status == "approved":
+        # An approval is explicit consent, so queue the report immediately and skip the
+        # withdrawal window — the same move `publish_due_reports` makes for approved reports.
+        transition_report(report, "scheduled")
+        report.publish_at = moment
     elif decision.requires_review:
-        _transition(report, "pending_review")
+        transition_report(report, "pending_review")
         report.publish_at = None
     else:
-        _transition(report, "scheduled")
+        transition_report(report, "scheduled")
         report.publish_at = decision.publish_at
     session.flush()
 
@@ -492,7 +490,7 @@ def record_review(
         raise ReportGenerationError(f"unsupported review decision: {decision}")
     report = session.get(Report, report_id)
     if report is None:
-        raise ReportGenerationError(f"report {report_id} does not exist")
+        raise ReportNotFoundError(f"report {report_id} does not exist")
     if report.status != "pending_review":
         raise ReportStateError(
             f"report {report.id} is {report.status}; only a report pending review can be reviewed"
@@ -502,7 +500,7 @@ def record_review(
         REVIEW_REJECT: "failed",
         REVIEW_REQUEST_CHANGES: "changes_requested",
     }[decision]
-    _transition(report, target)
+    transition_report(report, target)
     review = ReportReview(
         report_id=report.id,
         version=report.current_version,

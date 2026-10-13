@@ -6,7 +6,9 @@ from collections.abc import Iterator
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
-from support import Workspace, build_session_factory
+from support import Workspace, build_session_factory, build_settings
+
+from open_source_intelligence.reports import publishing, verification
 
 
 @pytest.fixture()
@@ -26,3 +28,17 @@ def session(session_factory: sessionmaker[Session]) -> Iterator[Session]:
 def workspace(session: Session) -> Workspace:
     """Provide the seeding helper bound to the active session."""
     return Workspace(session)
+
+
+@pytest.fixture(autouse=True)
+def publish_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the publish stack deterministic `Settings` without requiring a real `.env`.
+
+    `verification` and `publishing` fall back to `get_settings()` when no settings are passed,
+    which is correct in production. Tests scope the environment here so that real fallback
+    path is still exercised while remaining independent of a developer's `.env`. Passing
+    settings explicitly keeps working and takes precedence.
+    """
+    settings = build_settings()
+    monkeypatch.setattr(verification, "get_settings", lambda: settings)
+    monkeypatch.setattr(publishing, "get_settings", lambda: settings)

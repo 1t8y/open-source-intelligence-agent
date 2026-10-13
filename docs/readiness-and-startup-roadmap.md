@@ -1,7 +1,7 @@
 # 项目准备度与正式开工路线图
 
 > 目的：判断当前是否具备进入 S4 实施的条件，并给出从第一个模块开始的直观流程。  
-> 最后更新：2026-10-12
+> 最后更新：2026-10-13
 
 ## 1. 当前准备度
 
@@ -27,9 +27,11 @@
 | Agent 运行时（LangGraph） | 已完成 | 有界五节点图、三档预算硬停止、可插拔模型 Adapter（默认确定性离线桩）、步与工具调用记录、两条降级路径通过真实 MySQL 冒烟 |
 | Prompt Guard 与运行预算 | 已完成 | 不可信内容运行时阻断、Token 计数、80% 降级、100% 硬停止和注入风险复核通过真实 MySQL 冒烟 |
 | 报告生成与引用 | 已完成 | 六章节合成、不可变版本、指标/README/历史报告引用校验和幂等生成通过真实 MySQL 冒烟 |
-| 本地运行环境 | 可用 | Python 3.12.7、Docker Desktop 4.94.0、Compose v5.5.1 和 WSL 2 已验证 |
+| 风险分级发布（T11） | 已完成 | 四项发布前校验、策略引擎与状态机、人工审核记录、到期释放扫描和 Celery 周期任务通过真实库冒烟 |
+| 报告 API 与管理界面（T12） | 已完成 | 八个报告端点 + Jinja2/HTMX 界面：ACL 在数据库查询阶段过滤、CSRF 与只读角色守卫、编辑/回退追加不可变版本，全路径通过真实应用 + 真实数据库冒烟 |
+| 本地运行环境 | 部分可用 | Python 3.12.7、Compose 配置与镜像定义齐备；Docker Desktop 本轮引擎不可用（`wsl.exe` 被安全策略拦截），T11/T12 的 Compose 段改用真实数据库文件跑通 |
 
-结论：**T1-T11 均已完成，数据库、认证、真实数据采集、每日快照、规则候选排序、Celery 定时调度、Pipeline 运行记录、受限工具层、LangGraph 研究 Agent、Prompt Guard、运行预算、报告引用闭环和风险分级发布已落地，可以进入 T12 报告 API 与管理界面。**
+结论：**T1-T12 均已完成，数据库、认证、真实数据采集、每日快照、规则候选排序、Celery 定时调度、Pipeline 运行记录、受限工具层、LangGraph 研究 Agent、Prompt Guard、运行预算、报告引用闭环、风险分级发布与报告 API/管理界面已落地，可以进入 T13 邮件与 Webhook 推送。**
 
 ## 2. 开工前最终确认
 
@@ -50,8 +52,8 @@ flowchart TD
     T2 --> T3[T3 认证、RBAC 与审计]
     T3 --> DataSlice[T4-T6 数据采集纵向切片]
     DataSlice --> ToolSlice[T7 Tool Layer]
-    ToolSlice --> AgentSlice[T8-T11 Agent 研究、验证与发布策略]
-    AgentSlice --> ProductSlice[T12-T13 报告界面与推送]
+    ToolSlice --> AgentSlice[T8-T11 Agent 研究、验证与发布策略（已完成）]
+    AgentSlice --> ProductSlice[T12-T13 报告界面与推送（T12 已完成）]
     ProductSlice --> QualitySlice[T14-T15 评测与监控]
     QualitySlice --> Release[T16-T18 端到端、安全与发布]
 ```
@@ -212,8 +214,8 @@ T1 完成后暂停，向用户展示实际启动结果，再进入 T2。
 | 三类根文档齐全 | 已完成 | 用户确认内容 |
 | 任务拆解明确 | 已完成 | 从 T1 开始 |
 | 学习路径明确 | 已完成 | 按 T1 前置项准备 |
-| 运行环境可用 | 已完成 | Docker Linux Engine 运行于 WSL 2，国内镜像已验证 |
+| 运行环境可用 | 部分可用 | Docker Desktop 已安装但本轮引擎不可用（`wsl.exe` 被安全策略拦截）；宿主 Python 与真实数据库文件可跑通端到端 |
 | 外部凭证可用 | GitHub/HF 已验证；模型 Key 待准备 | 切到 `AGENT_PROVIDER=openai_compatible` 前准备模型 Key |
-| 业务代码 | T1-T11 已完成 | 下一步进入 T12 报告 API 与管理界面 |
+| 业务代码 | T1-T12 已完成 | 下一步进入 T13 邮件/Webhook 推送 |
 
-当前 T11 已完成：发布前重跑结构、引用、数字和敏感内容四项校验并落 `report_verifications`；策略引擎按 `AUTO / AUTO_WITH_DELAY / MANUAL` 决定进入发布队列还是转人工，`MANUAL` 缺少 `approve` 记录时无法发布；延迟窗口与到期释放由 `publish_due_reports` 扫描推进。下一步进入 T12，把验证结论、发布决策与审核记录暴露为 HTTP 资源。
+当前 T12 已完成：`/api/v1/reports` 八个端点（列表、详情、编辑、验证、审核、发布、回退、到期释放）与 `/ui` 管理界面覆盖「查看、编辑、审核、发布、回退报告」全路径；报告读取权限集中在 `security/authorization.py`，列表过滤在数据库查询阶段完成，越权读取返回 `403` 且不泄露标题；编辑正文与回退历史版本都追加不可变版本、复制引用集合并退回 `draft` 等待重新验证。下一步进入 T13，把已批准报告推送到邮件/Webhook 并保证发送幂等。

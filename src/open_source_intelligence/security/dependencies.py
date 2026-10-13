@@ -40,12 +40,13 @@ def deny_request(
     status_code: int,
     detail: str,
     actor_id: int | None = None,
+    resource_type: str = "auth",
 ) -> NoReturn:
     """Record a denied or failed request and raise an HTTP error."""
     record_audit_event(
         session,
         action=action,
-        resource_type="auth",
+        resource_type=resource_type,
         result="denied" if status_code == status.HTTP_403_FORBIDDEN else "failed",
         actor_id=actor_id,
         request_id=request_id(request),

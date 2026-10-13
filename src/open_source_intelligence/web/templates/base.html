@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="same-origin">
+  <title>{% block title %}开源情报周报平台{% endblock %}</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+  <script src="/ui/static/htmx.min.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/ui/reports">开源情报周报平台</a>
+  {% if current_user %}
+  <nav class="topnav">
+    <a href="/ui/reports">报告中心</a>
+    <span class="who">{{ current_user.username }} · {{ current_user.roles | join(' / ') }}</span>
+    <form method="post" action="/ui/logout" hx-post="/ui/logout" hx-target="body">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="link-button">退出</button>
+    </form>
+  </nav>
+  {% endif %}
+</header>
+<main class="page">
+  {% block content %}{% endblock %}
+</main>
+<script>
+  // Swap HTML error responses into the page instead of discarding them, so a rejected
+  // action shows the server-rendered explanation with its real status code.
+  document.addEventListener('htmx:beforeSwap', function (event) {
+    var status = event.detail.xhr.status;
+    var type = event.detail.xhr.getResponseHeader('Content-Type') || '';
+    if (status >= 400 && type.indexOf('text/html') !== -1) {
+      event.detail.shouldSwap = true;
+      event.detail.isError = false;
+    }
+  });
+</script>
+</body>
+</html>

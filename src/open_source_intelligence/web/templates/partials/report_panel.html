@@ -1,0 +1,201 @@
+{% set editable = report.status in ["draft", "changes_requested"] %}
+{% set rollbackable = can_write and report.status != "failed" and detail.versions | length > 1 %}
+<section class="card">
+  <div class="row space-between start">
+    <div>
+      <h1>{{ report.title }}</h1>
+      <p class="meta">
+        #{{ report.id }} · 主题 {{ topic_name or "—" }} · 第 {{ report.current_version }} 版
+        · 负责人 {{ report.owner_id if report.owner_id else "—" }}
+      </p>
+    </div>
+    <div class="badges">
+      <span class="badge status-{{ report.status }}">{{ report.status }}</span>
+      <span class="badge">{{ report.visibility }}</span>
+      <span class="badge">{{ report.sensitivity }}</span>
+      <span class="badge">{{ report.publish_mode }}</span>
+    </div>
+  </div>
+
+  {% if flash %}<p class="alert ok">{{ flash }}</p>{% endif %}
+  {% if error %}<p class="alert error">{{ error }}</p>{% endif %}
+
+  <dl class="facts">
+    <div><dt>生成时间</dt><dd>{{ report.generated_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</dd></div>
+    <div><dt>撤回窗口到期</dt><dd>{{ report.publish_at.strftime("%Y-%m-%d %H:%M:%S %Z") if report.publish_at else "—" }}</dd></div>
+    <div><dt>发布时间</dt><dd>{{ report.published_at.strftime("%Y-%m-%d %H:%M:%S %Z") if report.published_at else "—" }}</dd></div>
+    <div><dt>Agent 运行</dt><dd>#{{ report.agent_run_id }}</dd></div>
+  </dl>
+
+  {% if can_write %}
+  <div class="actions">
+    <form method="post" action="/ui/reports/{{ report.id }}/verify"
+          hx-post="/ui/reports/{{ report.id }}/verify" hx-target="#report-panel" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">运行验证</button>
+    </form>
+    <form method="post" action="/ui/reports/{{ report.id }}/publish"
+          hx-post="/ui/reports/{{ report.id }}/publish" hx-target="#report-panel" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="primary">按策略发布</button>
+    </form>
+    {% if report.status == "pending_review" %}
+    <form class="inline-form" method="post" action="/ui/reports/{{ report.id }}/review"
+          hx-post="/ui/reports/{{ report.id }}/review" hx-target="#report-panel" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <select name="decision" aria-label="审核决定">
+        <option value="approve">通过</option>
+        <option value="request_changes">退回修改</option>
+        <option value="reject">拒绝</option>
+      </select>
+      <input type="text" name="comment" placeholder="审核意见" maxlength="2000">
+      <button type="submit">提交审核</button>
+    </form>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="hint">当前角色只读，不能验证、审核、发布、编辑或回退报告。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>验证结论</h2>
+  {% if detail.verification %}
+  <p class="meta">
+    第 {{ detail.verification.version }} 版 /
+    <strong class="{{ 'ok-text' if detail.verification.verdict == 'passed' else 'error-text' }}">
+      {{ detail.verification.verdict }}
+    </strong>
+    · {{ detail.verification.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}
+  </p>
+  <table class="grid">
+    <thead><tr><th>结构</th><th>引用</th><th>数字</th><th>敏感内容</th><th>引用覆盖率</th><th>原因码</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>{{ "通过" if detail.verification.structure_ok else "不通过" }}</td>
+        <td>{{ "通过" if detail.verification.citations_ok else "不通过" }}</td>
+        <td>{{ "通过" if detail.verification.numbers_ok else "不通过" }}</td>
+        <td>{{ "通过" if detail.verification.sensitivity_ok else "不通过" }}</td>
+        <td>{{ detail.verification.details_json.get("citation_coverage", "—") }}</td>
+        <td>{{ (detail.verification.reason_codes_json or []) | join("、") or "无" }}</td>
+      </tr>
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">当前版本还没有验证结论，发布前必须先通过验证。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>引用与证据（第 {{ report.current_version }} 版）</h2>
+  {% if detail.sources %}
+  <table class="grid">
+    <thead><tr><th>章节</th><th>类型</th><th>引用</th><th>来源链接</th></tr></thead>
+    <tbody>
+      {% for source in detail.sources %}
+      <tr>
+        <td>{{ source.section_key }}</td>
+        <td>{{ source.source_type }}</td>
+        <td><code>{{ source.source_ref or "—" }}</code></td>
+        <td>
+          {% if source.source_url %}
+          <a href="{{ source.source_url }}" rel="noopener noreferrer" target="_blank">{{ source.source_url }}</a>
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">当前版本没有引用行，引用覆盖率检查会失败。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>版本历史</h2>
+  <table class="grid">
+    <thead><tr><th>版本</th><th>变更原因</th><th>创建者</th><th>时间</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for version in detail.versions %}
+      <tr>
+        <td>v{{ version.version }}{% if version.version == report.current_version %} <span class="badge">当前</span>{% endif %}</td>
+        <td>{{ version.change_reason or "—" }}</td>
+        <td>{{ version.created_by if version.created_by else "—" }}</td>
+        <td>{{ version.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>
+        <td>
+          {% if rollbackable and version.version != report.current_version %}
+          <form method="post" action="/ui/reports/{{ report.id }}/rollback"
+                hx-post="/ui/reports/{{ report.id }}/rollback" hx-target="#report-panel" hx-swap="innerHTML">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="version" value="{{ version.version }}">
+            <input type="text" name="comment" placeholder="回退原因" maxlength="2000">
+            <button type="submit">回滚到此版本</button>
+          </form>
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>审核记录</h2>
+  {% if detail.reviews %}
+  <table class="grid">
+    <thead><tr><th>版本</th><th>决定</th><th>审核人</th><th>意见</th><th>时间</th></tr></thead>
+    <tbody>
+      {% for review in detail.reviews %}
+      <tr>
+        <td>v{{ review.version }}</td>
+        <td>{{ review.decision }}</td>
+        <td>{{ review.reviewer_id if review.reviewer_id else "—" }}</td>
+        <td>{{ review.comment or "—" }}</td>
+        <td>{{ review.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">还没有审核记录。</p>
+  {% endif %}
+</section>
+
+{% if can_write and editable %}
+<section class="card">
+  <h2>编辑报告</h2>
+  <form method="post" action="/ui/reports/{{ report.id }}/edit"
+        hx-post="/ui/reports/{{ report.id }}/edit" hx-target="#report-panel" hx-swap="innerHTML">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><span>标题</span><input type="text" name="title" value="{{ report.title }}" maxlength="255"></label>
+    <div class="row">
+      <label>
+        <span>可见范围</span>
+        <select name="visibility">
+          {% for value in ["PRIVATE", "TEAM", "INTERNAL"] %}
+          <option value="{{ value }}" {% if report.visibility == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>敏感级别</span>
+        <select name="sensitivity">
+          {% for value in ["PUBLIC", "INTERNAL", "CONFIDENTIAL"] %}
+          <option value="{{ value }}" {% if report.sensitivity == value %}selected{% endif %}>{{ value }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label><span>正文（Markdown）</span><textarea name="content_markdown" rows="16">{{ report.content_markdown }}</textarea></label>
+    <p class="hint">修改正文会生成新的不可变版本并把报告退回草稿，需要重新验证后发布。</p>
+    <button type="submit" class="primary">保存修改</button>
+  </form>
+</section>
+{% elif can_write %}
+<p class="hint">报告处于 {{ report.status }}，不能直接编辑正文；请先退回修改，或回滚到历史版本。</p>
+{% endif %}
+
+<section class="card">
+  <h2>报告正文</h2>
+  <pre class="content">{{ report.content_markdown }}</pre>
+</section>

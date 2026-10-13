@@ -45,7 +45,10 @@ def search_prior_reports(
     if payload.repo_id is not None:
         stmt = stmt.where(
             Report.id.in_(
-                select(ReportSource.report_id).where(ReportSource.repository_id == payload.repo_id)
+                select(ReportSource.report_id).where(
+                    ReportSource.repository_id == payload.repo_id,
+                    ReportSource.version == Report.current_version,
+                )
             )
         )
     reports = list(session.scalars(stmt).all())
@@ -56,6 +59,7 @@ def search_prior_reports(
             select(ReportSource.source_ref)
             .where(
                 ReportSource.report_id == report.id,
+                ReportSource.version == report.current_version,
                 ReportSource.source_ref.is_not(None),
             )
             .distinct()
