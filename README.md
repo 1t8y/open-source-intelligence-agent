@@ -38,6 +38,8 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 | [docs/data-model.md](docs/data-model.md) | MySQL 表结构、关系和运行时不变量 |
 | [docs/security-and-privacy.md](docs/security-and-privacy.md) | 权限、数据保护、模型调用和审计边界 |
 | [docs/evaluation.md](docs/evaluation.md) | Agent、报告质量和成本评测方案 |
+| [docs/observability.md](docs/observability.md) | 监控指标口径、窗口语义、运行账本与看板 |
+| [docs/backfill.md](docs/backfill.md) | 历史回填：分页语义、限流语义、断点续传与并发守卫 |
 | [docs/development-process.md](docs/development-process.md) | 企业流程的个人开发精简执行版本 |
 | [docs/technology-learning-checklist.md](docs/technology-learning-checklist.md) | 按实施任务排列的技术学习清单 |
 | [docs/readiness-and-startup-roadmap.md](docs/readiness-and-startup-roadmap.md) | 准备度检查和正式开工路线图 |
@@ -45,13 +47,15 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T12 已完成：报告能力已经可以作为 HTTP 资源和管理界面使用——`GET/PATCH /api/v1/reports`、`verify`、`review`、`publish`、`rollback`、`publish-due` 八个端点覆盖「查看、编辑、审核、发布、回退报告」全路径，错误统一为 RFC 7807 Problem Details；`/ui` 另外提供 Jinja2 + HTMX 的服务端渲染界面（列表、详情、验证结论、引用与证据、版本历史、审核记录、编辑表单），会话走 `HttpOnly` Cookie，写操作强制 CSRF 双提交。
+当前 T16 已完成：历史数据回填与端到端演示已跑通。回填是一条**可中断、可续传**的走查路径，向一个源按页连着提问，把历史仓库落进目录表——`backfill_jobs` 的作业行就是检查点（游标、已收条目、尝试次数、心跳都在列里），每页提交一次且**当页仓库与游标同一事务**，所以「游标动了」必然意味着「有一页落地了」；中断后 `resume` 从游标继续，只请求尚未走过的页。它只有 CLI 与 Celery 两条触发路径（`--action start|resume|status|list`，一次只走一个 provider），**不暴露 HTTP 端点、也不进 Beat**：回填是一次性、昂贵、对共享公共 API 施压的动作，触发权属于操作员。
 
-报告的读取权限集中在 `security/authorization.py`：`ADMIN` 全读，`INTERNAL` 任意登录用户，`TEAM` 需要 `data_scope=team`，`PRIVATE` 需要 `reports.owner_id` 命中本人；列表的权限过滤在数据库查询阶段完成。编辑正文与回退历史版本都**追加不可变版本**并复制引用集合，然后退回 `draft` 等待重新验证；`report_sources.version` 让引用集合按版本归属，因此回退能恢复该版本自己的证据。
+分页的边界由源自己说，不由条目数推断——GitHub 用响应头 `Link` 里的 `rel="next"`（走到 1000 条搜索上限后它仍报完整 `total_count` 却不再宣告 `next`），Hugging Face 镜像用 `skip`/`limit` 偏移并以「返回不足一页」为终止信号。限流保证的是**请求起始间隔**（`60/per_minute`，第一次免费），不是固定睡眠，也不是允许突发的令牌桶；默认预算取自数据源行上的 `rate_limit_per_minute`。协议见 [docs/backfill.md](docs/backfill.md)。
+
+端到端演示把回填喂出的库交给既有链路跑通：`run_daily_pipeline`（collect → snapshot → rank）→ Research Agent → `generate_report` → `verify_report` → 发布策略判定 → 人工 `approve` → `publish_due_reports` 发布，落库行再由**只读会话**重新读回校验。
 
 模型接入采用可插拔 Adapter：默认 `AGENT_PROVIDER=offline` 使用确定性离线桩，无需网络与 API Key 即可端到端验证；`OpenAICompatibleClient` 通过同一个 `ModelClient` 接口对接真实供应商。
 
-T13 邮件/Webhook 推送尚未开始。
+`ARCHITECTURE.md` §14 中尚余 **T17 安全测试与故障演练**、**T18 文档同步与发布检查** 未开始。
 
 T1 验证命令：
 
@@ -148,6 +152,38 @@ T12 验证命令：
 ```
 
 该脚本执行 pytest、Ruff、mypy、五服务重建、迁移升级/回滚/再次升级与 drift 检查，然后在真实 MySQL 上启动**真实 FastAPI 应用**跑通 T12 验收：报告列表按可见范围在数据库层过滤（`VIEWER` 看不到 `PRIVATE`，`ADMIN` 全见）、详情页与 API 的越权读取返回 `403` 且不泄露标题、CSRF 缺失/不匹配与只读角色写操作均返回 `403`、编辑正文追加不可变版本并回到 `draft`、`MANUAL` 走完「转人工 → 退回修改 → 再编辑 → 通过 → 发布」、已发布报告可回退为新的 `draft` 版本，并检查六类审计事件与验证/审核证据落库。
+
+T13 验证命令：
+
+```powershell
+.\scripts\verify_t13.ps1
+```
+
+该脚本在真实 MySQL 上驱动出站推送链路：只有 `approved` / `published` 报告可被推送、`CONFIDENTIAL` 额外要求同版本 `approve` 审核、允许列表的 `enabled` 与渠道一致以及默认关闭的 `allow_private` / `allow_confidential` 共同把关；**传输失败不是异常**（适配器返回 `ok=False` → 落库 `failed` + `error_code`，接口仍返回 `200`），只有守卫违规才抛错；幂等键让重复请求不再投递（`replayed=True`），失败重试推进同一行的 `attempt`。
+
+T14 验证命令：
+
+```powershell
+.\scripts\verify_t14.ps1
+```
+
+该脚本执行评测链路的真实运行：导入版本化数据集（同内容重放不新增行、同版本异内容返回 `409`）、按 `baseline_single_prompt` / `agent_full` / 消融变体分别执行并落真实测量，再重建统一对比报告——`passed` 只裁决 `agent_full`，消融只作对照，且 `scored_case_count > 0` 是通过的必要条件。
+
+T15 验证命令：
+
+```powershell
+.\scripts\verify_t15.ps1
+```
+
+该脚本在真实 MySQL 上校验只读监控层：窗口内任务成功率、Token、成本、延迟分位数（nearest-rank，不插值）、失败原因分布、工具成功率与报告人工阻断率全部真实可见，**未行使的指标返回 `null` 而不是 `0`**；评测段固定展示最新一轮 sweep 且 `passed` 直接读 `compare_latest` 不重算；`/ui/dashboard` 与运行轨迹页在真实应用上渲染，`VIEWER` 被拒且导航栏不暴露入口。
+
+T16 验证命令：
+
+```powershell
+.\scripts\verify_t16.ps1
+```
+
+该脚本执行历史回填与端到端演示：在一个 GitHub 形状的 mock transport 上跑真实 `BackfillJob` 走查（分页边界、第 3 页注入 `500` 后中断并只续传第 3、4 页、重放幂等、页预算与源限流预算、并发守卫与过期接管、越界与不可分页源被拒），随后把回填喂出的库交给真实 `run_daily_pipeline` → Agent → 报告生成 → 验证 → 发布策略 → 人工 `approve` → `publish_due_reports` 完整跑通，并由只读会话重新读回校验，同时驱动真实 CLI 子进程的 `list` / `status` 与两处拒绝路径。
 
 ## 开发原则
 
