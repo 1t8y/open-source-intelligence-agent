@@ -36,12 +36,12 @@
 | 数据源 | `/sources` | ADMIN/EDITOR | 不保存明文凭证 |
 | 主题 | `/topics`、`POST /topics/{id}/run` | ADMIN/EDITOR | 过滤条件、候选上限、发布模式 |
 | 仓库 | `/repositories`、`/repositories/{id}/snapshots` | 有主题权限 | 趋势和快照查询 |
-| Agent | `/agent/runs`、`/agent/runs/{id}/steps` | ADMIN/EDITOR | 运行状态、预算和轨迹 |
+| Agent | `GET /agent/runs`、`/agent/runs/{id}`、`/agent/runs/{id}/steps` | ADMIN/EDITOR | **只读**（运行由 pipeline/worker 创建，不经 API）；列表按 `status`/`topic_id` 过滤并分页，轨迹含未挂到步骤的工具调用 |
 | 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
 | 推送 | `/push/targets`、`/push/records`、`/push/retry` | ADMIN/EDITOR | 投递允许列表、投递记录与失败重试扫描 |
-| 管理界面 | `GET /ui/reports`、`/ui/reports/{id}`、`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/publish-due`、`/ui/login`、`/ui/logout` | 同报告资源的读/写角色 | 服务端渲染页面，复用同一套服务层；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；推送渠道取自目标行而非表单 |
+| 管理界面 | `GET /ui/reports`、`/ui/reports/{id}`、`/ui/dashboard`、`/ui/dashboard/runs/{id}`、`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/publish-due`、`/ui/login`、`/ui/logout` | 看板同监控角色；其余同报告资源的读/写角色 | 服务端渲染页面，复用同一套服务层；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；推送渠道取自目标行而非表单；看板入口仅对有权角色渲染 |
 | 评测 | `/evaluations`、`/evaluations/runs`、`/evaluations/runs/{id}`、`/evaluations/{dataset_id}/cases`、`/evaluations/{dataset_id}/run`、`/evaluations/{dataset_id}/comparison` | ADMIN/EDITOR（全部，含读） | 数据集版本、样本、按变体执行与统一对比报告；未知变体 `400`、版本冲突 `409`、关闭时 `503` |
-| 监控 | `/metrics/overview` | ADMIN/EDITOR | 任务、Token、延迟、失败率 |
+| 监控 | `/metrics/overview` | ADMIN/EDITOR | 纯只读的运维总览：任务、Token、延迟、失败率、报告人工阻断率与最新一轮评测裁决；`window_days` 1-90 越界 `422`（不夹取），窗口半开，未行使的指标为 `null` 而非 `0`，评测段不随窗口变化 |
 | 审计 | `/audit-logs` | ADMIN | 只读，不可修改 |
 
 完整请求、响应和错误示例见 [api-contract.md](docs/api-contract.md)。
@@ -61,7 +61,7 @@ create_app(settings: Settings | None = None) -> FastAPI
 ```text
 api/web
   -> application services
-    -> collectors/pipeline/agent/reports
+    -> collectors/pipeline/agent/reports/observability
       -> persistence/core
 ```
 
@@ -80,6 +80,7 @@ api/web
 | `reports` | 草稿、验证、策略决策和发布 | api/workers |
 | `security` | 登录、授权、脱敏和审计 | 所有模块 |
 | `evaluation` | 数据集版本化与导入、五个评测变体、确定性 Scorer、执行与统一对比报告 | api/cli |
+| `observability` | 纯聚合（`metrics.py`，不碰数据库）、读侧查询（`queries.py`：总览、运行账本与轨迹）、领域错误 | api/web/cli |
 | `workers` | Celery 应用、周期任务和 Worker 入口 | 部署/调度 |
 | `persistence` | Repository 和事务边界 | 所有业务模块 |
 | `migrations` | Alembic 升级、回滚和 schema drift 检查 | 开发/部署 |
@@ -497,9 +498,52 @@ ComparisonReport {
   replayed: boolean
   passed: boolean                 # 派生属性，只裁决 PROMOTION_TARGETS
 }
+
+MetricsOverview { window: Window; pipeline: PipelineMetrics; agent: AgentMetrics; tools: ToolMetrics; reports: ReportMetrics; evaluations: EvaluationMetrics }
+
+Window { days: integer; start: datetime; end: datetime }        # 半开区间 [start, end)
+Latency { samples: integer; p50_ms: integer | null; p95_ms: integer | null }
+
+PipelineMetrics { total: integer; by_status: map<string, integer>; by_run_type: map<string, map<string, integer>>; success_rate: decimal | null; latency: Latency }
+
+AgentMetrics {
+  total: integer
+  by_status: map<string, integer>
+  by_publish_mode: map<string, integer>
+  prompt_tokens: integer; completion_tokens: integer; total_tokens: integer
+  tokens_per_run: decimal | null
+  estimated_cost: decimal
+  success_rate: decimal | null
+  failure_reasons: map<string, integer>
+  latency: Latency
+}
+
+ToolBreakdown { tool_name: string; total: integer; by_status: map<string, integer>; success_rate: decimal | null; latency: Latency }
+ToolMetrics { total: integer; by_status: map<string, integer>; success_rate: decimal | null; by_tool: tuple<ToolBreakdown> }   # by_tool 按调用量降序
+ReportMetrics { total: integer; by_status: map<string, integer>; manual_block_rate: decimal | null }
+
+EvaluationTarget {
+  target_type: string; status: string; scored_case_count: integer
+  metrics: map<string, string | null>
+  total_tokens: integer; mean_latency_ms: integer
+  reference_target: string | null
+  gate_failures: tuple<string>
+  regression: boolean
+}
+EvaluationMetrics { dataset_id: integer | null; dataset_name: string | null; dataset_version: string | null; passed: boolean | null; regressions: tuple<string>; targets: tuple<EvaluationTarget> }
+
+AgentRunTrace { run: AgentRun; topic_name: string | null; report_id: integer | null; steps: tuple<StepWithToolCalls>; unlinked_tool_calls: tuple<ToolCall> }
 ```
 
 `ExecutionProfile` 由 `agent/profile.py` 定义，是消融的唯一开关面；`run_verifier=False` 时图仍走真实 `verify` 节点，只是恒返回 `sufficient` 并把步骤记为 `skipped`。`VariantOutput.verification_sufficient` 为 `None` 表示该变体的运行没有产生验证结论（例如运行失败），与 `false`（验证过但不充分）不同。`ScoredCase` 中所有可空比率遵循同一条约定：`null` 表示"该样本没有行使这个指标"，聚合时被剔除而不是计作 `0`。`TargetSummary.metrics` 与 `deltas_vs_reference` 的字符串化与舍入在 `to_dict()` 里统一到小数点后 4 位（`RATE_PLACES`），与 `eval_results` 的 `Numeric(5, 4)` 列一致。
+
+监控侧的对象（`observability/metrics.py`）沿用同一条 `null` 约定，并额外固定三件事：
+
+- **`null` 表示"没有样本"，`0` 表示"样本为零"。** 分母为零时比率是 `null`；`Latency.samples == 0` 时 `p50_ms` / `p95_ms` 也是 `null`。`estimated_cost` 是可加量，无样本时为 `0`。
+- **分位数是 nearest-rank，不插值。** `p95_ms` 取排序后第 `ceil(0.95 * n)` 个样本，是某一次运行真实经历过的时长，而不是两个样本之间的数学构造；`samples` 说明这个分位数由多少观测支撑。
+- **`EvaluationMetrics` 不受窗口过滤。** 它固定携带最新一轮 sweep，`passed` 直接来自评测层 `compare_latest` 的裁决，监控层不重算——看板与评测报告因此不可能给出互相矛盾的结论。从未跑过评测时 `dataset_id` 为 `null` 且 `targets` 为空，而不是报错。
+
+`AgentRunTrace.unlinked_tool_calls` 保留 `agent_step_id` 为空的工具调用：一次在步骤落库前被预算硬停的运行，其失败证据恰在这些行里，丢弃它们会让"从失败追到具体工具调用"重新落空。轨迹与账本中的 `summary`、`result_summary` 和 `arguments` 在离开进程前一律过 `security` 的脱敏规则，与日志共用同一条实现。
 
 详细数据库对象见 [data-model.md](docs/data-model.md)。
 

@@ -1,6 +1,6 @@
 # API 接口契约
 
-> 版本：v1.3
+> 版本：v1.4
 > 前缀：`/api/v1`  
 > 最后更新：2026-10-14
 
@@ -168,55 +168,107 @@
 
 ## 5. Agent 运行与轨迹
 
-### `POST /agent/runs`
+**创建路径不在 API 上。** Agent 运行由管道侧创建：`pipeline` 的每日任务完成候选筛选后，以 `run_research_agent(...)` 在 worker 进程内启动一次运行，并把结果连同行级证据写入 `agent_runs` / `agent_steps` / `tool_calls`。HTTP 接口对运行**只读**——这是有意的：运行会消耗模型预算，触发权属于受调度控制的管道，而不是任意一个已登录的客户端。
 
-权限：`ADMIN`、`EDITOR`。
+因此本节的三个端点全部是读侧，权限统一为 `ADMIN`、`EDITOR`（`METRICS_ROLES`）。`VIEWER` 得到 `403`，匿名得到 `401`；两类失败都不透露目标运行是否存在。
+
+### `GET /agent/runs`
+
+权限：`ADMIN`、`EDITOR`。任何 `VIEWER` 请求返回 `403`，匿名请求返回 `401`。
+
+查询参数：
+
+| 参数 | 类型 | 默认 | 约束 |
+|---|---|---|---|
+| `status` | string | 无（不过滤） | 必须是 `agent_runs.status` 的合法取值 |
+| `topic_id` | int | 无（不过滤） | `>= 1` |
+| `page` | int | `1` | `>= 1` |
+| `page_size` | int | `20` | `1..100`，越界返回 `422` |
+
+按 `id` 倒序返回（最新在前）。这是运维的主列表：一页运行，再按需拉取某一次的轨迹。
 
 ```json
 {
-  "topic_id": 7,
-  "agent_config_id": 3,
-  "window_start": "2026-09-17T00:00:00Z",
-  "window_end": "2026-09-24T00:00:00Z",
-  "candidate_repo_ids": [501, 502, 503]
+  "items": [
+    {
+      "id": 9001,
+      "pipeline_run_id": 3301,
+      "topic_id": 7,
+      "agent_config_id": 3,
+      "status": "needs_review",
+      "window_start": "2026-10-05T00:00:00+00:00",
+      "window_end": "2026-10-12T00:00:00+00:00",
+      "loop_count": 2,
+      "tool_call_count": 5,
+      "model_call_count": 3,
+      "prompt_tokens": 2400,
+      "completion_tokens": 650,
+      "total_tokens": 3050,
+      "estimated_cost": "0.012300",
+      "publish_mode": "MANUAL",
+      "error_code": null,
+      "started_at": "2026-10-12T09:00:00+00:00",
+      "finished_at": "2026-10-12T09:00:02+00:00",
+      "latency_ms": 2000
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 41
 }
 ```
 
-响应 `202 Accepted`：
-
-```json
-{
-  "agent_run_id": 9001,
-  "status": "queued"
-}
-```
+`total` 是过滤后的总数，不随分页变化。`started_at` / `finished_at` / `latency_ms` 在运行尚未收尾时为 `null`，**不写成 `0`**：`0` 表示"测到了一次零耗时"，`null` 表示"这次运行还没结束，没有可测的东西"。`estimated_cost` 是定长字符串（四位小数），避免二进制浮点在客户端被反序列化成另一种数。
 
 ### `GET /agent/runs/{agent_run_id}`
 
-```json
-{
-  "id": 9001,
-  "topic_id": 7,
-  "agent_config_id": 3,
-  "status": "needs_review",
-  "loop_count": 2,
-  "tool_call_count": 5,
-  "model_call_count": 3,
-  "estimated_cost": 0.042,
-  "publish_decision": {
-    "report_id": 42,
-    "mode": "MANUAL",
-    "resolution": "pending_review",
-    "reason_codes": ["VERIFICATION_FAILED", "LOW_CITATION_COVERAGE"],
-    "requires_review": true,
-    "publish_at": null
-  }
-}
-```
+权限：`ADMIN`、`EDITOR`。响应体是上面列表里单个 `items` 元素，形状与字段完全一致。
+
+不存在时返回 `404`，Problem Details 的 `code` 为 `NOT_FOUND`。
 
 ### `GET /agent/runs/{agent_run_id}/steps`
 
-按顺序返回 `agent_steps` 和关联的 `tool_calls`。默认隐藏原文中的敏感字段，只返回摘要、耗时、状态和错误。
+权限：`ADMIN`、`EDITOR`。不存在时返回 `404` / `NOT_FOUND`。
+
+这是让"失败报告能追到具体工具调用"成立的端点。返回一次运行的完整轨迹：按 `step_index` 排序的步骤，以及挂在每个步骤下的工具调用。
+
+```json
+{
+  "run": { "...": "与 GET /agent/runs/{agent_run_id} 同形状" },
+  "topic_name": "向量数据库",
+  "report_id": 42,
+  "steps": [
+    {
+      "id": 51001,
+      "step_index": 0,
+      "step_type": "plan",
+      "status": "completed",
+      "summary": "计划：查指标 → 读 profile → 写章节",
+      "latency_ms": 700,
+      "created_at": "2026-10-12T09:00:00+00:00",
+      "tool_calls": [
+        {
+          "id": 61001,
+          "tool_name": "get_repository_content",
+          "status": "denied",
+          "error_code": "TOOL_NOT_ALLOWED",
+          "latency_ms": 2,
+          "result_summary": null,
+          "arguments": {"repository_id": 501, "path": "README.md"},
+          "created_at": "2026-10-12T09:00:01+00:00"
+        }
+      ]
+    }
+  ],
+  "unlinked_tool_calls": []
+}
+```
+
+约束：
+
+- `unlinked_tool_calls` 保留 `agent_step_id` 为 `null` 的工具调用，而不是丢弃它们。一次在步骤落库前就被预算硬停的运行，其失败证据恰好在这些行里；丢掉它们会让"追不到工具调用"重新出现。
+- 出站脱敏与日志同一条规则：`summary`、`result_summary` 以及与 `arguments` 同形状的 JSON 文本都过一遍与日志相同的凭据遮蔽，再离开进程。被遮蔽的值替换为准固定的占位串，客户端不应假设能从中还原原文。
+- `tool_name` 只可能是白名单 5 个工具之一；`status` / `error_code` 直接来自 `tool_calls` 行，接口不做映射。
 
 ## 6. 报告与审核
 
@@ -642,8 +694,107 @@
 
 ## 8. 监控与审计
 
-- `GET /metrics/overview`：返回最近时间窗口内的任务成功率、失败原因、Token、费用、延迟和人工干预率；仅 `ADMIN`、`EDITOR` 可读。
-- `GET /audit-logs`：仅 `ADMIN` 可读，支持按操作者、动作、资源、时间过滤；不提供修改接口。
+本节是"任务、Token、延迟、失败率和评测结果可见"这一验收在接口层的落点。全部是读侧：监控层不写任何一行，因此它可以被加进一个正在服务的部署而不需要迁移，也不会干扰它只是在描述的那次运行。
+
+### `GET /metrics/overview`
+
+权限：`ADMIN`、`EDITOR`（`METRICS_ROLES`）。`VIEWER` 返回 `403`，匿名返回 `401`。
+
+查询参数：
+
+| 参数 | 类型 | 默认 | 约束 |
+|---|---|---|---|
+| `window_days` | int | `7` | `1..90`；越界返回 `422` |
+
+窗口是**半开区间**：`start <= started_at < end`，`end` 取请求时刻。工具调用没有 `started_at`，按 `created_at` 落入窗口。
+
+`window_days` 越界时**拒绝而不是夹取**。夹取会静默给出一个与请求不符的回答——运维以为自己看的是 365 天，实际拿到 90 天，而两边的数字都"看起来正常"。拒绝让偏差在第一时间可见。
+
+```json
+{
+  "window": {
+    "days": 7,
+    "start": "2026-10-05T12:00:00+00:00",
+    "end": "2026-10-12T12:00:00+00:00"
+  },
+  "pipeline": {
+    "total": 8,
+    "by_status": {"succeeded": 5, "failed": 2, "partial": 1},
+    "by_run_type": {"collect": {"succeeded": 2}, "rank": {"failed": 1}},
+    "success_rate": "0.6250",
+    "latency": {"samples": 8, "p50_ms": 15000, "p95_ms": 40000}
+  },
+  "agent": {
+    "total": 4,
+    "by_status": {"completed": 2, "needs_review": 1, "failed": 1},
+    "by_publish_mode": {"AUTO_WITH_DELAY": 1, "MANUAL": 1},
+    "prompt_tokens": 2500,
+    "completion_tokens": 550,
+    "total_tokens": 3050,
+    "tokens_per_run": "762.5000",
+    "estimated_cost": "0.020300",
+    "success_rate": "0.7500",
+    "failure_reasons": {"AGENT_TOOL_BUDGET_EXCEEDED": 1},
+    "latency": {"samples": 3, "p50_ms": 12000, "p95_ms": 80000}
+  },
+  "tools": {
+    "total": 16,
+    "by_status": {"denied": 1, "failed": 1, "success": 14},
+    "success_rate": "0.8750",
+    "by_tool": [
+      {
+        "tool_name": "query_repo_metrics",
+        "total": 6,
+        "by_status": {"success": 6},
+        "success_rate": "1.0000",
+        "latency": {"samples": 6, "p50_ms": 120, "p95_ms": 400}
+      }
+    ]
+  },
+  "reports": {
+    "total": 4,
+    "by_status": {"published": 2, "draft": 1, "changes_requested": 1},
+    "manual_block_rate": "0.5000"
+  },
+  "evaluations": {
+    "dataset": {"id": 3, "name": "sqlite-observability", "version": "2026-10-14"},
+    "passed": false,
+    "regressions": ["agent_no_verifier"],
+    "targets": [
+      {
+        "target_type": "agent_full",
+        "status": "completed",
+        "scored_case_count": 4,
+        "metrics": {"citation_coverage": "0.7500", "task_completion": "0.7500"},
+        "total_tokens": 1200,
+        "mean_latency_ms": 3200,
+        "reference_target": null,
+        "gate_failures": [],
+        "regression": false
+      }
+    ]
+  }
+}
+```
+
+读这个响应必须知道四件事：
+
+1. **`null` 不是 `0`。** 分母为零时比率是 `null`（例如窗口内没有工具调用），`p50_ms` / `p95_ms` 在 `samples == 0` 时也是 `null`。空窗口与"全是真实零"必须可区分：前者意味着"没测量"，后者意味着"测到了零"。只有 `estimated_cost` 这类可加量在没有样本时为 `"0"`。
+2. **比率是四位小数的字符串。** `"0.6250"` = 62.5%，四舍五入到四位。`null` 表示未行使。
+3. **分位数是 nearest-rank，不插值。** `p95_ms` 是"某一次运行真实经历过的时长"，不是两个样本之间的数学构造。`samples` 是支撑该分位数的观测数。
+4. **`evaluations` 段不做窗口过滤。** 评测是运维触发的低频动作，1 天窗口通常什么也没有，因此这一段固定展示**最新一轮 sweep**，与 `window_days` 无关。`passed` 直接取自评测层 `compare_latest` 的裁决，监控层不重算，所以看板上的绿灯不会与评测报告打架。
+
+这一段在从未跑过评测时返回 `"dataset": null` 且 `"targets": []`，而不是报错：没有评测不是故障。
+
+### `GET /ui/dashboard` 与 `GET /ui/dashboard/runs/{run_id}`
+
+管理界面上的等价视图，权限同 `METRICS_ROLES`：`/ui/dashboard` 渲染上面这个 payload 的六个区块（任务执行 / Agent 运行 / 工具调用 / 报告产出 / 评测结果 / 最近运行），`?window_days=` 语义与接口一致；`/ui/dashboard/runs/{run_id}` 渲染运行轨迹，等价于 `GET /agent/runs/{run_id}/steps`。
+
+两条路径都受同一个角色守卫，且导航栏只在有权访问时才渲染「运维看板」入口——无权用户看到的页面里没有通向 403 的死链。`VIEWER` 访问时返回 `403` 并给出说明文字。
+
+### `GET /audit-logs`
+
+仅 `ADMIN` 可读，支持按操作者、动作、资源、时间过滤；不提供修改接口。
 
 ## 9. 状态码与幂等约定
 
@@ -654,6 +805,7 @@
 | 创建资源 | 201 | 返回资源 ID |
 | 更新 | 200 | 返回新版本 |
 | 非法参数 | 422 | 返回字段级错误 |
+| 目标不存在 | 404 | Problem Details 的 `code` 为 `NOT_FOUND` |
 | 权限不足 | 403 | 不泄露目标资源是否存在 |
 | 冲突或重复 | 409 | 唯一约束或状态机冲突 |
 

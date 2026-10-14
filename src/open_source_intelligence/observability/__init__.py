@@ -1,0 +1,78 @@
+"""Read-only observability: the metric overview and the Agent run ledger.
+
+The package is deliberately write-free. It surfaces what the pipeline, the Agent, the report
+and the evaluation layers have already recorded, so it needs no migration and cannot corrupt a
+run it is merely describing.
+"""
+
+from .metrics import (
+    DEFAULT_WINDOW_DAYS,
+    MAX_WINDOW_DAYS,
+    MIN_WINDOW_DAYS,
+    RATE_PLACES,
+    AgentMetrics,
+    EvaluationMetrics,
+    EvaluationTarget,
+    Latency,
+    MetricsOverview,
+    PipelineMetrics,
+    ReportMetrics,
+    ToolBreakdown,
+    ToolMetrics,
+    Window,
+    as_rate,
+    count_statuses,
+    mean_decimal,
+    percentile,
+    quantize_rate,
+    success_rate,
+    summarize_latency,
+)
+from .queries import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    AgentRunPage,
+    AgentRunTrace,
+    StepTrace,
+    clamp_page_size,
+    collect_metrics,
+    get_agent_run,
+    get_agent_run_trace,
+    list_agent_runs,
+    resolve_window,
+)
+
+__all__ = [
+    "DEFAULT_PAGE_SIZE",
+    "DEFAULT_WINDOW_DAYS",
+    "MAX_PAGE_SIZE",
+    "MAX_WINDOW_DAYS",
+    "MIN_WINDOW_DAYS",
+    "RATE_PLACES",
+    "AgentMetrics",
+    "AgentRunPage",
+    "AgentRunTrace",
+    "EvaluationMetrics",
+    "EvaluationTarget",
+    "Latency",
+    "MetricsOverview",
+    "PipelineMetrics",
+    "ReportMetrics",
+    "StepTrace",
+    "ToolBreakdown",
+    "ToolMetrics",
+    "Window",
+    "as_rate",
+    "clamp_page_size",
+    "collect_metrics",
+    "count_statuses",
+    "get_agent_run",
+    "get_agent_run_trace",
+    "list_agent_runs",
+    "mean_decimal",
+    "percentile",
+    "quantize_rate",
+    "resolve_window",
+    "success_rate",
+    "summarize_latency",
+]

@@ -45,14 +45,21 @@ TEST_SECRET_KEY = "test-secret-key-with-at-least-32-characters"
 
 
 def build_settings(**overrides: Any) -> Settings:
-    """Build validated settings for in-memory Agent tests without reading `.env`."""
+    """Build validated settings for in-memory Agent tests without reading `.env`.
+
+    ``_env_file=None`` is load-bearing, not tidiness. ``Settings`` reads ``.env`` from the
+    working directory, and a developer's ``.env`` points at a real provider
+    (``AGENT_PROVIDER=openai_compatible``), so without this the suite would build real HTTP
+    clients, spend real quota, and assert against a provider that tests never meant to use.
+    Callers that want a provider pass it explicitly, which still wins over the default.
+    """
     values: dict[str, Any] = {
         "database_url": "mysql+pymysql://app:secret@127.0.0.1:3306/open_source_intelligence",
         "redis_url": "redis://127.0.0.1:6379/0",
         "secret_key": TEST_SECRET_KEY,
     }
     values.update(overrides)
-    return Settings.model_validate(values)
+    return Settings(_env_file=None, **values)
 
 
 def build_session_factory() -> sessionmaker[Session]:

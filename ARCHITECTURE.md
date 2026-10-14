@@ -454,6 +454,24 @@ T14 已实现以下能力：
 - 路由注册有与 `/reports/publish-due` 同类的陷阱：`/runs`、`/runs/{run_id}` 是字面量段，`/{dataset_id}/...` 以路径参数开头，**必须把字面量路由声明在前**，否则 `/runs` 会被当成 dataset id 解析。
 - `list_cases` 按 `case_key` 排序返回（文件顺序不持久化），因此报告与 API 的用例顺序稳定且可断言，不依赖 JSON 书写次序。
 
+### 9.12 T15 监控指标与看板
+
+详细协议（数据来源、窗口语义、逐指标口径、三条语义约定、权限与端点）见 [docs/observability.md](docs/observability.md)；下面是实现层面的决定。
+
+T15 已实现以下能力：
+
+- **监控层没有新表，也不需要迁移。** `observability/` 只是把 `pipeline_runs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`eval_runs` / `eval_results` 这些既有账本读出来聚合，因此它可以被加进一个正在服务的部署，且不可能干扰它只是在描述的那次运行。这一层分两个文件、职责不重：`metrics.py` 是**纯聚合**（输入是行、输出是不可变 dataclass，完全不碰数据库），`queries.py` 是**读侧**（取数、窗口、分页、组装 `MetricsOverview` 与 `AgentRunTrace`），`errors.py` 只放一个 `AgentRunNotFound`（`code = "NOT_FOUND"`）。
+- **窗口是半开区间**：`start <= started_at < end`，`end` 取请求时刻。工具调用没有 `started_at`，按 `created_at` 落入窗口。`window_days` 在端点上由 `Query(ge=1, le=90)` 校验，越界返回 `422`，**不夹取** —— 夹取会静默返回一个与请求不符的答案，而两边数字都"看起来正常"，偏差无法被发现。`resolve_window` 仍然夹取，使将来直接调用聚合层的代码也无法请求超宽窗口；这条差别由聚合层测试直接覆盖。
+- **`null` 与 `0` 是两件事。** 分母为零时比率是 `null`，`Latency.samples == 0` 时 `p50_ms` / `p95_ms` 也是 `null`；只有 `estimated_cost` 这类可加量无样本时为 `0`。空窗口必须与"全是真实零"可区分，否则一次没跑到任何东西的窗口会显示成"运行全成功"。
+- **分位数是 nearest-rank，不插值**：`p95_ms` 取排序后第 `ceil(0.95 * n)` 个样本，即"某一次运行真实经历过的时长"。延迟要回答的是"最慢的那次有多慢"，线性插值会给出一个从未发生过的数。
+- **评测段不做窗口过滤**，且 `passed` 直接读 `evaluation.runner.compare_latest`。评测是运维触发的低频动作，1 天窗口通常什么也没有；固定展示最新一轮 sweep 才有用。裁决不重算是关键：看板上的绿灯因此不可能与它摘要的那份评测报告打架，将来裁决规则变化时两者也不会漂移。
+- **报告人工阻断率走状态集常量**：`manual_block_rate` = `MANUAL_BLOCK_STATUS`（`pending_review`）在窗口内报告中的占比，与 T11 的 `changes_requested` 区分开，前者的定义只写在一处。
+- **轨迹端点让"从失败追到具体工具调用"成立**：`AgentRunTrace.unlinked_tool_calls` 保留 `agent_step_id` 为空的工具调用而不是丢弃 —— 一次在步骤落库前就被预算硬停的运行，其失败证据恰在这些行里。`summary` / `result_summary` / `arguments` 出站前一律过 `security` 的脱敏实现，与日志共用同一条规则，**UI 与 JSON API 都是 egress 路径**，因此两边都过（Jinja 过滤器 `redact` / `redacted_json`）。
+- **Agent 运行对 API 是只读的。** 运行由 pipeline 侧在 worker 进程内创建，HTTP 只提供列表、单条与轨迹三个 `GET`。这是有意的：一次运行会消耗模型预算，触发权属于受调度控制的管道，而不是任意一个已登录客户端。`docs/api-contract.md` §5 早期描述过一个 `POST /agent/runs`，实现里从未存在，已在本次一并校正（见 §15）。
+- 路由注册顺序沿用 `/reports/publish-due` 的教训：`/api/v1/agent/runs` 必须先于 `/api/v1/agent/runs/{run_id}` 声明，`/ui/dashboard` 必须先于 `/ui/dashboard/runs/{run_id}`。
+- 端点与界面：`GET /api/v1/metrics/overview?window_days=`（总览）、`GET /api/v1/agent/runs`（账本，支持 `status` / `topic_id` 过滤与分页，`page_size` 上限 100）、`GET /api/v1/agent/runs/{run_id}`、`GET /api/v1/agent/runs/{run_id}/steps`（轨迹）、`GET /ui/dashboard?window_days=`、`GET /ui/dashboard/runs/{run_id}`。全部要求 `METRICS_ROLES = (ROLE_ADMIN, ROLE_EDITOR)`：`VIEWER` 得到 `403`、匿名得到 `401`，且导航栏只在有权时渲染「运维看板」入口 —— 无权用户看不到通向 403 的死链。
+- 看板页把总览的六个区块按运维阅读顺序排开（任务执行 / Agent 运行 / 工具调用 / 报告产出 / 评测结果 / 最近运行），窗口切换器提供 1 / 7 / 30 天三档；轨迹页按 `step_index` 展开步骤与挂在每个步骤下的工具调用，每步的摘要与参数都经脱敏后渲染。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -464,11 +482,12 @@ T14 已实现以下能力：
 | 数据源 | `/api/v1/sources` | 采集源配置 |
 | 主题 | `/api/v1/topics` | 监控主题与筛选条件 |
 | 仓库 | `/api/v1/repositories`, `/api/v1/repositories/{id}/snapshots` | 仓库和趋势查询 |
-| Agent | `/api/v1/agent/runs`, `/api/v1/agent/runs/{id}` | 触发与查看研究轨迹 |
+| Agent | `GET /api/v1/agent/runs`, `/api/v1/agent/runs/{id}`, `/api/v1/agent/runs/{id}/steps` | 只读：运行账本、单个运行与完整轨迹（含未挂到步骤的工具调用）；运行由 pipeline 创建，不经 API |
 | 报告 | `/api/v1/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 查询、校验、审核、发布、回退和推送 |
 | 推送 | `/api/v1/push/targets`、`/api/v1/push/records`、`/api/v1/push/retry` | 投递允许列表、投递记录与失败重试扫描，需写角色 |
-| 管理界面 | `/ui/login`、`/ui/reports`、`/ui/reports/{id}` | 服务端渲染的审核与运维界面，动作走 HTMX 片段替换 |
+| 管理界面 | `/ui/login`、`/ui/reports`、`/ui/reports/{id}`、`/ui/dashboard`、`/ui/dashboard/runs/{id}` | 服务端渲染的审核与运维界面，动作走 HTMX 片段替换；看板与轨迹页同监控角色 |
 | 评测 | `/api/v1/evaluations`、`/runs`、`/runs/{id}`、`/{dataset_id}/cases`、`/{dataset_id}/run`、`/{dataset_id}/comparison` | 数据集版本、样本、按变体执行与统一对比报告，全部需写角色 |
+| 监控 | `GET /api/v1/metrics/overview` | 纯只读运维总览：任务、Token、延迟、失败率、报告人工阻断率与最新一轮评测裁决，需 `ADMIN`/`EDITOR` |
 | 审计 | `/api/v1/audit-logs` | 只读审计查询，限管理员 |
 
 API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支持 `page`、`page_size`，并限制最大 `page_size`。所有写操作需要 CSRF 防护或 Bearer 认证，所有报告读取执行 ACL。
@@ -505,7 +524,9 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | Agent 相对 Baseline 的引用覆盖率提升 | >= 10 个百分点 |
 | 常规报告人工阻塞率 | 接近 0，异常报告除外 |
 
-详细协议见 [docs/evaluation.md](docs/evaluation.md)；实现见 §9.11。上表的引用覆盖率、事实一致性与任务完成率三条阈值就是 `evaluation/runner.py:METRIC_TARGETS` 的代码化版本，构成 `GATED_METRICS`（能阻断发布的三个指标）。"关键数字准确率"以 `citation_coverage`（含数字的章节是否有引用）与 `source_accuracy`（引用能否在库中解析）两个可测比率落地；Prompt Injection 阻断率被真实测量但暂不设门禁，存 `details_json`；"Agent 相对 Baseline 的引用覆盖率提升"由统一对比报告的 `deltas_vs_reference` 直接给出，无需另设阈值。常规报告人工阻塞率由 T11 发布链路的 `pending_review` / `MANUAL` 占比观测，属 T15 看板范围。
+详细协议见 [docs/evaluation.md](docs/evaluation.md)；实现见 §9.11。上表的引用覆盖率、事实一致性与任务完成率三条阈值就是 `evaluation/runner.py:METRIC_TARGETS` 的代码化版本，构成 `GATED_METRICS`（能阻断发布的三个指标）。"关键数字准确率"以 `citation_coverage`（含数字的章节是否有引用）与 `source_accuracy`（引用能否在库中解析）两个可测比率落地；Prompt Injection 阻断率被真实测量但暂不设门禁，存 `details_json`；"Agent 相对 Baseline 的引用覆盖率提升"由统一对比报告的 `deltas_vs_reference` 直接给出，无需另设阈值。常规报告人工阻塞率由 T11 发布链路的 `pending_review` / `MANUAL` 占比观测，已由 T15 看板以 `ReportMetrics.manual_block_rate` 落地。
+
+第三项验收（"每次运行的 Token、成本、延迟、工具成功率和人工干预率是否可接受"）与 `docs/technology-learning-checklist.md` L65-66 的"能从失败报告追到具体工具调用"由 T15 的监控层承载，协议见 [docs/observability.md](docs/observability.md)，实现见 §9.12：`/api/v1/metrics/overview` 给出窗口内的任务成功率、Token、成本、延迟分位数与失败原因分布，`/api/v1/agent/runs/{id}/steps` 给出一次运行的步骤与工具调用序列。两者都是读侧，因此"可观测"不会反过来改变被观测的对象。
 
 ## 13. 架构决策记录
 
@@ -542,7 +563,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T12 报告 API 与管理界面 — 依赖：T3/T11 — 验证：可查看、编辑、审核、发布和回退报告
 - [x] T13 邮件/Webhook 推送 — 依赖：T11/T12 — 验证：仅已批准报告可推送，失败可重试
 - [x] T14 评测数据集与 Runner — 依赖：T8/T10 — 验证：Baseline、Agent、消融版本可输出统一报告
-- [ ] T15 监控指标与看板 — 依赖：T6/T10/T14 — 验证：任务、Token、延迟、失败率和评测结果可见
+- [x] T15 监控指标与看板 — 依赖：T6/T10/T14 — 验证：窗口内任务成功率、Token、成本、延迟分位数、失败原因、工具成功率和报告人工阻断率全部真实可见；评测段复用 `compare_latest` 裁决；`/ui/dashboard` 与运行轨迹页在真实应用上渲染；`VIEWER` 被拒且导航不暴露入口
 - [ ] T16 数据回填与端到端演示 — 依赖：T4/T5/T14 — 验证：完成一次历史回填和完整周报生成
 - [ ] T17 安全测试与故障演练 — 依赖：T3/T9/T13 — 验证：越权、Prompt Injection、API 失败和重复任务均被正确处理
 - [ ] T18 文档同步与发布检查 — 依赖：T1-T17 — 验证：架构、API、数据模型和评测文档与代码一致
@@ -599,4 +620,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-13 | 新增 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results` 四张表 | 6、7、9.11、14 | T14 | 迁移 `f1a7c9d3b582`（`down_revision` = `d4f8b2c6a1e9`）；`(name, version)` 与 `(dataset_id, case_key)` 与 `(eval_run_id, eval_case_id)` 三处唯一约束；三个门禁指标落真实列，其余指标存 `details_json`；`alembic heads` 单 head，`upgrade`/`downgrade` 的 MySQL DDL 离线渲染与 ORM 元数据逐字段一致 |
 | 2026-10-13 | 修正 T14 两处评测语义缺陷：① 消融此前相对 baseline 衡量，导致 `agent_no_tools` 的差值恒为 `0` —— 因为 baseline 本就在消融跌到的地板上，损失被完全掩盖；② 全部样本失败的 run 因 `gate_failures` 为空而 `passed=true` —— 把"没有测量"误判为"通过" | 9.11、14、15 | T14 | ① 引入参照链 `baseline_single_prompt <- agent_full <- agent_no_*`（`_reference_summary`），`agent_no_tools` 差值变为 `-1.0000`；② `passed` 增加 `scored_case_count > 0` 必要条件。两处均先复现后修，各补回归测试（`test_an_ablation_is_measured_against_the_agent_not_the_baseline`、`test_a_wholly_failed_run_cannot_pass`），并同步 `PROMOTION_TARGETS = ("agent_full",)` 使消融作为对照不否决发布 |
 | 2026-10-13 | 修正 T14 两处夹具缺陷（不影响产品代码）：评测夹具的种子快照日期落在数据集样本窗口之外，导致 `query_repo_metrics` 静默返回空、所有样本 `citation_coverage=0`；历史报告 `generated_at` 等于窗口结束时刻，不满足 `search_prior_reports` 的 `< before` 条件而对 Agent 不可见 | 9.11、15 | T14 | 快照日期与 `SMOKE_NOW` 移入 2026-10 窗口，历史报告改用独立时刻 `PRIOR_REPORT_AT`；给冒烟脚本补 `_validate_world` 自检（校验主题存在、快照落在窗口内、历史报告早于窗口结束、stars/forks 取值匹配）以防再次静默失效；新增回归测试 `test_the_prior_report_is_actually_visible_to_the_agent`，修正后单元夹具与冒烟的 `source_accuracy` 一致为 `0.9630` |
+| 2026-10-14 | 完成 T15 监控指标与看板：`observability/` 纯聚合层（`metrics.py` 不碰数据库）+ 读侧查询层（`queries.py`：总览、运行账本、运行轨迹）+ `AgentRunNotFound`；`GET /api/v1/metrics/overview` 与 `GET /api/v1/agent/runs` 三段读侧端点；`/ui/dashboard` 六区块看板与 `/ui/dashboard/runs/{id}` 轨迹页、导航入口按角色渲染 | 5、9.12、10、12、14 | T15 | 546 项测试（含聚合 20、监控 API 19、看板 UI 13）、Ruff check+format 200 文件、mypy 118 源文件 0 错误；**无新表、无迁移**（只读既有账本）；真实 FastAPI 应用 + 真实数据库端到端跑通：窗口 7/30/90 天分别命中 4/5/6 次 Agent 运行、`window_days` 越界 `422` 而非夹取、空窗口全部指标为 `null`、`VIEWER` 在 API 与 UI 两侧均 `403`、匿名 `401`、缺失运行 `404`/`NOT_FOUND`、轨迹直达被拒的工具调用（`TOOL_NOT_ALLOWED`）、账本与轨迹出站文本经脱敏、评测段与 `compare_latest` 逐字段一致；连续两次运行 payload 除时钟与自增 id 外逐字一致 |
+| 2026-10-14 | 校正 `docs/api-contract.md` §5：移除从未实现的 `POST /agent/runs`。Agent 运行始终由 pipeline 在 worker 进程内创建（`run_research_agent`），HTTP 对运行只读；§5 补齐 `GET /agent/runs` 账本端点与 `GET /agent/runs/{id}/steps` 的完整轨迹形状 | 9.12、10、15 | T15 | 与 `api/routes/agent_runs.py`、`api/routes/*.py` 的路由清单逐条比对（全部 `router.post` 落点确认无该端点）；契约同步 `INTERFACES.md` §3/§4/§5 与 `docs/api-contract.md` §9 |
+| 2026-10-14 | 修复测试套件的环境泄漏（产品代码无改动）：`tests/support.py:build_settings` 的 docstring 声明"不读 `.env`"，但 `Settings.model_validate(...)` 仍会走 dotenv 源 —— 开发者 `.env` 里填了 `AGENT_PROVIDER=openai_compatible` 后，agent 测试会构造真实 Provider 客户端并发出真实网络请求，既拖慢整套测试又消耗真实额度 | 9.12、15 | T15 | 改为 `Settings(_env_file=None, **values)`；实测 `build_settings().agent_provider` 由 `openai_compatible` 变为 `offline`，显式传参仍可覆盖。修复后全量 546 项测试由「9 分 40 秒只跑到 24%、5 项失败」变为「1 分 3 秒 100% 通过」 |
 | 2026-10-14 | T10-T14 复审：修复报告 owner 丢失、Webhook SSRF、推送/评测失败详情脱敏、推送重试串版本、wheel 未打包 Web 资源、README/评测数据集未入镜像，以及 MySQL 非事务 DDL 半完成后的迁移重入问题 | 5、7、9.9、9.10、9.11、11、14、15 | T10-T14 复审 | 定向回归测试、全量 pytest、Ruff、mypy 通过；`verify_t2` 完成全链升级/回滚/再次升级；`verify_t11`、`verify_t12`、`verify_t13`、`verify_t14` 全部通过；本地 wheel 清单验证 `web/templates` 和 `web/static` 均被打包 |

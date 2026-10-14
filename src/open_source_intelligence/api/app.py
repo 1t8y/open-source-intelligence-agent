@@ -18,9 +18,11 @@ from open_source_intelligence.web.router import router as web_router
 
 from .errors import add_problem_handlers
 from .middleware import add_request_id_middleware
+from .routes.agent_runs import router as agent_runs_router
 from .routes.auth import router as auth_router
 from .routes.evaluations import router as evaluations_router
 from .routes.health import router as health_router
+from .routes.metrics import router as metrics_router
 from .routes.push import router as push_router
 from .routes.reports import router as reports_router
 
@@ -55,6 +57,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reports_router)
     app.include_router(push_router)
     app.include_router(evaluations_router)
+    app.include_router(metrics_router)
+    app.include_router(agent_runs_router)
     app.include_router(web_router)
 
     @app.get("/", include_in_schema=False)

@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}运行 #{{ trace.run.id }} 轨迹 · 开源情报周报平台{% endblock %}
+
+{% macro ms(value) -%}
+  {%- if value is none -%}<span class="metric-missing">—</span>
+  {%- else -%}{{ value }} ms{%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<section class="card">
+  <div class="row space-between">
+    <div>
+      <h1>运行 #{{ trace.run.id }}</h1>
+      <p class="meta">
+        主题 {{ trace.topic_name or ("#" ~ trace.run.topic_id) }}
+        · 流水线任务 #{{ trace.run.pipeline_run_id }}
+        {% if trace.report_id %}· 产出 <a href="/ui/reports/{{ trace.report_id }}">报告 #{{ trace.report_id }}</a>{% endif %}
+      </p>
+    </div>
+    <a href="/ui/dashboard">← 返回看板</a>
+  </div>
+
+  <div class="badges">
+    <span class="badge status-{{ trace.run.status }}">{{ trace.run.status }}</span>
+    {% if trace.run.publish_mode %}<span class="badge">{{ trace.run.publish_mode }}</span>{% endif %}
+    {% if trace.run.error_code %}<span class="badge status-failed">{{ trace.run.error_code }}</span>{% endif %}
+  </div>
+
+  <dl class="facts">
+    <div><dt>循环次数</dt><dd class="metric-value">{{ trace.run.loop_count }}</dd></div>
+    <div><dt>工具调用</dt><dd class="metric-value">{{ trace.run.tool_call_count }}</dd></div>
+    <div><dt>模型调用</dt><dd class="metric-value">{{ trace.run.model_call_count }}</dd></div>
+    <div>
+      <dt>Token（提示 / 补全）</dt>
+      <dd class="metric-value">{{ trace.run.prompt_tokens }} / {{ trace.run.completion_tokens }}</dd>
+    </div>
+    <div><dt>估算成本</dt><dd class="metric-value">{{ trace.run.estimated_cost }}</dd></div>
+    <div>
+      <dt>时长</dt>
+      <dd class="metric-value">
+        {% if trace.run.started_at and trace.run.finished_at %}
+        {{ ((trace.run.finished_at - trace.run.started_at).total_seconds() * 1000) | round | int }} ms
+        {% else %}<span class="metric-missing">运行尚未结束</span>{% endif %}
+      </dd>
+    </div>
+  </dl>
+  <p class="hint">
+    统计窗口 {{ trace.run.window_start.strftime("%Y-%m-%d %H:%M") }} →
+    {{ trace.run.window_end.strftime("%Y-%m-%d %H:%M") }}（UTC）
+    {% if trace.run.started_at %}· 开始 {{ trace.run.started_at.strftime("%Y-%m-%d %H:%M:%S") }}{% endif %}
+  </p>
+</section>
+
+<section class="card">
+  <h2>步骤轨迹</h2>
+  {% if trace.steps %}
+  <ol class="trace">
+    {% for item in trace.steps %}
+    <li class="trace-step">
+      <div class="row">
+        <span class="badge">#{{ item.step.step_index }}</span>
+        <span class="badge status-{{ item.step.status }}">{{ item.step.step_type }} · {{ item.step.status }}</span>
+        <span class="meta">{{ ms(item.step.latency_ms) }}</span>
+        <span class="meta">{{ item.step.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</span>
+      </div>
+      {% if item.step.summary %}<p class="trace-summary">{{ item.step.summary | redact }}</p>{% endif %}
+      {% if item.tool_calls %}
+      <table class="grid">
+        <thead>
+          <tr><th>工具</th><th>状态</th><th>错误码</th><th>耗时</th><th>参数</th><th>结果摘要</th></tr>
+        </thead>
+        <tbody>
+          {% for call in item.tool_calls %}
+          <tr>
+            <td><code>{{ call.tool_name }}</code></td>
+            <td><span class="badge status-{{ call.status }}">{{ call.status }}</span></td>
+            <td>{% if call.error_code %}<code>{{ call.error_code }}</code>{% else %}—{% endif %}</td>
+            <td>{{ ms(call.latency_ms) }}</td>
+            <td><code class="trace-payload">{{ call.arguments_json | redacted_json }}</code></td>
+            <td>{{ call.result_summary | redact }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="hint">该步骤没有工具调用。</p>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="hint">这次运行没有记录任何步骤。</p>
+  {% endif %}
+</section>
+
+{% if trace.unlinked_tool_calls %}
+<section class="card">
+  <h2>未挂到步骤上的工具调用</h2>
+  <p class="hint">
+    这些调用的 <code>agent_step_id</code> 已失效。它们被单独保留而不是丢弃：追溯一次失败时，
+    丢失的调用恰恰是最需要的证据。
+  </p>
+  <table class="grid">
+    <thead>
+      <tr><th>工具</th><th>状态</th><th>错误码</th><th>耗时</th><th>参数</th><th>结果摘要</th></tr>
+    </thead>
+    <tbody>
+      {% for call in trace.unlinked_tool_calls %}
+      <tr>
+        <td><code>{{ call.tool_name }}</code></td>
+        <td><span class="badge status-{{ call.status }}">{{ call.status }}</span></td>
+        <td>{% if call.error_code %}<code>{{ call.error_code }}</code>{% else %}—{% endif %}</td>
+        <td>{{ ms(call.latency_ms) }}</td>
+        <td><code class="trace-payload">{{ call.arguments_json | redacted_json }}</code></td>
+        <td>{{ call.result_summary | redact }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

@@ -7,6 +7,8 @@ same service layer as the JSON API; the UI never touches SQL itself.
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,12 +20,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.core.config import Settings
+from open_source_intelligence.core.logging import redact_text
 from open_source_intelligence.notifications.errors import PushError
 from open_source_intelligence.notifications.service import (
     PUSHABLE_STATUSES,
     list_pushes,
     list_targets,
     push_report,
+)
+from open_source_intelligence.observability.metrics import (
+    DEFAULT_WINDOW_DAYS,
+    MAX_WINDOW_DAYS,
+    MIN_WINDOW_DAYS,
+)
+from open_source_intelligence.observability.queries import (
+    collect_metrics,
+    get_agent_run_trace,
+    list_agent_runs,
 )
 from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.identity import User
@@ -47,6 +60,7 @@ from open_source_intelligence.reports.revisions import (
 from open_source_intelligence.reports.verification import verify_report
 from open_source_intelligence.security.audit import record_audit_event
 from open_source_intelligence.security.authorization import (
+    METRICS_ROLES,
     REPORT_WRITE_ROLES,
     can_read_report,
     readable_reports_filter,
@@ -80,8 +94,33 @@ MODULE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = MODULE_DIR / "templates"
 STATIC_DIR = MODULE_DIR / "static"
 
+#: The windows the dashboard offers as buttons. The endpoints accept any 1-90 and refuse anything
+#: else rather than silently clamping it; these three are the ones an operator actually asks for.
+WINDOW_OPTIONS = (1, 7, 30)
+#: How many recent runs the dashboard lists before pointing at the full ledger.
+DASHBOARD_RUN_PAGE_SIZE = 10
+
 router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def _redact(value: object) -> object:
+    """Jinja filter applying the log redaction rule to one free-text value."""
+    return None if value is None else redact_text(str(value))
+
+
+def _redacted_json(value: object) -> str:
+    """Jinja filter serializing a JSON column for display with credentials removed.
+
+    The run trace is rendered by the UI as well as served by the JSON API, and both are egress
+    paths. Reusing `redact_text` keeps one definition of what may leave the process instead of
+    letting the page show what the endpoint deliberately hides.
+    """
+    return redact_text(json.dumps(value, ensure_ascii=False, default=str))
+
+
+templates.env.filters["redact"] = _redact
+templates.env.filters["redacted_json"] = _redacted_json
 
 DbSession = Annotated[Session, Depends(get_db_session)]
 #: The alias matters: the templates post the token as `csrf_token`, and FastAPI binds a form
@@ -153,6 +192,9 @@ def render(
         # the buttons a page offers and the states the services accept cannot drift apart.
         "editable_statuses": sorted(EDITABLE_STATUSES),
         "rollbackable_statuses": sorted(ROLLBACKABLE_STATUSES),
+        # Decided once here so every template renders the dashboard link under the same role rule
+        # the dashboard route itself enforces.
+        "can_view_dashboard": _can_view_dashboard(context),
     }
     payload.update(context)
     response = templates.TemplateResponse(
@@ -177,6 +219,31 @@ def _require_write_role(session: WebSession) -> None:
     """Reject a mutating UI action from a read-only role."""
     if get_role_codes(session.user).isdisjoint(REPORT_WRITE_ROLES):
         raise WebForbidden("只读角色不能执行该操作")
+
+
+def _require_metrics_role(web: WebSession) -> None:
+    """Reject a viewer from the operations dashboard.
+
+    The dashboard exposes cross-topic cost, failure reasons and evaluation verdicts rather than
+    the contents of one report, so it follows `METRICS_ROLES` instead of the report read roles.
+    """
+    if get_role_codes(web.user).isdisjoint(METRICS_ROLES):
+        raise WebForbidden("该页面仅对管理员和编辑者开放")
+
+
+def _can_view_dashboard(context: dict[str, Any]) -> bool:
+    """Return whether the page's signed-in identity may open the operations dashboard.
+
+    Derived from the identity the page already carries, so every template can render the nav
+    entry correctly without each route having to compute it separately.
+    """
+    identity = context.get("current_user")
+    if not isinstance(identity, dict):
+        return False
+    roles = identity.get("roles")
+    if not isinstance(roles, (list, tuple, set)):
+        return False
+    return not set(roles).isdisjoint(METRICS_ROLES)
 
 
 def _authorize_action(
@@ -301,6 +368,75 @@ def logout(request: Request, csrf: CsrfField = "") -> Response:
     response = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return response
+
+
+# --------------------------------------------------------------------------------------
+# Dashboard
+# --------------------------------------------------------------------------------------
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+def dashboard_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    now: Annotated[datetime, Depends(utc_now)],
+    window_days: Annotated[
+        int, Query(ge=MIN_WINDOW_DAYS, le=MAX_WINDOW_DAYS)
+    ] = DEFAULT_WINDOW_DAYS,
+) -> HTMLResponse:
+    """Render the operations dashboard: one window of metrics plus the newest runs.
+
+    The role check runs before anything is read, so a viewer's request never touches the ledger
+    and the page they get back says why rather than showing an empty dashboard.
+    """
+    _require_metrics_role(web)
+    overview = collect_metrics(
+        session,
+        now=now,
+        window_days=window_days,
+        settings=_settings(request),
+    )
+    recent_runs = list_agent_runs(session, page=1, page_size=DASHBOARD_RUN_PAGE_SIZE)
+    return render(
+        request,
+        "dashboard.html",
+        {
+            "current_user": _identity(web.user),
+            "overview": overview,
+            "recent_runs": recent_runs,
+            "window_days": overview.window.days,
+            "window_options": WINDOW_OPTIONS,
+        },
+    )
+
+
+@router.get("/dashboard/runs/{run_id}", response_class=HTMLResponse)
+def dashboard_run_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    run_id: int,
+) -> HTMLResponse:
+    """Render one run's trajectory: its ordered steps and the tool calls under each of them.
+
+    This is the page the "从失败报告追到具体工具调用" acceptance is walked on: an operator sees
+    the run in the dashboard, opens it, and reaches the exact tool call that failed with its
+    error code. The role check runs first, as on the dashboard itself.
+    """
+    _require_metrics_role(web)
+    trace = get_agent_run_trace(session, run_id=run_id)
+    if trace is None:
+        raise WebNotFound(f"运行 {run_id} 不存在")
+    return render(
+        request,
+        "dashboard_run.html",
+        {
+            "current_user": _identity(web.user),
+            "trace": trace,
+            "unfinished": trace.run.started_at is None or trace.run.finished_at is None,
+        },
+    )
 
 
 # --------------------------------------------------------------------------------------

@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}运维看板 · 开源情报周报平台{% endblock %}
+
+{#
+  Rendering helpers. A metric that was never exercised arrives as `None`, and the dash is
+  printed instead of a zero so an empty window can never be mistaken for a failing one; the
+  API sends the exact same distinction, so the page and the JSON cannot disagree.
+#}
+{% macro rate(value) -%}
+  {%- if value is none -%}<span class="metric-missing">—</span>
+  {%- else -%}{{ "%.1f%%" | format((value | float) * 100) }}{%- endif -%}
+{%- endmacro %}
+{% macro ms(value) -%}
+  {%- if value is none -%}<span class="metric-missing">—</span>
+  {%- else -%}{{ value }} ms{%- endif -%}
+{%- endmacro %}
+{% macro num(value, places) -%}
+  {%- if value is none -%}<span class="metric-missing">—</span>
+  {%- else -%}{{ ("%." ~ places ~ "f") | format(value | float) }}{%- endif -%}
+{%- endmacro %}
+{% macro status_badges(counts) -%}
+  {%- if counts -%}
+    <span class="badges">
+      {%- for name, count in counts.items() -%}
+      <span class="badge status-{{ name }}">{{ name }} {{ count }}</span>
+      {%- endfor -%}
+    </span>
+  {%- else -%}<span class="metric-missing">窗口内无样本</span>{%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<section class="card">
+  <div class="row space-between">
+    <div>
+      <h1>运维看板</h1>
+      <p class="meta">
+        统计窗口 {{ overview.window.start.strftime("%Y-%m-%d %H:%M") }} →
+        {{ overview.window.end.strftime("%Y-%m-%d %H:%M") }}（UTC，{{ overview.window.days }} 天，半开区间）
+      </p>
+    </div>
+    <nav class="window-nav">
+      {% for option in window_options %}
+      <a class="{% if option == window_days %}active{% endif %}"
+         href="/ui/dashboard?window_days={{ option }}">{{ option }} 天</a>
+      {% endfor %}
+    </nav>
+  </div>
+  <p class="hint">数据全部来自平台已写下的运行账本，未行使的指标显示为「—」而不是 0。</p>
+</section>
+
+<section class="card">
+  <h2>任务执行</h2>
+  <dl class="facts">
+    <div><dt>窗口内任务</dt><dd class="metric-value">{{ overview.pipeline.total }}</dd></div>
+    <div><dt>成功率</dt><dd class="metric-value">{{ rate(overview.pipeline.success_rate) }}</dd></div>
+    <div><dt>P50 时长</dt><dd class="metric-value">{{ ms(overview.pipeline.latency.p50_ms) }}</dd></div>
+    <div><dt>P95 时长</dt><dd class="metric-value">{{ ms(overview.pipeline.latency.p95_ms) }}</dd></div>
+    <div><dt>时长样本</dt><dd class="metric-value">{{ overview.pipeline.latency.samples }}</dd></div>
+  </dl>
+  <div class="row start">
+    <span class="metric-label">状态分布</span>
+    {{ status_badges(overview.pipeline.by_status) }}
+  </div>
+  {% if overview.pipeline.by_run_type %}
+  <table class="grid">
+    <thead><tr><th>任务类型</th><th>状态分布</th></tr></thead>
+    <tbody>
+      {% for run_type, counts in overview.pipeline.by_run_type.items() %}
+      <tr>
+        <td><code>{{ run_type }}</code></td>
+        <td>{{ status_badges(counts) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">该窗口内没有登记任何流水线任务。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Agent 运行</h2>
+  <dl class="facts">
+    <div><dt>运行次数</dt><dd class="metric-value">{{ overview.agent.total }}</dd></div>
+    <div><dt>成功率</dt><dd class="metric-value">{{ rate(overview.agent.success_rate) }}</dd></div>
+    <div><dt>总 Token</dt><dd class="metric-value">{{ overview.agent.total_tokens }}</dd></div>
+    <div><dt>单次平均 Token</dt><dd class="metric-value">{{ num(overview.agent.tokens_per_run, 1) }}</dd></div>
+    <div><dt>估算成本</dt><dd class="metric-value">{{ num(overview.agent.estimated_cost, 4) }}</dd></div>
+    <div><dt>P95 时长</dt><dd class="metric-value">{{ ms(overview.agent.latency.p95_ms) }}</dd></div>
+  </dl>
+  <p class="hint">
+    提示 / 补全 Token：{{ overview.agent.prompt_tokens }} / {{ overview.agent.completion_tokens }}
+  </p>
+  <div class="row start">
+    <span class="metric-label">状态分布</span>
+    {{ status_badges(overview.agent.by_status) }}
+    <span class="metric-label">发布模式</span>
+    {{ status_badges(overview.agent.by_publish_mode) }}
+  </div>
+  <div class="row start">
+    <span class="metric-label">失败原因</span>
+    {{ status_badges(overview.agent.failure_reasons) }}
+  </div>
+</section>
+
+<section class="card">
+  <h2>工具调用（白名单）</h2>
+  <dl class="facts">
+    <div><dt>调用次数</dt><dd class="metric-value">{{ overview.tools.total }}</dd></div>
+    <div><dt>成功率</dt><dd class="metric-value">{{ rate(overview.tools.success_rate) }}</dd></div>
+  </dl>
+  <div class="row start">
+    <span class="metric-label">状态分布</span>
+    {{ status_badges(overview.tools.by_status) }}
+  </div>
+  {% if overview.tools.by_tool %}
+  <table class="grid">
+    <thead>
+      <tr><th>工具</th><th>调用</th><th>成功率</th><th>P50</th><th>P95</th><th>状态分布</th></tr>
+    </thead>
+    <tbody>
+      {% for tool in overview.tools.by_tool %}
+      <tr>
+        <td><code>{{ tool.tool_name }}</code></td>
+        <td>{{ tool.total }}</td>
+        <td>{{ rate(tool.success_rate) }}</td>
+        <td>{{ ms(tool.latency.p50_ms) }}</td>
+        <td>{{ ms(tool.latency.p95_ms) }}</td>
+        <td>{{ status_badges(tool.by_status) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">该窗口内 Agent 没有调用任何工具。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>报告产出</h2>
+  <dl class="facts">
+    <div><dt>窗口内报告</dt><dd class="metric-value">{{ overview.reports.total }}</dd></div>
+    <div>
+      <dt>人工阻塞率</dt>
+      <dd class="metric-value">{{ rate(overview.reports.manual_block_rate) }}</dd>
+    </div>
+  </dl>
+  <p class="hint">人工阻塞率 = 停在 <code>pending_review</code> 的报告占比，来自 T11 发布链路的观测口径。</p>
+  <div class="row start">
+    <span class="metric-label">状态分布</span>
+    {{ status_badges(overview.reports.by_status) }}
+  </div>
+</section>
+
+<section class="card">
+  <h2>评测结果</h2>
+  {% if overview.evaluations.available %}
+  <dl class="facts">
+    <div>
+      <dt>数据集</dt>
+      <dd class="metric-value">
+        {{ overview.evaluations.dataset_name }} v{{ overview.evaluations.dataset_version }}
+      </dd>
+    </div>
+    <div>
+      <dt>裁决</dt>
+      <dd class="metric-value">
+        {% if overview.evaluations.passed is none %}
+        <span class="badge">未裁决</span>
+        {% elif overview.evaluations.passed %}
+        <span class="badge status-published">passed</span>
+        {% else %}
+        <span class="badge status-failed">failed</span>
+        {% endif %}
+      </dd>
+    </div>
+  </dl>
+  {% if overview.evaluations.regressions %}
+  <p class="hint">
+    相对参照变体发生回退：
+    {% for name in overview.evaluations.regressions %}
+    <span class="badge status-changes_requested">{{ name }}</span>
+    {% endfor %}
+  </p>
+  {% endif %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>变体</th><th>状态</th><th>计分用例</th><th>引用覆盖</th><th>事实一致性</th>
+        <th>任务完成</th><th>Token</th><th>平均延迟</th><th>参照</th><th>回退</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for target in overview.evaluations.targets %}
+      <tr>
+        <td><code>{{ target.target_type }}</code></td>
+        <td><span class="badge">{{ target.status }}</span></td>
+        <td>{{ target.scored_case_count }}</td>
+        <td>{{ rate(target.metrics.get("citation_coverage")) }}</td>
+        <td>{{ rate(target.metrics.get("factual_consistency")) }}</td>
+        <td>{{ rate(target.metrics.get("task_completion")) }}</td>
+        <td>{{ target.total_tokens }}</td>
+        <td>{{ ms(target.mean_latency_ms) }}</td>
+        <td>{{ target.reference_target or "—" }}</td>
+        <td>
+          {% if target.regression %}<span class="badge status-failed">regression</span>
+          {% else %}<span class="metric-missing">—</span>{% endif %}
+        </td>
+      </tr>
+      {% if target.gate_failures %}
+      <tr>
+        <td colspan="10" class="metric-note">
+          门禁未过：
+          {% for failure in target.gate_failures %}<code>{{ failure }}</code> {% endfor %}
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">评测段不受顶部窗口影响：评测是运维触发的低频动作，这里固定展示最新一轮 sweep。</p>
+  {% else %}
+  <p class="hint">这台实例还没有任何评测记录，先在评测链路上跑一轮再回来看。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="row space-between">
+    <h2>最近运行</h2>
+    <span class="meta">共 {{ recent_runs.total }} 条，按开始时间倒序取前 {{ recent_runs.page_size }} 条</span>
+  </div>
+  {% if recent_runs.items %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>运行</th><th>主题</th><th>状态</th><th>模式</th><th>循环</th>
+        <th>工具 / 模型</th><th>Token</th><th>时长</th><th>开始时间</th><th>失败原因</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in recent_runs.items %}
+      <tr>
+        <td><a href="/ui/dashboard/runs/{{ run.id }}">#{{ run.id }}</a></td>
+        <td>#{{ run.topic_id }}</td>
+        <td><span class="badge status-{{ run.status }}">{{ run.status }}</span></td>
+        <td>{{ run.publish_mode or "—" }}</td>
+        <td>{{ run.loop_count }}</td>
+        <td>{{ run.tool_call_count }} / {{ run.model_call_count }}</td>
+        <td>{{ run.prompt_tokens + run.completion_tokens }}</td>
+        <td>
+          {% if run.started_at and run.finished_at %}
+          {{ ((run.finished_at - run.started_at).total_seconds() * 1000) | round | int }} ms
+          {% else %}<span class="metric-missing">进行中</span>{% endif %}
+        </td>
+        <td>{{ run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
+        <td>{% if run.error_code %}<code>{{ run.error_code }}</code>{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">还没有任何 Agent 运行记录。</p>
+  {% endif %}
+</section>
+{% endblock %}

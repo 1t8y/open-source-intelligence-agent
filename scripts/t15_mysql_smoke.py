@@ -1,0 +1,1242 @@
+"""Run T15 observability smoke checks against MySQL.
+
+The script drives the *real* aggregation layer, the *real* JSON endpoints, and the *real*
+server-rendered dashboard over a database it seeded itself, rather than over in-memory SQLite.
+It exercises the T15 acceptance criteria end to end:
+
+1. **任务、Token、延迟、失败率可见** - the overview reports pipeline throughput, Agent token
+   spend, and both latency percentiles from the run ledger, and every number matches a fresh
+   aggregate over the same rows.
+2. **评测结果可见** - the newest evaluation sweep is reused verbatim, so the verdict on the
+   dashboard is the verdict `compare_latest` produces rather than a second implementation.
+3. **窗口是可调且有界的** - `1 / 7 / 30` day windows each report on the rows inside them, an
+   out-of-range value is clamped, and a zero or negative one is refused.
+4. **未行使的指标是 `None` 而不是 0** - a window holding no Agent run reports no success rate
+   at all, which reads differently from a window full of real failures.
+5. **能从失败运行追到具体工具调用** - the trace endpoint and the trace page both reach the
+   step that failed, the tool that was denied, and its error code.
+6. **看板与轨迹页只对 ADMIN / EDITOR 开放** - a `VIEWER` is refused on the API and on the UI,
+   and the navigation entry is not rendered for them.
+7. **出口只有一条脱敏规则** - a credential-shaped result summary is redacted in the JSON
+   response and in the rendered page, because the UI is an egress path too.
+
+Two design notes worth stating rather than hiding. The window is anchored on the wall clock at
+run time (`utc_now()`) and every seeded row is placed at a fixed *offset* from it, so the
+assertions hold on any day and a 7-day window means seven days. And the seeded world includes
+one block of rows 40 days old: without it, "the window filters" could pass on a query that
+never filters at all.
+
+Every assertion reads through a *fresh* session, so a passing check cannot be explained by the
+identity map of the session that wrote the row.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from collections.abc import Iterable
+from datetime import datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
+
+from fastapi.testclient import TestClient
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
+
+from open_source_intelligence.agent.runtime import load_or_create_config
+from open_source_intelligence.api.app import create_app
+from open_source_intelligence.core.config import Settings, get_settings
+from open_source_intelligence.evaluation.dataset import import_dataset, parse_dataset
+from open_source_intelligence.evaluation.runner import compare_latest, run_evaluation
+from open_source_intelligence.evaluation.targets import AGENT_TARGET, BASELINE_TARGET
+from open_source_intelligence.observability.metrics import (
+    AGENT_OUTCOME_STATUSES,
+    AGENT_SUCCEEDED_STATUSES,
+    MANUAL_BLOCK_STATUS,
+    PIPELINE_OUTCOME_STATUSES,
+    PIPELINE_SUCCEEDED_STATUSES,
+    TOOL_SUCCEEDED_STATUSES,
+)
+from open_source_intelligence.observability.queries import (
+    collect_metrics,
+    get_agent_run_trace,
+    list_agent_runs,
+)
+from open_source_intelligence.persistence import models  # noqa: F401
+from open_source_intelligence.persistence.base import utc_now
+from open_source_intelligence.persistence.models.agent import AgentRun, AgentStep, ToolCall
+from open_source_intelligence.persistence.models.evaluation import (
+    EvalCase,
+    EvalDataset,
+    EvalResult,
+    EvalRun,
+)
+from open_source_intelligence.persistence.models.identity import User, UserRole
+from open_source_intelligence.persistence.models.intelligence import (
+    DataSource,
+    PipelineRun,
+    Repository,
+    RepositoryContent,
+    RepoSnapshot,
+    Topic,
+    TopicRepository,
+)
+from open_source_intelligence.persistence.models.reporting import Report
+from open_source_intelligence.persistence.session import (
+    create_database_engine,
+    create_session_factory,
+)
+from open_source_intelligence.security.passwords import hash_password
+from open_source_intelligence.security.service import create_user
+
+METRICS_API = "/api/v1/metrics/overview"
+AGENT_API = "/api/v1/agent/runs"
+DASHBOARD = "/ui/dashboard"
+
+SMOKE_PASSWORD = "t15-smoke-password-not-for-production"
+ACTOR_PREFIX = "__t15_"
+ROLES = {"admin": "ADMIN", "editor": "EDITOR", "viewer": "VIEWER"}
+
+#: The topic the observability rows hang off, and the topic the evaluation case names.
+TOPIC_NAME = "__T15 Topic__"
+DATASET_NAME = "__t15-observability__"
+DATASET_VERSION = "v1"
+REPORT_TITLE_PREFIX = "__T15 report__"
+PROVIDER_PREFIX = "__t15_smoke_"
+CONFIG_PREFIX = "__t15_"
+
+#: A credential-shaped value that must never reach a client through either egress path.
+LEAKED_SECRET = "sk-Abcdefghij0123456789"
+DENIED_TOOL = "get_repository_content"
+DENIED_ERROR = "TOOL_NOT_ALLOWED"
+FAILED_RUN_ERROR = "AGENT_TOOL_BUDGET_EXCEEDED"
+UNLINKED_TOOL_ERROR = "TOOL_TIMEOUT"
+
+#: Row offsets from the run clock. `RECENT` sits inside 1, 7, and 30 day windows; `PRIOR_REPORT`
+#: sits inside 30 and 90 but outside 7; `STALE` sits outside 30 and inside 90 only. Three
+#: distinct bands are what make the window assertion mean something.
+RECENT = timedelta(days=3)
+PRIOR_REPORT = timedelta(days=9)
+STALE = timedelta(days=40)
+
+#: Two snapshot points inside the evaluation case window, matching the seeded counters.
+FIRST_SNAPSHOT = timedelta(days=9)
+LAST_SNAPSHOT = timedelta(days=4)
+
+ALPHA_STARS = 1240
+ALPHA_FORKS = 210
+BETA_STARS = 880
+BETA_FORKS = 96
+
+#: Agent run rows inside the 7-day window: (status, publish_mode, error_code, tokens, cost, ms).
+AGENT_ROWS: tuple[tuple[str, str | None, str | None, int, int, str, int], ...] = (
+    ("completed", "AUTO_WITH_DELAY", None, 1200, 300, "0.012300", 40_000),
+    ("needs_review", "MANUAL", None, 900, 200, "0.008000", 60_000),
+    ("failed", None, FAILED_RUN_ERROR, 400, 50, "0", 80_000),
+)
+#: Pipeline rows inside the 7-day window: (run_type, status, ms).
+PIPELINE_ROWS: tuple[tuple[str, str, int], ...] = (
+    ("collect", "succeeded", 10_000),
+    ("snapshot", "succeeded", 20_000),
+    ("rank", "failed", 30_000),
+    ("agent", "partial", 40_000),
+)
+
+
+def _count(session: Session, entity: Any) -> int:
+    """Return the row count of one table."""
+    return int(session.scalar(select(func.count()).select_from(entity)) or 0)
+
+
+def _refresh(session: Session) -> None:
+    """Drop cached rows after another session wrote to the database."""
+    session.rollback()
+    session.expire_all()
+
+
+# --------------------------------------------------------------------------------------
+# Seeding and cleanup
+# --------------------------------------------------------------------------------------
+
+
+def _actor_ids(session: Session) -> dict[str, int]:
+    """Return the ids of the T15 smoke users, creating them when missing."""
+    found: dict[str, int] = {}
+    for suffix, role in ROLES.items():
+        username = f"{ACTOR_PREFIX}{suffix}__"
+        existing = session.scalar(select(User.id).where(User.username == username))
+        if existing is not None:
+            found[suffix] = int(existing)
+            continue
+        user = create_user(
+            session,
+            username=username,
+            password_hash=hash_password(SMOKE_PASSWORD),
+            display_name=f"T15 {suffix}",
+            role_codes={role},
+            data_scope="team",
+        )
+        found[suffix] = int(user.id)
+    session.commit()
+    return found
+
+
+def _t15_dataset_ids(session: Session) -> list[int]:
+    """Return the datasets a previous or current T15 run created."""
+    return [
+        int(value)
+        for value in session.scalars(select(EvalDataset.id).where(EvalDataset.name == DATASET_NAME))
+    ]
+
+
+def _topic_ids(session: Session) -> list[int]:
+    """Return the seeded topic ids."""
+    rows = session.scalars(select(Topic.id).where(Topic.name == TOPIC_NAME))
+    return [int(value) for value in rows]
+
+
+def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
+    """Remove every row a T15 smoke run created, leaf-first.
+
+    Deletion order is explicit rather than left to cascades, so the same statement sequence works
+    on MySQL and on the SQLite stand-in. Reports reference both `topics` and `agent_runs` with
+    `RESTRICT`, so they have to go before either parent.
+    """
+    dataset_ids = _t15_dataset_ids(session)
+    if dataset_ids:
+        run_ids = select(EvalRun.id).where(EvalRun.dataset_id.in_(dataset_ids))
+        session.execute(delete(EvalResult).where(EvalResult.eval_run_id.in_(run_ids)))
+        session.execute(delete(EvalRun).where(EvalRun.dataset_id.in_(dataset_ids)))
+        session.execute(delete(EvalCase).where(EvalCase.dataset_id.in_(dataset_ids)))
+        session.execute(delete(EvalDataset).where(EvalDataset.id.in_(dataset_ids)))
+
+    topic_ids = _topic_ids(session)
+    if topic_ids:
+        agent_run_ids = select(AgentRun.id).where(AgentRun.topic_id.in_(topic_ids))
+        session.execute(delete(Report).where(Report.topic_id.in_(topic_ids)))
+        session.execute(delete(Report).where(Report.title.like(f"{REPORT_TITLE_PREFIX}%")))
+        session.execute(delete(ToolCall).where(ToolCall.agent_run_id.in_(agent_run_ids)))
+        session.execute(delete(AgentStep).where(AgentStep.agent_run_id.in_(agent_run_ids)))
+        session.execute(delete(AgentRun).where(AgentRun.topic_id.in_(topic_ids)))
+        session.execute(delete(PipelineRun).where(PipelineRun.topic_id.in_(topic_ids)))
+        session.execute(delete(TopicRepository).where(TopicRepository.topic_id.in_(topic_ids)))
+        repository_ids = select(Repository.id).where(
+            Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%")
+        )
+        session.execute(
+            delete(RepositoryContent).where(RepositoryContent.repository_id.in_(repository_ids))
+        )
+        session.execute(delete(RepoSnapshot).where(RepoSnapshot.repository_id.in_(repository_ids)))
+        session.execute(delete(Topic).where(Topic.id.in_(topic_ids)))
+
+    session.execute(
+        delete(Repository).where(Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%"))
+    )
+
+    ids = list(actor_ids.values())
+    if ids:
+        session.execute(delete(UserRole).where(UserRole.user_id.in_(ids)))
+        session.execute(delete(User).where(User.id.in_(ids)))
+    session.commit()
+
+
+def _source(session: Session) -> DataSource:
+    """Return the single GitHub source, creating it on first use."""
+    existing = session.scalar(select(DataSource).order_by(DataSource.id).limit(1))
+    if existing is not None:
+        return existing
+    source = DataSource(
+        name="github",
+        source_type="github",
+        base_url="https://github.example.com",
+        enabled=True,
+        rate_limit_per_minute=30,
+    )
+    session.add(source)
+    session.flush()
+    return source
+
+
+def _pipeline_run(
+    session: Session,
+    *,
+    topic_id: int,
+    run_type: str,
+    status: str,
+    started_at: datetime,
+    duration_ms: int,
+) -> PipelineRun:
+    """Write one pipeline run with a measured duration."""
+    row = PipelineRun(
+        topic_id=topic_id,
+        run_type=run_type,
+        status=status,
+        attempt=1,
+        started_at=started_at,
+        finished_at=started_at + timedelta(milliseconds=duration_ms),
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -> dict[str, Any]:
+    """Create the topics, repositories, runs, reports, and traces the dashboard reports on."""
+    source = _source(session)
+    config_id = int(load_or_create_config(session, get_settings()).id)
+    topic = Topic(
+        name=TOPIC_NAME,
+        min_stars=0,
+        window_days=7,
+        max_candidates=10,
+        publish_mode="AUTO_WITH_DELAY",
+        enabled=True,
+        created_by=actor_ids["admin"],
+    )
+    session.add(topic)
+    session.flush()
+    topic_id = int(topic.id)
+
+    repositories: list[int] = []
+    for rank, (slug, full_name, stars, forks) in enumerate(
+        (
+            ("alpha", "t15/alpha", ALPHA_STARS, ALPHA_FORKS),
+            ("beta", "t15/beta", BETA_STARS, BETA_FORKS),
+        ),
+        start=1,
+    ):
+        repository = Repository(
+            source_id=source.id,
+            provider_repo_id=f"{PROVIDER_PREFIX}{slug}",
+            full_name=full_name,
+            html_url=f"https://example.com/{full_name}",
+            description=f"T15 smoke repository {full_name}",
+            language="Python",
+            license="MIT",
+            topics_json=["ai", "llm"],
+            stars=stars,
+            forks=forks,
+            first_seen_at=anchor,
+            last_seen_at=anchor,
+        )
+        session.add(repository)
+        session.flush()
+        repositories.append(int(repository.id))
+        session.add(
+            TopicRepository(
+                topic_id=topic_id,
+                repository_id=repository.id,
+                score=Decimal("1"),
+                rank=rank,
+                selected_for_agent=True,
+            )
+        )
+        session.add_all(
+            [
+                RepoSnapshot(
+                    repository_id=repository.id,
+                    snapshot_date=(anchor - FIRST_SNAPSHOT).date(),
+                    stars=stars - 40,
+                    forks=forks - 2,
+                ),
+                RepoSnapshot(
+                    repository_id=repository.id,
+                    snapshot_date=(anchor - LAST_SNAPSHOT).date(),
+                    stars=stars,
+                    forks=forks,
+                ),
+            ]
+        )
+        session.add(
+            RepositoryContent(
+                repository_id=repository.id,
+                content_type="readme",
+                source_url=f"https://example.com/{full_name}/readme",
+                content=f"# {full_name}\nA cached readme for the T15 smoke world.\n",
+                content_hash=f"{PROVIDER_PREFIX}{slug}",
+                fetched_at=anchor,
+            )
+        )
+
+    # A published report from an earlier week, so `search_prior_reports` has a baseline and the
+    # 30/90-day windows have something the 7-day window must not show.
+    prior_pipeline = _pipeline_run(
+        session,
+        topic_id=topic_id,
+        run_type="agent",
+        status="succeeded",
+        started_at=anchor - PRIOR_REPORT,
+        duration_ms=20_000,
+    )
+    prior_agent = AgentRun(
+        pipeline_run_id=prior_pipeline.id,
+        topic_id=topic_id,
+        agent_config_id=config_id,
+        status="completed",
+        window_start=anchor - PRIOR_REPORT,
+        window_end=anchor - PRIOR_REPORT,
+        prompt_tokens=500,
+        completion_tokens=100,
+        started_at=anchor - PRIOR_REPORT,
+        finished_at=anchor - PRIOR_REPORT + timedelta(seconds=20),
+    )
+    session.add(prior_agent)
+    session.flush()
+    session.add(
+        Report(
+            agent_run_id=prior_agent.id,
+            topic_id=topic_id,
+            owner_id=actor_ids["admin"],
+            title=f"{REPORT_TITLE_PREFIX} prior",
+            current_version=1,
+            content_markdown=f"# {REPORT_TITLE_PREFIX} prior\n",
+            status="published",
+            visibility="INTERNAL",
+            sensitivity="INTERNAL",
+            publish_mode="AUTO_WITH_DELAY",
+            generated_at=anchor - PRIOR_REPORT,
+            published_at=anchor - PRIOR_REPORT,
+        )
+    )
+
+    # The rows inside the 7-day window.
+    for index, (run_type, status, duration_ms) in enumerate(PIPELINE_ROWS):
+        _pipeline_run(
+            session,
+            topic_id=topic_id,
+            run_type=run_type,
+            status=status,
+            started_at=anchor - RECENT - timedelta(hours=index),
+            duration_ms=duration_ms,
+        )
+
+    agent_runs: list[int] = []
+    for index, row_spec in enumerate(AGENT_ROWS):
+        status, mode, error, prompt, completion, cost, duration_ms = row_spec
+        started = anchor - RECENT - timedelta(hours=index + 4)
+        pipeline = _pipeline_run(
+            session,
+            topic_id=topic_id,
+            run_type="agent",
+            status="succeeded" if status != "failed" else "failed",
+            started_at=started,
+            duration_ms=duration_ms,
+        )
+        run = AgentRun(
+            pipeline_run_id=pipeline.id,
+            topic_id=topic_id,
+            agent_config_id=config_id,
+            status=status,
+            window_start=started - timedelta(days=7),
+            window_end=started,
+            loop_count=4,
+            tool_call_count=3,
+            model_call_count=5,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            estimated_cost=Decimal(cost),
+            publish_mode=mode,
+            started_at=started,
+            finished_at=started + timedelta(milliseconds=duration_ms),
+            error_code=error,
+        )
+        session.add(run)
+        session.flush()
+        agent_runs.append(int(run.id))
+
+    # A third of the reports are parked for a human, which is the rate ARCHITECTURE §12 asks for.
+    for index, (report_status, run_status) in enumerate(
+        (("published", "completed"), ("pending_review", "needs_review"))
+    ):
+        run_id = agent_runs[index]
+        generated = anchor - RECENT - timedelta(hours=index + 4)
+        session.add(
+            Report(
+                agent_run_id=run_id,
+                topic_id=topic_id,
+                owner_id=actor_ids["editor"],
+                title=f"{REPORT_TITLE_PREFIX} {run_status}",
+                current_version=1,
+                content_markdown=f"# {REPORT_TITLE_PREFIX} {run_status}\n",
+                status=report_status,
+                visibility="TEAM",
+                sensitivity="INTERNAL",
+                publish_mode="MANUAL" if index == 1 else "AUTO_WITH_DELAY",
+                generated_at=generated,
+                published_at=generated if report_status == "published" else None,
+            )
+        )
+
+    # The failing run's trajectory, including one tool call with no step to hang off.
+    failing = agent_runs[2]
+    steps: list[AgentStep] = []
+    for index, (step_type, status, summary, latency_ms) in enumerate(
+        (
+            ("plan", "succeeded", "规划本轮研究问题", 5_000),
+            ("tool", "succeeded", "调用 query_repo_metrics 取指标", 300),
+            ("tool", "failed", "调用 get_repository_content 被拒绝", 800),
+            ("verify", "succeeded", "证据不足，判定为失败收口", 2_000),
+        ),
+        start=1,
+    ):
+        step = AgentStep(
+            agent_run_id=failing,
+            step_index=index,
+            step_type=step_type,
+            status=status,
+            summary=summary,
+            latency_ms=latency_ms,
+            created_at=anchor - RECENT - timedelta(hours=6, minutes=10 - index),
+        )
+        session.add(step)
+        session.flush()
+        steps.append(step)
+
+    session.add_all(
+        [
+            ToolCall(
+                agent_run_id=failing,
+                agent_step_id=steps[1].id,
+                tool_name="query_repo_metrics",
+                arguments_json={"topic_id": topic_id, "field": "stars"},
+                result_summary="返回 2 个仓库的指标序列",
+                status="success",
+                latency_ms=300,
+                created_at=anchor - RECENT - timedelta(hours=6, minutes=8),
+            ),
+            ToolCall(
+                agent_run_id=failing,
+                agent_step_id=steps[2].id,
+                tool_name=DENIED_TOOL,
+                arguments_json={"topic_id": topic_id, "repository_id": repositories[0]},
+                # Deliberately carries a credential-shaped string: both egress paths must strip it.
+                result_summary=f"读取被拒绝，调试令牌 {LEAKED_SECRET}",
+                status="denied",
+                error_code=DENIED_ERROR,
+                latency_ms=800,
+                created_at=anchor - RECENT - timedelta(hours=6, minutes=7),
+            ),
+            ToolCall(
+                agent_run_id=failing,
+                # No step: the foreign key degrades to null, and the call must still be reported.
+                agent_step_id=None,
+                tool_name="search_prior_reports",
+                arguments_json={"topic_id": topic_id},
+                result_summary="上游超时",
+                status="failed",
+                error_code=UNLINKED_TOOL_ERROR,
+                latency_ms=200,
+                created_at=anchor - RECENT - timedelta(hours=6, minutes=6),
+            ),
+        ]
+    )
+
+    # A block older than every window the dashboard offers, so "the window filters" is a real
+    # claim rather than a query that happens to select everything.
+    stale_pipeline = _pipeline_run(
+        session,
+        topic_id=topic_id,
+        run_type="agent",
+        status="failed",
+        started_at=anchor - STALE,
+        duration_ms=5_000,
+    )
+    stale_agent = AgentRun(
+        pipeline_run_id=stale_pipeline.id,
+        topic_id=topic_id,
+        agent_config_id=config_id,
+        status="failed",
+        window_start=anchor - STALE,
+        window_end=anchor - STALE,
+        error_code="AGENT_STALE_TIMEOUT",
+        started_at=anchor - STALE,
+        finished_at=anchor - STALE + timedelta(seconds=5),
+    )
+    session.add(stale_agent)
+    session.flush()
+    session.add(
+        Report(
+            agent_run_id=stale_agent.id,
+            topic_id=topic_id,
+            owner_id=actor_ids["admin"],
+            title=f"{REPORT_TITLE_PREFIX} stale",
+            current_version=1,
+            content_markdown=f"# {REPORT_TITLE_PREFIX} stale\n",
+            status="failed",
+            visibility="TEAM",
+            sensitivity="INTERNAL",
+            publish_mode="AUTO_WITH_DELAY",
+            generated_at=anchor - STALE,
+        )
+    )
+
+    session.commit()
+    return {"topic_id": topic_id, "agent_runs": agent_runs, "failing_run_id": failing}
+
+
+def _seed_evaluation(session: Session, anchor: datetime, topic_id: int) -> dict[str, Any]:
+    """Import one small dataset and run one real sweep over it.
+
+    The dashboard reads the newest sweep through `compare_latest`, so the fixture has to be a
+    sweep the real runner produced. Hand-writing `eval_runs` rows would test the page against a
+    shape no producer emits.
+    """
+    start = anchor - FIRST_SNAPSHOT
+    end = anchor - timedelta(days=3)
+    spec = parse_dataset(
+        {
+            "schema_version": 1,
+            "name": DATASET_NAME,
+            "version": DATASET_VERSION,
+            "description": "T15 观测样本：一个用例，用于让看板的评测段有真实数据可读。",
+            "cases": [
+                {
+                    "case_key": "observe-happy-path",
+                    "topic": TOPIC_NAME,
+                    "window": {"start": start.isoformat(), "end": end.isoformat()},
+                    "tags": ["t15"],
+                    "reference": {
+                        "summary": "本期候选仓库整体净增 stars，重点仓库为 t15/alpha。",
+                        "required_sections": [
+                            "summary",
+                            "trend",
+                            "highlights",
+                            "risks",
+                            "recommendation",
+                            "appendix",
+                        ],
+                        "facts": [
+                            {"repo": "t15/alpha", "field": "stars", "value": ALPHA_STARS},
+                            {"repo": "t15/alpha", "field": "forks", "value": ALPHA_FORKS},
+                        ],
+                    },
+                    "rubric": {
+                        "min_citation_coverage": 0.5,
+                        "min_factual_consistency": 0.5,
+                        "min_task_completion": 0.5,
+                    },
+                    "enabled": True,
+                }
+            ],
+        }
+    )
+    imported = import_dataset(session, spec)
+    report = run_evaluation(
+        session,
+        dataset_id=imported.dataset_id,
+        target_types=[BASELINE_TARGET, AGENT_TARGET],
+        now=anchor,
+    )
+    return {
+        "dataset_id": imported.dataset_id,
+        "evaluation_passed": report.passed,
+        "evaluation_targets": [item.target_type for item in report.targets],
+        "evaluation_case_count": report.case_count,
+        "evaluation_target_rows": {
+            item.target_type: {
+                "status": item.status,
+                "scored_case_count": item.scored_case_count,
+                "citation_coverage": _as_text(item.metrics.get("citation_coverage")),
+                "factual_consistency": _as_text(item.metrics.get("factual_consistency")),
+                "task_completion": _as_text(item.metrics.get("task_completion")),
+                "gate_failures": list(item.gate_failures),
+            }
+            for item in report.targets
+        },
+    }
+
+
+# --------------------------------------------------------------------------------------
+# Criterion checks
+# --------------------------------------------------------------------------------------
+
+
+def _inside(value: datetime | None, start: datetime, end: datetime) -> bool:
+    """Return whether a timestamp falls in the half-open window both sides use."""
+    return value is not None and start <= value < end
+
+
+def _rate(numerator: int, denominator: int) -> str | None:
+    """Compute a ratio the documented way: four places, half-up, `None` when unmeasured."""
+    if denominator <= 0:
+        return None
+    quantized = (Decimal(numerator) / Decimal(denominator)).quantize(
+        Decimal("0.0001"), rounding=ROUND_HALF_UP
+    )
+    return str(quantized)
+
+
+def _as_text(value: Decimal | None) -> str | None:
+    """Render a ratio for comparison against the JSON payload, without inventing a number."""
+    return None if value is None else str(value)
+
+
+def _percentile(values: list[int], percent: int) -> int | None:
+    """Compute a nearest-rank percentile the documented way."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, math.ceil(percent / 100 * len(ordered)))
+    return ordered[rank - 1]
+
+
+def _millis(started: datetime | None, finished: datetime | None) -> int | None:
+    """Return a whole-millisecond duration, or `None` while a row is unfinished."""
+    if started is None or finished is None:
+        return None
+    return int((finished - started).total_seconds() * 1000)
+
+
+def _expected_aggregate(session: Session, anchor: datetime, days: int) -> dict[str, Any]:
+    """Recompute the headline numbers straight from the rows, as a second implementation.
+
+    The point is not to restate `collect_metrics`; it is to derive the same quantities a second
+    way - direct row reads plus the documented formulas - so a defect in the aggregation shows up
+    as a disagreement rather than as a matching wrong answer. The clock is passed in rather than
+    read here, so the recomputation and the aggregation are evaluated against one instant.
+    """
+    start = anchor - timedelta(days=days)
+    end = anchor
+
+    pipeline_rows = [
+        row for row in session.scalars(select(PipelineRun)) if _inside(row.started_at, start, end)
+    ]
+    pipeline_outcome = [row for row in pipeline_rows if row.status in PIPELINE_OUTCOME_STATUSES]
+    pipeline_statuses = _status_counts(row.status for row in pipeline_rows)
+    pipeline_durations = [
+        value
+        for value in (_millis(row.started_at, row.finished_at) for row in pipeline_rows)
+        if value is not None
+    ]
+
+    agent_rows = [
+        row for row in session.scalars(select(AgentRun)) if _inside(row.started_at, start, end)
+    ]
+    agent_outcome = [row for row in agent_rows if row.status in AGENT_OUTCOME_STATUSES]
+    agent_statuses = _status_counts(row.status for row in agent_rows)
+    agent_durations = [
+        value
+        for value in (_millis(row.started_at, row.finished_at) for row in agent_rows)
+        if value is not None
+    ]
+    prompt_tokens = sum(row.prompt_tokens for row in agent_rows)
+    completion_tokens = sum(row.completion_tokens for row in agent_rows)
+    total_tokens = prompt_tokens + completion_tokens
+
+    tool_rows = [
+        row for row in session.scalars(select(ToolCall)) if _inside(row.created_at, start, end)
+    ]
+    tool_statuses = _status_counts(row.status for row in tool_rows)
+
+    report_rows = [
+        row for row in session.scalars(select(Report)) if _inside(row.generated_at, start, end)
+    ]
+    report_statuses = _status_counts(row.status for row in report_rows)
+
+    return {
+        "pipeline_total": len(pipeline_rows),
+        "pipeline_by_status": pipeline_statuses,
+        "pipeline_success_rate": _rate(
+            sum(1 for row in pipeline_outcome if row.status in PIPELINE_SUCCEEDED_STATUSES),
+            len(pipeline_outcome),
+        ),
+        "pipeline_p50_ms": _percentile(pipeline_durations, 50),
+        "pipeline_p95_ms": _percentile(pipeline_durations, 95),
+        "agent_total": len(agent_rows),
+        "agent_by_status": agent_statuses,
+        "agent_prompt_tokens": prompt_tokens,
+        "agent_completion_tokens": completion_tokens,
+        "agent_total_tokens": total_tokens,
+        "agent_cost": str(sum((row.estimated_cost for row in agent_rows), Decimal("0"))),
+        "agent_success_rate": _rate(
+            sum(1 for row in agent_outcome if row.status in AGENT_SUCCEEDED_STATUSES),
+            len(agent_outcome),
+        ),
+        "agent_failure_reasons": _status_counts(
+            row.error_code for row in agent_rows if row.error_code is not None
+        ),
+        "agent_p50_ms": _percentile(agent_durations, 50),
+        "agent_p95_ms": _percentile(agent_durations, 95),
+        "tool_total": len(tool_rows),
+        "tool_by_status": tool_statuses,
+        "tool_success_rate": _rate(
+            sum(1 for row in tool_rows if row.status in TOOL_SUCCEEDED_STATUSES), len(tool_rows)
+        ),
+        "report_total": len(report_rows),
+        "report_by_status": report_statuses,
+        "report_manual_block_rate": _rate(
+            report_statuses.get(MANUAL_BLOCK_STATUS, 0), len(report_rows)
+        ),
+    }
+
+
+def _status_counts(values: Iterable[str]) -> dict[str, int]:
+    """Count rows per status, sorted, so the two implementations compare equal."""
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _window_checks(session: Session, anchor: datetime, ahead_anchor: datetime) -> dict[str, Any]:
+    """Criteria 1, 3, and 4: the numbers, the windows, and the absent-versus-zero rule."""
+    metrics = {
+        days: collect_metrics(session, now=anchor, window_days=days) for days in (1, 7, 30, 90)
+    }
+    expected = {days: _expected_aggregate(session, anchor, days) for days in (1, 7, 30, 90)}
+    ahead = collect_metrics(session, now=ahead_anchor, window_days=1)
+    week = metrics[7]
+    day = metrics[1]
+    independent = expected[7]
+    # Every headline number the first two criteria claim to show, checked against the second
+    # implementation. A `false` here is the whole point of the exercise.
+    agree = {
+        f"matches_{name}": actual == independent[name]
+        for name, actual in (
+            ("pipeline_total", week.pipeline.total),
+            ("pipeline_by_status", week.pipeline.by_status),
+            ("pipeline_success_rate", _as_text(week.pipeline.success_rate)),
+            ("pipeline_p50_ms", week.pipeline.latency.p50_ms),
+            ("pipeline_p95_ms", week.pipeline.latency.p95_ms),
+            ("agent_total", week.agent.total),
+            ("agent_by_status", week.agent.by_status),
+            ("agent_prompt_tokens", week.agent.prompt_tokens),
+            ("agent_completion_tokens", week.agent.completion_tokens),
+            ("agent_total_tokens", week.agent.total_tokens),
+            ("agent_cost", str(week.agent.estimated_cost)),
+            ("agent_success_rate", _as_text(week.agent.success_rate)),
+            ("agent_failure_reasons", week.agent.failure_reasons),
+            ("agent_p50_ms", week.agent.latency.p50_ms),
+            ("agent_p95_ms", week.agent.latency.p95_ms),
+            ("tool_total", week.tools.total),
+            ("tool_by_status", week.tools.by_status),
+            ("tool_success_rate", _as_text(week.tools.success_rate)),
+            ("report_total", week.reports.total),
+            ("report_by_status", week.reports.by_status),
+            ("report_manual_block_rate", _as_text(week.reports.manual_block_rate)),
+        )
+    }
+    return {
+        "window_span_days": (week.window.end - week.window.start) == timedelta(days=7),
+        "window_is_half_open": week.window.start < week.window.end,
+        "window_clamped": collect_metrics(session, now=anchor, window_days=999).window.days == 90,
+        "all_headline_numbers_agree": all(agree.values()),
+        **agree,
+        **{key: value for key, value in independent.items()},
+        # 任务
+        "pipeline_by_run_type_7d": week.pipeline.by_run_type,
+        # 工具明细
+        "tool_names_7d": [item.tool_name for item in week.tools.by_tool],
+        "denied_tool_totals_7d": {item.tool_name: item.total for item in week.tools.by_tool},
+        # 评测（不受窗口影响）
+        "evaluation_available": week.evaluations.available,
+        "evaluation_dataset": week.evaluations.dataset_name,
+        "evaluation_version": week.evaluations.dataset_version,
+        "evaluation_passed": week.evaluations.passed,
+        "evaluation_targets": [item.target_type for item in week.evaluations.targets],
+        "evaluation_same_in_1d_window": day.evaluations.dataset_id == week.evaluations.dataset_id,
+        "evaluation_matches_compare_latest": week.evaluations.passed
+        == compare_latest(session, dataset_id=week.evaluations.dataset_id).passed,
+        # 窗口把旧数据挡在外面：三个数据块分别落在 7 / 30 / 90 天之内
+        "agent_total_7d": metrics[7].agent.total,
+        "agent_total_30d": metrics[30].agent.total,
+        "agent_total_90d": metrics[90].agent.total,
+        "pipeline_total_7d": metrics[7].pipeline.total,
+        "pipeline_total_30d": metrics[30].pipeline.total,
+        "pipeline_total_90d": metrics[90].pipeline.total,
+        "report_total_7d": metrics[7].reports.total,
+        "report_total_30d": metrics[30].reports.total,
+        "report_total_90d": metrics[90].reports.total,
+        "windows_are_strictly_widening": metrics[1].agent.total
+        < metrics[7].agent.total
+        <= metrics[30].agent.total
+        < metrics[90].agent.total,
+        "expected_windows_widen": expected[1]["agent_total"]
+        < expected[7]["agent_total"]
+        <= expected[30]["agent_total"]
+        < expected[90]["agent_total"],
+        # 未行使 ≠ 0。这一条需要一个真正空的窗口，而任何结束于此刻的窗口都做不到：评测吊具自己
+        # 就会在读取时刻写下运行行。唯一保证为空的窗口是尚未发生的那个，于是把探针放在读取时钟
+        # 之后两天——它同时也就是新部署上操作者看到的"什么都还没跑"的窗口形状。
+        "empty_window_agent_total": ahead.agent.total,
+        "empty_window_agent_success_rate": _as_text(ahead.agent.success_rate),
+        "empty_window_agent_tokens_per_run": _as_text(ahead.agent.tokens_per_run),
+        "empty_window_pipeline_success_rate": _as_text(ahead.pipeline.success_rate),
+        "empty_window_tool_success_rate": _as_text(ahead.tools.success_rate),
+        "empty_window_report_block_rate": _as_text(ahead.reports.manual_block_rate),
+        "empty_window_expected_is_zero": all(
+            value == 0
+            for key, value in _expected_aggregate(session, ahead_anchor, 1).items()
+            if isinstance(value, int)
+        ),
+        "empty_window_rates_are_null": ahead.agent.success_rate is None
+        and ahead.pipeline.success_rate is None
+        and ahead.tools.success_rate is None
+        and ahead.reports.manual_block_rate is None,
+        "empty_window_p50_is_none": ahead.pipeline.latency.p50_ms is None,
+        "empty_window_json_keeps_null": ahead.to_dict()["agent"]["success_rate"] is None,
+        "empty_window_dash_differs_from_zero": ahead.to_dict()["agent"]["success_rate"] != "0.0000",
+    }
+
+
+def _trace_checks(session: Session, failing_run_id: int) -> dict[str, Any]:
+    """Criterion 5: a failed run reaches the exact tool call that failed."""
+    trace = get_agent_run_trace(session, run_id=failing_run_id)
+    if trace is None:
+        raise RuntimeError("the seeded failing run has no trace")
+    denied = next(
+        (call for item in trace.steps for call in item.tool_calls if call.status == "denied"),
+        None,
+    )
+    return {
+        "trace_step_count": len(trace.steps),
+        "trace_step_types": [item.step.step_type for item in trace.steps],
+        "trace_step_indexes": [item.step.step_index for item in trace.steps],
+        "trace_tool_call_total": sum(len(item.tool_calls) for item in trace.steps),
+        "trace_denied_tool": None if denied is None else denied.tool_name,
+        "trace_denied_error": None if denied is None else denied.error_code,
+        "trace_unlinked_count": len(trace.unlinked_tool_calls),
+        "trace_unlinked_tool": (
+            trace.unlinked_tool_calls[0].tool_name if trace.unlinked_tool_calls else None
+        ),
+        "trace_topic_name": trace.topic_name,
+        "trace_report_id": trace.report_id,
+        "trace_missing_run_is_none": get_agent_run_trace(session, run_id=987_654_321) is None,
+    }
+
+
+def _ledger_checks(session: Session, failing_run_id: int) -> dict[str, Any]:
+    """Criterion 1 for the run ledger: the list is newest-first, filtered, and paged."""
+    first_page = list_agent_runs(session, page=1, page_size=5)
+    second_page = list_agent_runs(session, page=2, page_size=5)
+    by_status = list_agent_runs(session, status="failed", page=1, page_size=50)
+    clamped = list_agent_runs(session, page=0, page_size=99_999)
+    return {
+        "ledger_total": first_page.total,
+        "ledger_page_size": first_page.page_size,
+        "ledger_first_ids": [int(run.id) for run in first_page.items],
+        "ledger_newest_first": [int(run.id) for run in first_page.items]
+        == sorted((int(run.id) for run in first_page.items), reverse=True),
+        "ledger_pages_disjoint": not (
+            {int(run.id) for run in first_page.items} & {int(run.id) for run in second_page.items}
+        ),
+        "ledger_failed_only": sorted({run.status for run in by_status.items}),
+        "ledger_clamped_page": clamped.page,
+        "ledger_clamped_page_size": clamped.page_size,
+        "ledger_contains_failing_run": failing_run_id in {int(run.id) for run in by_status.items},
+    }
+
+
+def _login(client: TestClient, suffix: str) -> dict[str, str]:
+    """Sign one smoke user in through the JSON API and return its bearer header."""
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": f"{ACTOR_PREFIX}{suffix}__", "password": SMOKE_PASSWORD},
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"API login for {suffix} failed: {response.status_code} {response.text}")
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def _web_login(client: TestClient, suffix: str) -> TestClient:
+    """Sign one smoke user into the browser UI and keep the session cookie on the client."""
+    client.get("/ui/login")
+    token = client.cookies.get("osia_csrf", "")
+    if not token:
+        raise RuntimeError("the login page did not hand out a CSRF cookie")
+    response = client.post(
+        "/ui/login",
+        data={
+            "username": f"{ACTOR_PREFIX}{suffix}__",
+            "password": SMOKE_PASSWORD,
+            "next": "/ui/reports",
+            "csrf_token": token,
+        },
+        follow_redirects=False,
+    )
+    if response.status_code != 303:
+        raise RuntimeError(f"UI login for {suffix} failed: {response.status_code} {response.text}")
+    if "osia_session" not in client.cookies:
+        raise RuntimeError(f"UI login for {suffix} set no session cookie")
+    return client
+
+
+def _api_checks(
+    client: TestClient,
+    admin: dict[str, str],
+    failing_run_id: int,
+    observed: dict[str, Any],
+) -> dict[str, Any]:
+    """Criteria 1-4 and 6 over HTTP, cross-checked against the direct aggregation.
+
+    The endpoint and the aggregation are two entry points to one service, so every headline
+    number has to come back identical. A disagreement here means the transport is reshaping the
+    payload rather than forwarding it.
+    """
+    overview = client.get(METRICS_API, params={"window_days": 7}, headers=admin)
+    body = overview.json()
+    too_large = client.get(METRICS_API, params={"window_days": 999}, headers=admin)
+    too_small = client.get(METRICS_API, params={"window_days": 0}, headers=admin)
+    runs = client.get(AGENT_API, headers=admin)
+    trace = client.get(f"{AGENT_API}/{failing_run_id}/steps", headers=admin)
+    trace_body = trace.json()
+    missing = client.get(f"{AGENT_API}/987654321", headers=admin)
+    reversed_path = client.get(f"{AGENT_API}/987654321/steps", headers=admin)
+    viewer = _login(client, "viewer")
+    agree = {
+        "api_agrees_pipeline_total": body["pipeline"]["total"] == observed["pipeline_total"],
+        "api_agrees_agent_total": body["agent"]["total"] == observed["agent_total"],
+        "api_agrees_agent_tokens": body["agent"]["total_tokens"] == observed["agent_total_tokens"],
+        "api_agrees_agent_success_rate": body["agent"]["success_rate"]
+        == observed["agent_success_rate"],
+        "api_agrees_pipeline_success_rate": body["pipeline"]["success_rate"]
+        == observed["pipeline_success_rate"],
+        "api_agrees_tool_success_rate": body["tools"]["success_rate"]
+        == observed["tool_success_rate"],
+        "api_agrees_report_block_rate": body["reports"]["manual_block_rate"]
+        == observed["report_manual_block_rate"],
+        "api_agrees_agent_p95": body["agent"]["latency"]["p95_ms"] == observed["agent_p95_ms"],
+    }
+    return {
+        "api_overview_status": overview.status_code,
+        "api_overview_sections": sorted(body),
+        "api_overview_window_days": body["window"]["days"],
+        "api_overview_pipeline_total": body["pipeline"]["total"],
+        "api_overview_agent_total_tokens": body["agent"]["total_tokens"],
+        "api_overview_agent_success_rate": body["agent"]["success_rate"],
+        "api_overview_report_block_rate": body["reports"]["manual_block_rate"],
+        "api_overview_tool_total": body["tools"]["total"],
+        "api_overview_tool_success_rate": body["tools"]["success_rate"],
+        "api_overview_evaluation_dataset": (body["evaluations"]["dataset"] or {}).get("name"),
+        "api_overview_evaluation_passed": body["evaluations"]["passed"],
+        **agree,
+        "api_all_agree_with_aggregate": all(agree.values()),
+        # Out-of-range windows are refused rather than clamped, matching `page_size`. The clamp
+        # itself is asserted against the aggregation directly, in `_window_checks`.
+        "api_too_large_status": too_large.status_code,
+        "api_too_small_status": too_small.status_code,
+        "api_runs_status": runs.status_code,
+        "api_runs_total": runs.json()["total"],
+        "api_runs_include_failing": failing_run_id in {item["id"] for item in runs.json()["items"]},
+        "api_trace_status": trace.status_code,
+        "api_trace_step_count": len(trace_body["steps"]),
+        "api_trace_unlinked": len(trace_body["unlinked_tool_calls"]),
+        "api_trace_denied_error": next(
+            call["error_code"]
+            for step in trace_body["steps"]
+            for call in step["tool_calls"]
+            if call["status"] == "denied"
+        ),
+        "api_trace_redacts_secret": LEAKED_SECRET not in trace.text,
+        "api_trace_keeps_mask": "[REDACTED]" in trace.text,
+        "api_missing_run_status": missing.status_code,
+        "api_missing_run_code": missing.json().get("code"),
+        "api_reversed_path_status": reversed_path.status_code,
+        "api_viewer_overview_status": client.get(METRICS_API, headers=viewer).status_code,
+        "api_viewer_runs_status": client.get(AGENT_API, headers=viewer).status_code,
+        "api_anonymous_status": client.get(METRICS_API).status_code,
+    }
+
+
+def _percent_text(value: str | None) -> str:
+    """Render a ratio exactly the way the template does, so the page can be searched for it."""
+    return "—" if value is None else f"{float(value) * 100:.1f}%"
+
+
+def _ui_checks(
+    client: TestClient,
+    failing_run_id: int,
+    observed: dict[str, Any],
+    denied_error: str,
+    ahead_anchor: datetime,
+) -> dict[str, Any]:
+    """Criteria 1-7 through the rendered pages, including the role guard and the nav entry."""
+    _web_login(client, "admin")
+    week = client.get(DASHBOARD, params={"window_days": 7})
+    month = client.get(DASHBOARD, params={"window_days": 30})
+    day = client.get(DASHBOARD, params={"window_days": 1})
+    # The page reads its clock through a dependency, so the empty window can be rendered by
+    # handing it the same future instant the aggregation probe used. Without that the page could
+    # only ever be observed with data in it, and the dash would go unchecked.
+    client.app.dependency_overrides[utc_now] = lambda: ahead_anchor
+    try:
+        empty = client.get(DASHBOARD, params={"window_days": 1})
+    finally:
+        client.app.dependency_overrides.clear()
+    trace = client.get(f"{DASHBOARD}/runs/{failing_run_id}")
+    missing = client.get(f"{DASHBOARD}/runs/987654321")
+    html = week.text
+    text = trace.text
+    return {
+        "ui_dashboard_status": week.status_code,
+        "ui_dashboard_is_html": html.lstrip().startswith("<!DOCTYPE html>"),
+        "ui_dashboard_names_window": "7 天" in html,
+        "ui_dashboard_shows_pipeline_total": "窗口内任务" in html,
+        # The page is searched for the numbers the aggregation produced, not for constants typed
+        # into this script: that way the page has to agree with the service, not with the fixture.
+        "ui_dashboard_shows_tokens": str(observed["agent_total_tokens"]) in html,
+        "ui_dashboard_shows_success_rate": _percent_text(observed["agent_success_rate"]) in html,
+        "ui_dashboard_shows_block_rate": _percent_text(observed["report_manual_block_rate"])
+        in html,
+        "ui_dashboard_shows_p50": f"{observed['agent_p50_ms']} ms" in html,
+        "ui_dashboard_shows_pipeline_total_value": str(observed["pipeline_total"]) in html,
+        "ui_dashboard_shows_evaluation": DATASET_NAME in html,
+        "ui_dashboard_window_switcher": html.count("/ui/dashboard?window_days=") >= 3,
+        "ui_dashboard_links_runs": f"/ui/dashboard/runs/{failing_run_id}" in html,
+        "ui_month_differs_from_week": month.text != html,
+        "ui_day_page_status": day.status_code,
+        # The empty window must render the dash rather than a zero, which is the whole point of
+        # the absent-versus-zero rule as an operator experiences it.
+        "ui_empty_window_uses_dash": "metric-missing" in empty.text,
+        "ui_empty_window_more_dashes": empty.text.count("metric-missing")
+        > html.count("metric-missing"),
+        "ui_trace_status": trace.status_code,
+        "ui_trace_step_count": text.count("trace-step"),
+        "ui_trace_names_denied_tool": DENIED_TOOL in text,
+        "ui_trace_names_denied_error": denied_error in text,
+        "ui_trace_shows_unlinked_section": "未挂到步骤上的工具调用" in text,
+        "ui_trace_redacts_secret": LEAKED_SECRET not in text,
+        "ui_trace_keeps_mask": "[REDACTED]" in text,
+        "ui_missing_run_status": missing.status_code,
+        "ui_admin_sees_nav": '<a href="/ui/dashboard">运维看板</a>' in html,
+    }
+
+
+def _ui_guard_checks(client: TestClient) -> dict[str, Any]:
+    """Criterion 6 for the UI: a viewer is refused and never sees the navigation entry."""
+    client.cookies.clear()
+    _web_login(client, "viewer")
+    dashboard = client.get(DASHBOARD, params={"window_days": 7})
+    listing = client.get("/ui/reports")
+    return {
+        "ui_viewer_dashboard_status": dashboard.status_code,
+        "ui_viewer_dashboard_explains": "管理员和编辑者" in dashboard.text,
+        "ui_viewer_reports_still_works": listing.status_code,
+        "ui_viewer_nav_hides_dashboard": '<a href="/ui/dashboard">' not in listing.text,
+    }
+
+
+def _editor_checks(client: TestClient) -> dict[str, Any]:
+    """Criterion 6: an EDITOR is allowed, so the guard is role-based rather than admin-only."""
+    client.cookies.clear()
+    _web_login(client, "editor")
+    dashboard = client.get(DASHBOARD, params={"window_days": 7})
+    return {
+        "ui_editor_dashboard_status": dashboard.status_code,
+        "ui_editor_sees_nav": '<a href="/ui/dashboard">运维看板</a>' in dashboard.text,
+    }
+
+
+def run_checks(session: Session, client: TestClient, failing_run_id: int) -> dict[str, Any]:
+    """Drive the real aggregates, endpoints, and pages through the T15 acceptance path.
+
+    The read clock is taken *here*, after every row has been written. Taking it before seeding
+    would let the evaluation harness's own run land on the far side of the half-open upper bound,
+    so the direct aggregates would miss a row the HTTP read - a few hundred milliseconds later -
+    would count, and the two would disagree for a reason that has nothing to do with the code
+    under test.
+    """
+    settings = get_settings()
+    # Deliberately *not* truncated to the second. A floored read clock is not strictly after the
+    # rows the seeding just wrote, so a row written later in the same second would sit on the far
+    # side of the half-open upper bound for the in-process aggregate and on the near side for an
+    # HTTP read a moment later - the two would disagree for a reason unrelated to the code.
+    anchor = utc_now()
+    # Two days, not one: with `window_days=1` the window is `[anchor + 1d, anchor + 2d)`, which
+    # starts a full day after the read clock. A one-day offset would make the window `[anchor,
+    # anchor + 1d)` and thereby include anything the run itself wrote.
+    ahead_anchor = anchor + timedelta(days=2)
+    windows = _window_checks(session, anchor, ahead_anchor)
+    _refresh(session)
+    trace = _trace_checks(session, failing_run_id)
+    _refresh(session)
+    ledger = _ledger_checks(session, failing_run_id)
+    _refresh(session)
+    api = _api_checks(client, _login(client, "admin"), failing_run_id, windows)
+    _refresh(session)
+    ui = _ui_checks(client, failing_run_id, windows, str(trace["trace_denied_error"]), ahead_anchor)
+    _refresh(session)
+    guard = _ui_guard_checks(client)
+    editor = _editor_checks(client)
+    return {
+        "agent_provider": settings.agent_provider,
+        "eval_enabled": settings.eval_enabled,
+        "metrics_roles": ["ADMIN", "EDITOR"],
+        "failing_run_id": failing_run_id,
+        "read_clock": anchor.isoformat(),
+        **windows,
+        **trace,
+        **ledger,
+        **api,
+        **ui,
+        **guard,
+        **editor,
+    }
+
+
+def _parse_args() -> argparse.Namespace:
+    """Parse the optional cleanup mode used by the verification script."""
+    parser = argparse.ArgumentParser(description="Run T15 observability smoke checks")
+    parser.add_argument(
+        "--cleanup-only",
+        action="store_true",
+        help="Only remove T15 topics, datasets, and records and exit",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Run the T15 smoke checks on a real database and print the assertion payload."""
+    args = _parse_args()
+    settings: Settings = get_settings()
+    engine = create_database_engine(settings.database_url)
+    factory = create_session_factory(engine)
+    # Every seeded row is placed at a fixed offset from this instant, so the windows mean the
+    # same thing whenever the smoke is run. It is *not* the read clock; `run_checks` takes that
+    # one after seeding has finished.
+    seed_clock = utc_now().replace(microsecond=0)
+
+    actor_ids: dict[str, int] = {}
+    payload: dict[str, Any] = {}
+    try:
+        with factory() as session:
+            actor_ids = _actor_ids(session)
+            _cleanup(session, actor_ids)
+
+        if args.cleanup_only:
+            print(json.dumps({"cleanup_only": True, "actors": sorted(actor_ids)}, sort_keys=True))
+            return
+
+        with factory() as session:
+            actor_ids = _actor_ids(session)
+            seeded = _seed_world(session, actor_ids, seed_clock)
+            evaluation = _seed_evaluation(session, seed_clock, int(seeded["topic_id"]))
+            with TestClient(create_app(settings)) as client:
+                payload = run_checks(session, client, int(seeded["failing_run_id"]))
+            payload.update(evaluation)
+            payload.update(
+                {
+                    "topic_id": seeded["topic_id"],
+                    "seeded_agent_runs": len(seeded["agent_runs"]),
+                    "counts": {
+                        "pipeline_runs": _count(session, PipelineRun),
+                        "agent_runs": _count(session, AgentRun),
+                        "agent_steps": _count(session, AgentStep),
+                        "tool_calls": _count(session, ToolCall),
+                        "reports": _count(session, Report),
+                        "eval_datasets": _count(session, EvalDataset),
+                        "eval_runs": _count(session, EvalRun),
+                    },
+                }
+            )
+    finally:
+        with factory() as session:
+            _cleanup(session, actor_ids)
+        engine.dispose()
+
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

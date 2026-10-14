@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from open_source_intelligence.evaluation.errors import EvaluationError
 from open_source_intelligence.notifications.errors import PushError
+from open_source_intelligence.observability.errors import ObservabilityError
 from open_source_intelligence.reports.errors import (
     PublishPolicyBlocked,
     ReportGenerationError,
@@ -212,6 +213,23 @@ def add_problem_handlers(app: FastAPI) -> None:
         The base handler covers the whole evaluation hierarchy: `NOT_FOUND` lands on `404`, the
         caller-mistake codes on `400`, a version conflict on `409`, and a disabled subsystem on
         `503`, all from the one mapping table above.
+        """
+        return problem_response(
+            request,
+            status_code=_domain_status(exc.code, status.HTTP_409_CONFLICT),
+            code=exc.code,
+            detail=str(exc),
+        )
+
+    @app.exception_handler(ObservabilityError)
+    async def observability_error_handler(
+        request: Request,
+        exc: ObservabilityError,
+    ) -> JSONResponse:
+        """Render an overview or run-ledger failure with its own stable code.
+
+        The base handler covers the hierarchy: asking for a run that is not there is the
+        `NOT_FOUND` entry of the mapping table above, so it lands on `404` with no special case.
         """
         return problem_response(
             request,

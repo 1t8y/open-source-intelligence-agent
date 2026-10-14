@@ -146,3 +146,28 @@ button.link-button { border: none; background: none; color: var(--accent); paddi
 
 .filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 12px 0; }
 .filters label { margin: 0; }
+
+/* Dashboard: metric tiles, the window switcher, and the run trace. */
+.metric-value { font-size: 17px; font-weight: 600; }
+.metric-label { color: var(--muted); font-size: 12px; }
+/* A metric that was never exercised. Dashed and muted so it reads as "not measured" rather
+   than as a small real number sitting in the same column. */
+.metric-missing { color: var(--muted); font-style: italic; }
+.metric-note { color: var(--muted); font-size: 12px; background: #fafbfc; }
+
+.window-nav { display: flex; gap: 6px; }
+.window-nav a {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  text-decoration: none;
+  font-size: 13px;
+}
+.window-nav a.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.trace { list-style: none; margin: 0; padding: 0; }
+.trace-step { border-left: 2px solid var(--line); padding: 0 0 16px 16px; margin-bottom: 4px; }
+.trace-step:last-child { padding-bottom: 0; }
+.trace-summary { margin: 4px 0 8px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.trace-payload { display: inline-block; max-width: 380px; word-break: break-all; color: var(--muted); }

@@ -38,6 +38,12 @@ REPORT_WRITE_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR)
 #: Roles allowed to read reports at all.
 REPORT_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER)
 
+#: Roles allowed to read the operational overview and the Agent run ledger. These surfaces
+#: expose cross-topic cost, failure reasons and evaluation verdicts, so they sit with the
+#: operator roles rather than with report readers - a viewer sees reports, not the ledger that
+#: produced them.
+METRICS_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR)
+
 TEAM_DATA_SCOPE: Final[str] = "team"
 
 VISIBILITY_PRIVATE: Final[str] = "PRIVATE"
