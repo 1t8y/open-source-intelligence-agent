@@ -6,6 +6,15 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $projectRoot
 
+# The smoke prints its payload as UTF-8 with `ensure_ascii=False`, because a report title is
+# Chinese ('<topic> 开源技术情报周报（<date>）'). A native command's stdout is decoded using the
+# console code page rather than UTF-8, so without this the title arrives as mangled bytes and
+# `ConvertFrom-Json` fails part-way through the string. Both sides are pinned rather than one:
+# `PYTHONIOENCODING` decides what the child *writes*, the console encoding what PowerShell *reads*.
+$previousOutputEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = 'utf-8'
+
 $dockerBin = 'C:\Program Files\Docker\Docker\resources\bin'
 if (-not (Get-Command docker -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $dockerBin)) {
     $env:Path = $dockerBin + ';' + $env:Path
@@ -157,3 +166,5 @@ if ($smoke.verification_rows -lt 3 -or $smoke.review_rows -lt 2) {
 }
 
 Write-Host "T12 verification passed. report=$($smoke.report_id), versions=$($smoke.final_version), audit=$($smoke.audit_actions -join '/')."
+
+[Console]::OutputEncoding = $previousOutputEncoding

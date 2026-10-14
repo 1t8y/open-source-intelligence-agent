@@ -185,6 +185,14 @@ T16 验证命令：
 
 该脚本执行历史回填与端到端演示：在一个 GitHub 形状的 mock transport 上跑真实 `BackfillJob` 走查（分页边界、第 3 页注入 `500` 后中断并只续传第 3、4 页、重放幂等、页预算与源限流预算、并发守卫与过期接管、越界与不可分页源被拒），随后把回填喂出的库交给真实 `run_daily_pipeline` → Agent → 报告生成 → 验证 → 发布策略 → 人工 `approve` → `publish_due_reports` 完整跑通，并由只读会话重新读回校验，同时驱动真实 CLI 子进程的 `list` / `status` 与两处拒绝路径。
 
+> **T11–T16 的容器路径需要在全新数据库上跑。** 这些脚本断言的是**绝对计数**（`runs_before == 0`、`pipeline_total == 8`、`report_total == 2`……），持久卷里残留上一轮的行就会失败（症状如 `expected '8' but got '18'`）。逐条验证前先清库：
+>
+> ```powershell
+> docker compose --env-file .env.example -f infra/docker-compose.yml down -v
+> ```
+>
+> 六个脚本在真实 Compose 五服务 + 真实 MySQL 上均已实跑通过（2026-10-14）。
+
 ## 开发原则
 
 1. 数据采集和指标计算保持确定性，Agent 负责研究决策、证据补齐、验证和综合写作。
