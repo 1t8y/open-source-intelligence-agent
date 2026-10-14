@@ -19,7 +19,8 @@
 users --< user_roles >-- roles
 topics --< topic_repositories >-- repositories --< repo_snapshots
 repositories --< repository_contents（content_type=readme）
-topics --< pipeline_runs（collect/snapshot/rank 为全局运行，topic_id 为 NULL）
+topics --< pipeline_runs（collect/snapshot/rank/backfill 为全局运行，topic_id 为 NULL）
+backfill_jobs（无外键：走查的检查点，每次尝试经 metrics_json.backfill_job_id 挂回作业）
 agent_configs --< agent_runs --< agent_steps --< tool_calls
 pipeline_runs --< agent_runs；topics --< agent_runs
 agent_runs --< report_drafts --< report_sections
@@ -174,7 +175,7 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 |---|---|---|---|
 | `id` | BIGINT UNSIGNED | PK | 运行 ID |
 | `topic_id` | BIGINT UNSIGNED | FK topics.id, NULL | 主题；全局运行（`collect`/`snapshot`）为 `NULL` |
-| `run_type` | VARCHAR(32) | NOT NULL | `collect`、`snapshot`、`rank`、`agent`、`publish` |
+| `run_type` | VARCHAR(32) | NOT NULL | `collect`、`snapshot`、`rank`、`backfill`、`agent`、`publish`、`push` |
 | `status` | VARCHAR(32) | NOT NULL | `queued/running/succeeded/failed/partial` |
 | `started_at` | DATETIME(6) | NULL | 开始时间 |
 | `finished_at` | DATETIME(6) | NULL | 结束时间 |
@@ -185,10 +186,40 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 
 索引：`(topic_id, run_type, status)`、`(started_at)`。
 
-约束：`agent` 和 `publish` 运行必须绑定 `topic_id`；`collect`、`snapshot`、`rank` 可以是全局运行。
+约束：`agent`、`publish` 和 `push` 运行必须绑定 `topic_id`；`collect`、`snapshot`、`rank`、`backfill` 可以是全局运行。
 每次尝试写入独立行，因此一次重试会留下两行同一业务日期的运行记录，便于还原重试轨迹。
+`backfill` 运行的 `metrics_json.backfill_job_id` 把它挂回它所属的 `backfill_jobs` 行。
 
-索引：`(topic_id, run_type, status)`、`(started_at)`。
+### `backfill_jobs`
+
+历史回填作业的**检查点**。续传需要的一切都在这一行的列里，而不在走查的进程里 —— 因为会死掉的正是进程。这张表没有外键：作业先于运行存在，运行通过 `pipeline_runs.metrics_json.backfill_job_id` 反向引用它。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 作业 ID |
+| `provider` | VARCHAR(32) | NOT NULL | `github` / `huggingface`；一次走查只覆盖一个源 |
+| `query_json` | JSON | NULL | 走查的检索参数，取自 adapter 的 `describe_query()` |
+| `status` | VARCHAR(32) | NOT NULL | `pending/running/succeeded/failed/cancelled` |
+| `next_page` | INT | NOT NULL DEFAULT 1 | 下一页要请求的页码，即游标 |
+| `target_pages` | INT | NOT NULL | 页预算，`1..100` |
+| `per_page` | INT | NOT NULL | 每页条目数，`1..100` |
+| `pages_completed` | INT | NOT NULL DEFAULT 0 | 已提交的页数 |
+| `items_collected` | INT | NOT NULL DEFAULT 0 | 已入库的条目数 |
+| `attempt` | INT | NOT NULL DEFAULT 1 | 第几次走查，从 1 起 |
+| `started_at` | DATETIME(6) | NULL | 首次被认领的时刻 |
+| `finished_at` | DATETIME(6) | NULL | 收口时刻 |
+| `heartbeat_at` | DATETIME(6) | NULL | 最后一次提交页的时刻，并发守卫据此判断走查者是否还活着 |
+| `error_code` | VARCHAR(64) | NULL | 标准错误码 |
+| `error_message` | TEXT | NULL | 脱敏后的错误信息 |
+| `created_at` / `updated_at` | DATETIME(6) | NOT NULL | 由 `TimestampMixin` 维护 |
+
+索引：`(provider, status)`、`(created_at)`。
+
+约束：`status` 取五个合法值；`next_page >= 1`；`target_pages` 与 `per_page` 均在 `1..100`；`pages_completed` 与 `items_collected` 非负；`attempt >= 1`；`finished_at` 不早于 `started_at`。
+
+`heartbeat_at` 是独立列而不是复用 `updated_at`：`TimestampMixin.updated_at` 的 Python 侧 `onupdate` 由 SQLAlchemy 在每次 UPDATE 时施加并**覆盖显式赋值**，所以它永远持有墙钟值，任何以它为心跳的守卫都会一直看到"走查者还活着"。一条无法被测试控制的时钟的守卫，是一条没有人会去测的守卫。
+
+`running` 且心跳未超过 `STALE_AFTER = 15` 分钟的作业不可被第二个走查者认领。
 
 ### `agent_configs`
 
@@ -545,7 +576,10 @@ T13 新增。一次投递尝试的记录（不论成败），同时也是重试�
 - `report_sources.report_id` 必须与报告所属主题一致。
 - `audit_logs` 的 `result=denied` 必须保留原始 `request_id`。
 - 用户状态、数据范围、角色代码、审计结果、主题发布模式和 Pipeline 状态由数据库 CHECK 约束限制为文档定义的合法值。
-- Pipeline 运行的 `agent`、`publish` 和 `push` 类型必须绑定主题；`collect`、`snapshot`、`rank` 允许全局运行。
+- Pipeline 运行的 `agent`、`publish` 和 `push` 类型必须绑定主题；`collect`、`snapshot`、`rank`、`backfill` 允许全局运行。
+- `backfill_jobs` 的游标只在页被提交时前进：每页的仓库与该页之后的新游标在同**一事务**中提交（`ingest_items` 刻意不提交，`advance_job` 提交），因此游标动过就一定有对应的行，崩溃窗口是"无害"而不只是"可容忍"。入库幂等落在 `(source_id, provider_repo_id)` 上，所以重放走查不会重复任何一行。
+- `backfill_jobs.per_page` 与 `target_pages` 都被限制在 `1..100`：超出上限的页预算只会买到源不会提供的请求，而把 `next_page` 收在同一量级内也能保证它永远不会指到一个没有任何 provider 会应答的页。
+- `backfill_jobs.heartbeat_at` 的语义是"最后一次提交页的时刻"，并且在**未超过** `STALE_AFTER`（15 分钟）时阻止第二个走查者认领。两个走查者共用一个游标不是重复劳动那么简单：各自都当自己是唯一的，于是同一批页被请求两次却只计数一次，预算花在对方已经走过的页上。
 - 仓库 star/fork、快照 star/fork/open issues、主题 star/window/candidate 阈值、候选 score/rank 和 Pipeline attempt 由数据库 CHECK 约束保证非负或正数范围。
 - `agent_configs.max_tokens` 必须为正数；`agent_runs.prompt_tokens` 与 `completion_tokens` 必须非负。
 - 审计日志、仓库快照和主题候选关系的 `created_at` 由 ORM 使用 UTC 时间自动填充；业务明确需要时可显式覆盖。
@@ -615,3 +649,19 @@ T14 的写入方如下：
 评测层的读侧入口是 `evaluation/dataset.py` 的 `list_datasets()` / `list_cases()` / `resolve_dataset()` 与 `evaluation/runner.py` 的 `list_runs()` / `latest_runs_per_target()`：`api` 层不直接构造 SQL，只把结果序列化为响应模型。
 
 `evaluation/scorers.py` 是**纯只读**模块：它读 `repo_snapshots`、`repository_contents` 与 `reports` 来判断引用能否解析、事实是否一致，但不写任何领域表。
+
+### T16 写入方（数据回填）
+
+| 表 | 写入方 | 说明 |
+|---|---|---|
+| `backfill_jobs` | `backfill/jobs.py:create_job()` 建行；`claim_job()` / `advance_job()` / `finish_job()` / `cancel_job()` 推进 | 作业行**就是检查点**：`next_page` / `pages_completed` / `items_collected` / `attempt` / `heartbeat_at` 全在这张表的列里，进程崩了不丢进度 |
+| `repositories` / `repo_snapshots` | `backfill/service.py:run_backfill()` → T4 的 `collectors/service.ingest_items()` | 复用 T4 的 `upsert_repository`，`(source_id, provider_repo_id)` 幂等；重复回填不新增仓库行 |
+| `pipeline_runs` | `backfill/service.py:run_backfill()`（`run_type=backfill`） | **每次尝试一条运行记录**（第 1 次失败、第 2 次续传成功就是两条），`topic_id` 为 `NULL`（全局类型） |
+| `audit_logs` | `backfill/service.py`（`action=backfill.run`） | 每次尝试一条（`success` / `failed`），`resource_id` 是作业 id |
+| `agent_configs` / `reports` / `push_targets` | 无 | 回填只做采集与入库，不触发研究、合成、发布或推送 |
+
+`run_backfill()` 是回填执行的唯一入口，`backfill/cli.py` 与 `workers/tasks.py:BACKFILL_TASK` 都只是它的调用方。**每页提交一次**：当页仓库（`ingest_items`，不提交）与游标推进（`advance_job`，提交）在**同一事务**里完成，所以崩溃窗口是"无害的" —— 要么整页连游标一起落盘，要么都不落盘，不会出现"仓库进去了但游标没动"（重复抓一页）或"游标动了但仓库没进去"（漏数据）。
+
+`backfill_jobs.heartbeat_at` 是**独立列**而不是复用 `TimestampMixin.updated_at`：SQLAlchemy 2.0.34 的 Python 侧 `onupdate` 会在 UPDATE 时覆盖显式赋给 `updated_at` 的值（INSERT 时不覆盖），用它当心跳钉不住，并发守卫会失效。
+
+回填**没有 HTTP 面**：只有 CLI（`backfill/cli.py` 的 `--action start|resume|status|list`）与 Celery 任务两条触发路径，`api` 层不注册任何回填端点（`INTERFACES.md` §3）。

@@ -1,4 +1,4 @@
-"""Source, topic, repository, snapshot, and pipeline models."""
+"""Source, topic, repository, snapshot, pipeline, and backfill models."""
 
 from __future__ import annotations
 
@@ -234,7 +234,7 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (
         CheckConstraint(
-            "run_type IN ('collect', 'snapshot', 'rank', 'agent', 'publish', 'push')",
+            "run_type IN ('collect', 'snapshot', 'rank', 'backfill', 'agent', 'publish', 'push')",
             name="run_type_valid",
         ),
         CheckConstraint(
@@ -247,7 +247,7 @@ class PipelineRun(Base):
             name="time_order_valid",
         ),
         CheckConstraint(
-            "run_type IN ('collect', 'snapshot', 'rank') OR topic_id IS NOT NULL",
+            "run_type IN ('collect', 'snapshot', 'rank', 'backfill') OR topic_id IS NOT NULL",
             name="topic_scope_valid",
         ),
         Index("ix_pipeline_runs_topic_type_status", "topic_id", "run_type", "status"),
@@ -270,3 +270,63 @@ class PipelineRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     topic: Mapped[Topic | None] = relationship(back_populates="pipeline_runs")
+
+
+class BackfillJob(Base, TimestampMixin):
+    """Durable, resumable walk over a provider's paged search results.
+
+    One row is one *job*, not one attempt. The cursor (`next_page`) and the two
+    counters live on the row and are committed after every page, so a walk that
+    loses its process resumes at the page it had not finished instead of starting
+    the whole history again. Replaying a page would be harmless anyway - ingestion
+    is idempotent on (source, provider_repo_id) - but replaying twenty of them is
+    what turns a network blip into a duplicate crawl.
+
+    `target_pages` is the operator's budget, not a promise: a search that runs out
+    of results first closes the job as `succeeded` with `pages_completed` below the
+    target. `per_page` is capped at 100 because that is the largest page both
+    providers honour.
+
+    `heartbeat_at` is its own column rather than a reuse of `updated_at`. `updated_at`
+    is the mixin's "this row changed" stamp: its `onupdate` is applied by SQLAlchemy on
+    every UPDATE and cannot be pinned by an explicit assignment, so any future write to
+    this row - a migration backfill, an operator edit - would refresh it and make an
+    abandoned walk look alive. A dedicated column says exactly one thing and says it only
+    when the walk itself says it.
+    """
+
+    __tablename__ = "backfill_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')",
+            name="status_valid",
+        ),
+        CheckConstraint("next_page >= 1", name="next_page_positive"),
+        CheckConstraint("target_pages >= 1", name="target_pages_positive"),
+        CheckConstraint("per_page >= 1 AND per_page <= 100", name="per_page_bounded"),
+        CheckConstraint("pages_completed >= 0", name="pages_completed_nonnegative"),
+        CheckConstraint("items_collected >= 0", name="items_collected_nonnegative"),
+        CheckConstraint("attempt >= 1", name="attempt_positive"),
+        CheckConstraint(
+            "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
+            name="time_order_valid",
+        ),
+        Index("ix_backfill_jobs_provider_status", "provider", "status"),
+        Index("ix_backfill_jobs_created_at", "created_at"),
+    )
+
+    id: Mapped[uint64_pk]
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    query_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    next_page: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    target_pages: Mapped[int] = mapped_column(Integer, nullable=False)
+    per_page: Mapped[int] = mapped_column(Integer, nullable=False)
+    pages_completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_collected: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

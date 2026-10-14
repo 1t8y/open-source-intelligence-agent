@@ -11,6 +11,10 @@ from celery import Task, shared_task
 
 from open_source_intelligence.agent.errors import AGENT_MODEL_UNAVAILABLE
 from open_source_intelligence.agent.runtime import run_research_agent as execute_research_agent
+from open_source_intelligence.backfill.errors import BackfillWalkFailed
+from open_source_intelligence.backfill.jobs import DEFAULT_PER_PAGE, DEFAULT_TARGET_PAGES
+from open_source_intelligence.backfill.service import resume_backfill as execute_resume_backfill
+from open_source_intelligence.backfill.service import start_backfill as execute_start_backfill
 from open_source_intelligence.collectors.cli import build_collectors
 from open_source_intelligence.collectors.service import collect_repositories
 from open_source_intelligence.core.config import Settings, get_settings
@@ -31,6 +35,9 @@ from open_source_intelligence.reports.publishing import (
     publish_due_reports as execute_publish_due_reports,
 )
 from open_source_intelligence.workers.celery_app import (
+    BACKFILL_SOFT_TIME_LIMIT_SECONDS,
+    BACKFILL_TASK,
+    BACKFILL_TIME_LIMIT_SECONDS,
     DAILY_PIPELINE_TASK,
     PUBLISH_DUE_TASK,
     PUSH_RETRY_TASK,
@@ -250,3 +257,76 @@ def retry_failed_pushes(limit: int = PUSH_BATCH_LIMIT) -> dict[str, Any]:
         "attempted_count": len(outcomes),
         "outcomes": [item.to_dict() for item in outcomes],
     }
+
+
+@shared_task(  # type: ignore[misc]
+    bind=True,
+    name=BACKFILL_TASK,
+    time_limit=BACKFILL_TIME_LIMIT_SECONDS,
+    soft_time_limit=BACKFILL_SOFT_TIME_LIMIT_SECONDS,
+)
+def run_backfill(
+    self: Task,
+    *,
+    provider: str = "github",
+    target_pages: int = DEFAULT_TARGET_PAGES,
+    per_page: int = DEFAULT_PER_PAGE,
+    job_id: int | None = None,
+) -> dict[str, Any]:
+    """Walk one provider's paged history, retrying from the cursor it stopped at.
+
+    A retry resumes the same job instead of creating a new one, which is the entire return
+    on persisting the cursor per page: an attempt that dies on page 7 of 20 costs page 7,
+    while a retry that opened a second job would spend the same rate-limit budget re-reading
+    pages 1 through 6.
+
+    `job_id` is set only by a retry. When it is present, `target_pages` and `per_page` are
+    ignored because the job row already carries them - a retry must not be able to widen a
+    budget the operator chose.
+    """
+    if provider not in {"github", "huggingface"}:
+        raise ValueError("provider must be github or huggingface")
+    if job_id is not None and job_id <= 0:
+        raise ValueError("job_id must be positive")
+    settings = get_settings()
+    engine = create_database_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+    try:
+        with httpx.Client(timeout=20, follow_redirects=True) as client:
+            collector = build_collectors(provider, client)[0]
+            with session_factory() as session:
+                try:
+                    if job_id is None:
+                        outcome = execute_start_backfill(
+                            session,
+                            collector=collector,
+                            target_pages=target_pages,
+                            per_page=per_page,
+                        )
+                    else:
+                        outcome = execute_resume_backfill(
+                            session,
+                            job_id=job_id,
+                            collector=collector,
+                        )
+                except BackfillWalkFailed as exc:
+                    if self.request.retries < settings.pipeline_task_max_retries:
+                        raise self.retry(
+                            exc=exc,
+                            countdown=pipeline_retry_countdown(
+                                retries=self.request.retries,
+                                settings=settings,
+                            ),
+                            kwargs={
+                                "provider": provider,
+                                "target_pages": target_pages,
+                                "per_page": per_page,
+                                "job_id": exc.job_id,
+                            },
+                        ) from exc
+                    raise
+    finally:
+        engine.dispose()
+    payload: dict[str, Any] = outcome.to_dict()
+    payload["task"] = BACKFILL_TASK
+    return payload

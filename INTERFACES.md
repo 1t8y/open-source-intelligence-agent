@@ -42,6 +42,7 @@
 | 管理界面 | `GET /ui/reports`、`/ui/reports/{id}`、`/ui/dashboard`、`/ui/dashboard/runs/{id}`、`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/publish-due`、`/ui/login`、`/ui/logout` | 看板同监控角色；其余同报告资源的读/写角色 | 服务端渲染页面，复用同一套服务层；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；推送渠道取自目标行而非表单；看板入口仅对有权角色渲染 |
 | 评测 | `/evaluations`、`/evaluations/runs`、`/evaluations/runs/{id}`、`/evaluations/{dataset_id}/cases`、`/evaluations/{dataset_id}/run`、`/evaluations/{dataset_id}/comparison` | ADMIN/EDITOR（全部，含读） | 数据集版本、样本、按变体执行与统一对比报告；未知变体 `400`、版本冲突 `409`、关闭时 `503` |
 | 监控 | `/metrics/overview` | ADMIN/EDITOR | 纯只读的运维总览：任务、Token、延迟、失败率、报告人工阻断率与最新一轮评测裁决；`window_days` 1-90 越界 `422`（不夹取），窗口半开，未行使的指标为 `null` 而非 `0`，评测段不随窗口变化 |
+| 回填 | **无 HTTP 端点**；CLI `backfill --action start\|resume\|status\|list`、Celery `run_backfill` | 部署/运维（无 API 角色） | 一次性、昂贵、对共享公共 API 施压的历史走查，因此只服务操作员而不暴露给请求处理器；`target_pages` 与 `per_page` 均为 `1..100`，`--provider` 一次只走一个源（无 `all`）；作业行即检查点，可断点续传；操作失误（越界、并发占用、不可续传、源不可分页）以非零码退出并打印原因，走查失败打印游标停在哪后退出，作业保持可续传 |
 | 审计 | `/audit-logs` | ADMIN | 只读，不可修改 |
 
 完整请求、响应和错误示例见 [api-contract.md](docs/api-contract.md)。
@@ -69,8 +70,9 @@ api/web
 
 | 模块 | 对外能力 | 主要消费方 |
 |---|---|---|
-| `collectors` | `collect_source`、返回标准仓库数据 | pipeline/workers |
+| `collectors` | `collect_source`、返回标准仓库数据；`PaginatedRepositoryCollector`（`collect_page` / `describe_query`）与 `RateLimiter` | pipeline/workers/backfill |
 | `pipeline` | 清洗、快照、候选排序、Pipeline 运行记录与编排 | workers/api |
+| `backfill` | 作业生命周期与游标持久化（`jobs.py`）、走查本体（`service.py:run_backfill` / `start_backfill` / `resume_backfill`）、CLI 四动作 | workers/cli |
 | `agent.runtime` | `run_research_agent`、运行编排与 `AgentRunResult` | workers |
 | `agent.graph` | 有界状态图 `plan→tool→observe→verify→write` | agent.runtime |
 | `agent.llm` | `ModelClient` 协议与两个 Adapter（离线桩 / OpenAI-compatible）、消息契约 | agent.graph |
@@ -92,7 +94,10 @@ create_celery_app(settings: Settings | None = None) -> Celery
 build_beat_schedule(settings: Settings) -> dict[str, dict[str, Any]]
 healthcheck() -> {"status": "ok", "task": "healthcheck"}
 run_daily_pipeline(provider="all", limit: int | None = None, business_date: str | None = None) -> dict
+run_backfill(provider: str = "github", target_pages: int = 5, per_page: int = 50, job_id: int | None = None) -> dict
 ```
+
+`run_backfill` 是唯一**不进 beat 排程**的任务：它是一次性的、昂贵的、对共享公共 API 的安全压力，触发权属于操作员。`job_id` 只由重试设置，此时 `target_pages` / `per_page` 被忽略 —— 作业行自己带着它们，重试不允许放宽操作员选定的预算。`time_limit` 为 1800 秒、软超时 1740 秒，因为按源预算行走的走查会合理地超过 worker 的五分钟默认值。
 
 Celery CLI 入口为 `open_source_intelligence.workers.celery_entry:app`。Beat 每 60 秒执行一次 `open_source_intelligence.workers.tasks.healthcheck`；`PIPELINE_SCHEDULE_ENABLED` 为真时，每天 `PIPELINE_SCHEDULE_HOUR:PIPELINE_SCHEDULE_MINUTE`（默认 02:00，按 `APP_TIMEZONE`）执行一次 `open_source_intelligence.workers.tasks.run_daily_pipeline`。
 
@@ -590,6 +595,8 @@ Agent 只能调用以下白名单工具：
 - `push_targets` 是报告出站的唯一允许列表：`name` 唯一，`channel` 取 `email` / `webhook`，并带 `enabled`、`allow_private`、`allow_confidential` 三个开关；投递目标只有落入该表才可送达，两个 `allow_*` 开关默认关闭。
 - `report_pushes` 按 `idempotency_key` 唯一（`report:{report_id}:v{version}:target:{target_id}`），同一 `(报告, 版本, 目标)` 只有一行；`attempt >= 1`（`version >= 1` 同理），`status` 取 `pending` / `sent` / `failed`，重试只推进同一行的 `attempt`。`target_id` 为 `ON DELETE RESTRICT`（删除目标前必须先处理投递记录），`pipeline_run_id` 为 `ON DELETE SET NULL`。
 - `pipeline_runs.run_type` 新增 `push` 取值，与 `agent` / `publish` 一样按 `topic_id` 归属，并同步出现在 ORM 的 `CheckConstraint`、迁移里的 CHECK 与 `pipeline/runs.py:TOPIC_RUN_TYPES` 三处。
+- `pipeline_runs.run_type` 另有 `backfill` 取值，与 `collect` / `snapshot` / `rank` 一样是**全局**运行类型（`topic_id` 为 NULL）。加值需要**四处同步**：ORM 的 `run_type_valid`、ORM 的 `topic_scope_valid`、迁移里对应的两条 CHECK、`pipeline/runs.py:GLOBAL_RUN_TYPES`；少了 `topic_scope_valid` 的表现是运行行插不进去。
+- `backfill_jobs` 是走查的检查点，没有外键：`next_page >= 1`、`target_pages` 与 `per_page` 均限 `1..100`、`pages_completed` 与 `items_collected` 非负、`attempt >= 1`。`status` 取 `pending` / `running` / `succeeded` / `failed` / `cancelled`，`heartbeat_at` 在每一页提交时刷新 —— 它**不是** `updated_at`：SQLAlchemy 的 Python 侧 `onupdate` 在 UPDATE 时会覆盖显式赋值，用 `updated_at` 当心跳的守卫永远看不到"过期"。作业行即检查点，所以续传只需要这一行，不需要重放历史；`running` 且心跳未超过 15 分钟的作业不可被第二个走查者认领。每页的仓库与指向下一页的游标在**同一事务**提交（`ingest_items` 不提交、`advance_job` 提交），游标动过就一定有对应的行。
 - `eval_datasets` 按 `(name, version)` 唯一，`eval_cases` 按 `(dataset_id, case_key)` 唯一，`eval_results` 按 `(eval_run_id, eval_case_id)` 唯一：数据集版本与逐样本测量都不可覆写，重跑刷新自身测量。
 - `eval_runs.target_type` 只允许五个变体取值，`status` 只允许 `pending` / `running` / `succeeded` / `failed`，且 `finished_at >= started_at`；五个变体中只有 `baseline_single_prompt` 允许 `agent_config_id IS NULL`。
 - 评测门禁指标（`citation_coverage`、`factual_consistency`、`task_completion`）落 `eval_results` 真实列（`Numeric(5,4)`）；无阈值的比率与运行级证据（`source_accuracy`、`tool_success_rate`、`prompt_injection_block_rate`、`tool_call_total`、`tool_call_denied`、`verification_sufficient_rate`）存 `details_json`。**未行使的指标以 `None` 表示，不得写成 `0`。**
@@ -673,6 +680,20 @@ failed            -> （终态，无出边）
 | UI 写操作 | `200` 渲染片段 | `403` CSRF 校验失败或角色只读；`409` 同上；`303` 未登录重定向到 `/ui/login` |
 
 推送的 HTTP 语义有两点与直觉不同：其一，**传输失败返回 `200`**，`status="failed"` 且带稳定 `error_code`（`PUSH_DELIVERY_FAILED`），因为它是被记录的可重试结果而非请求错误 —— 与 `publish-due` 对"被拦发布"的处理一致；只有守卫违规（状态、审批、允许列表）才抛异常并映射为 `4xx`/`5xx`。其二，`400` 保留给**部署配置错误**：`live` 渠道缺 SMTP 主机或发件人时在写行之前就被拒，避免把配置问题伪装成可重试的传输失败。
+
+回填 CLI 的退出语义（T16）。回填没有 HTTP 面，因此它的"错误语义"落在退出码与标准输出上，并且按**操作员的下一步**分流：
+
+| 情况 | 退出码 | 输出 | 理由 |
+|---|---|---|---|
+| 走查成功 | `0` | `BackfillOutcome` 的 JSON（含 `pages`、`next_page`、`items_collected`、`exhausted`、`paced_seconds`） | 正常结果 |
+| `status` / `list` | `0` | `{"job": ...}` / `{"jobs": [...]}`，**不触碰任何 provider** | 只读查询不应产生外部请求 |
+| `BackfillLimitError`（`target_pages` / `per_page` 越界） | 非零 | 异常消息本身 | 操作失误，什么都没跑，没有作业载荷可打印 |
+| `BackfillUnsupportedCollector`（源不可分页） | 非零 | 异常消息本身 | 同上，且在写库之前就拒绝 |
+| `BackfillJobBusy`（游标被另一个走查者持有） | 非零 | 异常消息 + 持有起始时刻 | 操作员要等，不是要修 |
+| `BackfillNotResumable`（作业已完成或无剩余页） | 非零 | 异常消息 | 幂等操作重复执行不是错误 |
+| `BackfillWalkFailed`（走查中源失败） | 非零 | `{"status": "failed", "error_code", "message", "job": {...}}` | **最有价值的输出是"游标停在哪"** —— 那是操作员的下一条命令；作业保持可续传，因此打印载荷而不是抛 traceback |
+
+失败分类沿用 `pipeline/runs.py:classify_error`：任何 `CollectorError` → `COLLECTOR_FAILED`（源拒绝），其余 → `PIPELINE_UNEXPECTED_ERROR`（我们自己的写入坏了）。`STAGE_ERROR_CODES` **故意不含** `backfill`，因为加上去只会把这两个最需要区分的信号拍平成一个码。
 
 发布策略原因码（T11，出现在 `publish_decision.reason_codes` 与 `report_verifications.reason_codes_json`）：
 

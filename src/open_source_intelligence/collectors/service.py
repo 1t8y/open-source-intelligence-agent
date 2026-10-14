@@ -128,6 +128,27 @@ def upsert_repository(
     return repository
 
 
+def ingest_items(
+    session: Session,
+    *,
+    source: DataSource,
+    items: Sequence[CollectedRepository],
+) -> int:
+    """Upsert already-normalized repositories and flush, without committing.
+
+    Deliberately committless. A paged backfill commits one page's rows and the cursor that
+    points past them in a single transaction, so a crash cannot leave a cursor that moved
+    without the rows it claims, or rows ingested with no record of them. That is what makes
+    the crash window harmless rather than merely unlikely.
+    """
+    if not items:
+        return 0
+    for item in items:
+        upsert_repository(session, source=source, item=item)
+    session.flush()
+    return len(items)
+
+
 def collect_from_collector(
     session: Session,
     collector: RepositoryCollector,
@@ -139,8 +160,7 @@ def collect_from_collector(
     source = ensure_data_source(session, collector)
     try:
         items = collector.collect(limit=limit)
-        for item in items:
-            upsert_repository(session, source=source, item=item)
+        count = ingest_items(session, source=source, items=items)
         source.last_success_at = observed_at
         record_audit_event(
             session,
@@ -148,10 +168,10 @@ def collect_from_collector(
             resource_type="data_source",
             resource_id=str(source.id),
             result="success",
-            metadata_json={"provider": collector.provider, "count": len(items)},
+            metadata_json={"provider": collector.provider, "count": count},
         )
         session.commit()
-        return len(items)
+        return count
     except CollectorError as exc:
         session.rollback()
         source = ensure_data_source(session, collector)

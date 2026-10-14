@@ -1,5 +1,6 @@
 """GitHub repository search collector."""
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -7,10 +8,28 @@ from pydantic import SecretStr
 
 from open_source_intelligence.collectors.http import RetryingHttpClient
 from open_source_intelligence.collectors.types import (
+    CollectedPage,
     CollectedRepository,
     SourceUnavailableError,
+    clamp_per_page,
     nonnegative_int,
+    require_page,
 )
+
+LINK_PATTERN = re.compile(r"<([^>]+)>\s*;\s*rel\s*=\s*\"?([^\";,]+)\"?")
+"""RFC 8288 `Link` header entries, as GitHub emits them."""
+
+
+def parse_link_header(value: str | None) -> dict[str, str]:
+    """Parse a `Link` header into a `rel -> target` map.
+
+    This is the authoritative answer to "is there another page?". GitHub stops
+    advertising `rel="next"` once a search walks past its 1000-result cap, so a page
+    number derived from `total_count` would promise pages that the API will not serve.
+    """
+    if not value:
+        return {}
+    return {rel.strip(): url for url, rel in LINK_PATTERN.findall(value)}
 
 
 class GitHubCollector:
@@ -40,27 +59,42 @@ class GitHubCollector:
             self._headers["Authorization"] = f"Bearer {token.get_secret_value()}"
 
     def collect(self, *, limit: int) -> list[CollectedRepository]:
-        """Collect and normalize up to 100 GitHub repositories."""
-        if limit < 1 or limit > 100:
-            raise ValueError("limit must be between 1 and 100")
-        payload = self._http.get_json(
+        """Collect and normalize up to 100 GitHub repositories from the first page."""
+        return list(self.collect_page(page=1, per_page=limit).items)
+
+    def collect_page(self, *, page: int, per_page: int) -> CollectedPage:
+        """Return one 1-based page of GitHub search results, ordered by stars."""
+        require_page(page)
+        clamp_per_page(per_page)
+        response = self._http.get_json_response(
             f"{self.base_url}/search/repositories",
             params={
                 "q": self._query,
                 "sort": "stars",
                 "order": "desc",
-                "per_page": limit,
+                "per_page": per_page,
+                "page": page,
             },
             headers=self._headers,
         )
+        payload = response.data
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
             raise SourceUnavailableError("GitHub response did not contain an items list")
         observed_at = datetime.now(UTC)
-        repositories: list[CollectedRepository] = []
-        for item in payload["items"]:
-            if isinstance(item, dict):
-                repositories.append(self._normalize(item, observed_at))
-        return repositories
+        items = tuple(
+            self._normalize(item, observed_at)
+            for item in payload["items"]
+            if isinstance(item, dict)
+        )
+        return CollectedPage(
+            page=page,
+            items=items,
+            has_more="next" in parse_link_header(response.header("Link")),
+        )
+
+    def describe_query(self) -> dict[str, Any]:
+        """Return the search parameters this collector pages."""
+        return {"q": self._query, "sort": "stars", "order": "desc"}
 
     @staticmethod
     def _normalize(item: dict[str, Any], observed_at: datetime) -> CollectedRepository:

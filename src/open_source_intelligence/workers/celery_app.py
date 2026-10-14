@@ -13,6 +13,18 @@ DAILY_PIPELINE_TASK = "open_source_intelligence.workers.tasks.run_daily_pipeline
 RESEARCH_AGENT_TASK = "open_source_intelligence.workers.tasks.run_research_agent"
 PUBLISH_DUE_TASK = "open_source_intelligence.workers.tasks.publish_due_reports"
 PUSH_RETRY_TASK = "open_source_intelligence.workers.tasks.retry_failed_pushes"
+BACKFILL_TASK = "open_source_intelligence.workers.tasks.run_backfill"
+
+BACKFILL_TIME_LIMIT_SECONDS = 1800
+BACKFILL_SOFT_TIME_LIMIT_SECONDS = 1740
+"""A paced walk outgrows the worker's five-minute default on purpose.
+
+Its own bounds are what stop it: `MAX_TARGET_PAGES` pages, each held back by the source's
+configured request budget. A hundred pages at the default thirty requests per minute is
+already over three minutes before any request latency, and a source configured down to ten
+per minute needs ten. Killing the walk at five minutes would abort a job that was behaving
+exactly as configured - and because the job is resumable that would be survivable, but it
+would burn the rate-limit budget of an attempt that could never finish."""
 
 
 def build_beat_schedule(settings: Settings) -> dict[str, dict[str, Any]]:
@@ -22,6 +34,10 @@ def build_beat_schedule(settings: Settings) -> dict[str, dict[str, Any]]:
     elapsed consumes no model budget, and leaving it manual would defeat the point of
     `AUTO_WITH_DELAY`. Push retries are scheduled separately so a slow or unavailable mail
     server cannot delay a release that is already due.
+
+    The backfill is deliberately absent. It is an operator's deliberate, one-off, expensive
+    act against a shared public API, so it is dispatched on demand rather than by a clock
+    that would start walking history nobody asked for.
     """
     schedule: dict[str, dict[str, Any]] = {
         "system-healthcheck": {

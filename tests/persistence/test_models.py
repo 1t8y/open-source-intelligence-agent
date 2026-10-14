@@ -25,12 +25,13 @@ def build_session() -> Session:
 
 
 def test_metadata_contains_core_tables() -> None:
-    """Alembic metadata must expose T2/T7, the T13 push tables, and the T14 eval tables."""
+    """Alembic metadata must expose T2/T7, the T13 push tables, T14 eval, and T16 backfill."""
     assert set(Base.metadata.tables) == {
         "agent_configs",
         "agent_runs",
         "agent_steps",
         "audit_logs",
+        "backfill_jobs",
         "data_sources",
         "eval_cases",
         "eval_datasets",

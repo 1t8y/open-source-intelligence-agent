@@ -20,7 +20,7 @@ from open_source_intelligence.collectors.types import CollectorError
 from open_source_intelligence.core.logging import redact_text
 from open_source_intelligence.persistence.models.intelligence import PipelineRun
 
-GLOBAL_RUN_TYPES: Final[tuple[str, ...]] = ("collect", "snapshot", "rank")
+GLOBAL_RUN_TYPES: Final[tuple[str, ...]] = ("collect", "snapshot", "rank", "backfill")
 TOPIC_RUN_TYPES: Final[tuple[str, ...]] = ("agent", "publish", "push")
 RUN_TYPES: Final[tuple[str, ...]] = GLOBAL_RUN_TYPES + TOPIC_RUN_TYPES
 RUN_STATUSES: Final[tuple[str, ...]] = ("queued", "running", "succeeded", "failed", "partial")
@@ -36,6 +36,10 @@ STAGE_ERROR_CODES: Final[dict[str, str]] = {
     "snapshot": ERROR_SNAPSHOT_FAILED,
     "rank": ERROR_RANK_FAILED,
 }
+# `backfill` is deliberately absent: `classify_error` already maps every `CollectorError` to
+# `COLLECTOR_FAILED`, so a walk that fails for any other reason falls through to
+# `PIPELINE_UNEXPECTED_ERROR`. Mapping the run type itself would flatten "the source refused"
+# and "our own write broke" into one code, which is the distinction an operator needs most.
 
 MAX_ERROR_MESSAGE_LENGTH: Final[int] = 2000
 

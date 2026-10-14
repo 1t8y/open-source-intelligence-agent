@@ -5,6 +5,7 @@ from .audit import AuditLog
 from .evaluation import EvalCase, EvalDataset, EvalResult, EvalRun
 from .identity import Role, User, UserRole
 from .intelligence import (
+    BackfillJob,
     DataSource,
     PipelineRun,
     Repository,
@@ -29,6 +30,7 @@ __all__ = [
     "AgentRun",
     "AgentStep",
     "AuditLog",
+    "BackfillJob",
     "DataSource",
     "EvalCase",
     "EvalDataset",

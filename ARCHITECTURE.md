@@ -149,7 +149,8 @@ open-source-intelligence-agent/
 | `users`, `roles`, `user_roles` | 身份和角色 |
 | `data_sources`, `topics` | 采集源与监控主题配置 |
 | `repositories`, `repo_snapshots` | 仓库主数据和每日时间序列 |
-| `pipeline_runs` | 采集、筛选、报告任务的运行记录 |
+| `pipeline_runs` | 采集、筛选、回填、报告任务的运行记录 |
+| `backfill_jobs` | 历史回填作业的检查点：游标 `next_page`、已完成页数、累计入库数与心跳 |
 | `agent_configs`, `agent_runs`, `agent_steps`, `tool_calls` | Agent 版本、状态、轨迹和工具调用 |
 | `reports`, `report_versions`, `report_sources`, `report_verifications`, `report_reviews` | 报告、当前版本与不可变版本、按版本归属的证据引用、验证结论和人工审核 |
 | `eval_datasets`, `eval_cases`, `eval_runs`, `eval_results` | 评测集、样本、按变体执行与逐样本指标 |
@@ -472,6 +473,25 @@ T15 已实现以下能力：
 - 端点与界面：`GET /api/v1/metrics/overview?window_days=`（总览）、`GET /api/v1/agent/runs`（账本，支持 `status` / `topic_id` 过滤与分页，`page_size` 上限 100）、`GET /api/v1/agent/runs/{run_id}`、`GET /api/v1/agent/runs/{run_id}/steps`（轨迹）、`GET /ui/dashboard?window_days=`、`GET /ui/dashboard/runs/{run_id}`。全部要求 `METRICS_ROLES = (ROLE_ADMIN, ROLE_EDITOR)`：`VIEWER` 得到 `403`、匿名得到 `401`，且导航栏只在有权时渲染「运维看板」入口 —— 无权用户看不到通向 403 的死链。
 - 看板页把总览的六个区块按运维阅读顺序排开（任务执行 / Agent 运行 / 工具调用 / 报告产出 / 评测结果 / 最近运行），窗口切换器提供 1 / 7 / 30 天三档；轨迹页按 `step_index` 展开步骤与挂在每个步骤下的工具调用，每步的摘要与参数都经脱敏后渲染。
 
+### 9.13 T16 数据回填与端到端演示
+
+详细操作协议（分页语义、限流语义、断点续传、并发守卫、CLI 用法、验收口径）见 [docs/backfill.md](docs/backfill.md)；下面是实现层面的决定。
+
+T16 已实现以下能力：
+
+- **回填不是"把 `limit` 调大"，而是一条独立的走查路径。** 每日采集向一个源问一个问题，限流它没有意义；回填向同一个源连着问二十个问题，这才是把礼貌的客户端变成被限流客户端的动作。因此走查是承载节奏的那个东西，`collect(limit)` 的既有契约与调用点（`collect_from_collector`、daily pipeline）一行未改，分页能力以 `PaginatedRepositoryCollector` 协议**增量**挂上去：`collect_page(page, per_page)` 回答"给我第 P 页"，`describe_query()` 回答"我在走哪个检索"。游标只是一个页码，所以"续传"就是"用更大的页码再问一次"，而不是重放历史。
+- **一页有没有下一页，由源自己说，不由条目数推断。** `CollectedPage.has_more` 是源的判定：GitHub 把它写在响应头 `Link` 里（RFC 8288），并且在走到 1000 条搜索结果上限后**仍然返回完整 `total_count` 却不再宣告 `rel="next"`** —— 用 `total_count` 算末页的走查会去请求 API 不会提供的页。Hugging Face 镜像按 `skip`/`limit` 偏移分页、没有总数，越过末尾返回空页，因此它的终止判据只能是"返回不足一页"（代价是末尾一次确认请求）。这条差别留在各自 adapter 里，走查只读 `has_more`。
+- **`dict(response.headers)` 是大小写敏感的死角。** HTTP 头名不区分大小写，而普通 dict 区分：键是小写 `link`，`headers["Link"]` 永远取不到，于是每页的 `has_more` 都是 `False`，一次本应走 50 页的回填在第一页就"读完了"整段历史且不报错。`collectors/http.py:JsonResponse` 因此把键统一小写并只经 `header(name)` 读取，`tests/collectors/test_paging.py` 用真实 GitHub 响应形状锁住这条行为。
+- **限流保证的是"请求起始间隔"，不是"固定睡眠"。** `collectors/limiter.py:RateLimiter` 不是 token bucket：它不允许突发再回填，因为回填的风险恰恰是持续负载。第一次调用免费，之后每次至少 `60 / per_minute` 秒；释放时刻按 `last_release + interval` **推进**而不是回读时钟（回读会让超睡者攒出下一发的额度），同时取 `max(target, clock())`（不让真正慢的 sleeper 被双重计费）。源自身延迟已经超过间隔时，限流器**一分钟都不等** —— 所以 `paced_seconds` 只能断言"间隔"，不能断言 `(页数-1) * interval`。默认限流器按 `data_sources.rate_limit_per_minute` 构造，T4 起就写在源行上的预算到 T16 才真正被花掉。
+- **作业行就是检查点。** 续传需要的一切（`next_page` / `pages_completed` / `items_collected` / `attempt` / `heartbeat_at`）都在 `backfill_jobs` 的列里，而不在走查的进程里 —— 因为会死掉的正是进程。每页提交一次，且**当页的仓库与指向下一页的游标在同一事务中提交**（`ingest_items` 刻意不提交，`advance_job` 提交）：这让崩溃窗口是"无害"而不只是"可容忍"，也意味着**游标动过就一定有对应的行**。入库幂等落在 `(source_id, provider_repo_id)`，所以重放走查连一行都不会重复。
+- **心跳是独立列，因为 `updated_at` 钉不住。** `TimestampMixin.updated_at` 的 Python 侧 `onupdate` 由 SQLAlchemy 在每次 UPDATE 时施加并**覆盖显式赋值**，于是守卫永远看到"心跳新鲜"，"另一个进程正在走这个游标"这条分支根本不可达（实测复现后修复）。`heartbeat_at` 因此单独建列，每一页提交时刷新，`STALE_AFTER = 15min` 之后才允许下一个走查者接手。**拒绝而不是抢占**是有意的：两个走查者共用一个游标不是重复劳动那么简单 —— 各自都当自己是唯一的，于是同一批页被请求两次却只计数一次，预算花在对方已经走过的页上。
+- **失败分类保留"源拒绝"与"我们写坏了"的区别。** `STAGE_ERROR_CODES` **故意不加** `backfill`：`classify_error` 已经把任何 `CollectorError` 映射为 `COLLECTOR_FAILED`，所以任何其它原因都会落到 `PIPELINE_UNEXPECTED_ERROR`。把 `backfill` 加进去只会把这两个最需要区分的信号拍平成一个码。真实 GitHub 上的 403 限流、以及 mock 上的 500，都如实地落在 `COLLECTOR_FAILED`。
+- **每次尝试留一条运行行，且都能回到作业。** `run_backfill` 每被认领一次就 `start_pipeline_run(run_type="backfill")`，`metrics_json.backfill_job_id` 把运行行挂回作业。`backfill` 是**全局**运行类型（`topic_id` 为 NULL），因此把 `run_type` 加值是**四处同步**而不是三处：ORM 的 `run_type_valid`、ORM 的 `topic_scope_valid`、迁移里对应的两条 CHECK、以及 `pipeline/runs.py:GLOBAL_RUN_TYPES`。漏掉 `topic_scope_valid` 的表现是运行行插不进去，而不是某个断言失败。
+- **回填不进 beat。** 它是一次性的、昂贵的、对共享公共 API 的走查，触发权属于操作员，因此 `BACKFILL_TASK` 只注册不排程；`time_limit=1800` / `soft 1740`（默认 300 秒会在 100 页 × 低速率下砍掉一个表现完全正常的作业）；Celery 重试用 `self.retry(kwargs={..., job_id: exc.job_id})` **续传同一个作业**，而不是新建一个从头开始。
+- **回填没有 HTTP 面。** 它花的是一个公共 API 的预算、写的是整库仓库目录，属于操作员的 CLI 与 worker，不属于请求处理器：`--action start|resume|status|list`，一次只走一个 provider（没有 `all`）。错误的出口也按"操作员的下一步"设计：`BackfillNotResumable` / `BackfillJobBusy` / `BackfillLimitError` / `BackfillUnsupportedCollector` 是操作失误而非走查结果，消息本身就是全部答案，以非零码退出；而 `BackfillWalkFailed` 最有价值的输出是"游标停在哪"，因此打印含 `next_page` 的 payload 后退出，作业保持可续传，而不是抛一个 traceback。
+- **边界在写库之前就拒绝。** `target_pages` 与 `per_page` 都限定 `1..100`：GitHub 拒绝走过 1000 条上限，更大的预算只会买到源不会提供的请求；把页预算收在 `MAX_PER_PAGE` 同一量级也让 `next_page` 永远不会指到一个没有任何 provider 会应答的页。
+- **回填在 T15 看板上天然可见，无需改动监控层。** 运行行落进 `pipeline_runs`，因此窗口内的 `pipeline_by_run_type` 自动多出 `backfill` 一项；监控层仍是纯只读聚合，这也再次印证了"账本式设计不需要为新增能力补观测代码"。
+
 ## 10. 关键接口摘要
 
 完整契约见 [docs/api-contract.md](docs/api-contract.md)。
@@ -488,6 +508,7 @@ T15 已实现以下能力：
 | 管理界面 | `/ui/login`、`/ui/reports`、`/ui/reports/{id}`、`/ui/dashboard`、`/ui/dashboard/runs/{id}` | 服务端渲染的审核与运维界面，动作走 HTMX 片段替换；看板与轨迹页同监控角色 |
 | 评测 | `/api/v1/evaluations`、`/runs`、`/runs/{id}`、`/{dataset_id}/cases`、`/{dataset_id}/run`、`/{dataset_id}/comparison` | 数据集版本、样本、按变体执行与统一对比报告，全部需写角色 |
 | 监控 | `GET /api/v1/metrics/overview` | 纯只读运维总览：任务、Token、延迟、失败率、报告人工阻断率与最新一轮评测裁决，需 `ADMIN`/`EDITOR` |
+| 回填 | CLI `backfill --action start\|resume\|status\|list`、Celery `run_backfill` | 历史分页走查；一次性、昂贵、对共享公共 API 施压，因此**不暴露 HTTP 端点**，只服务操作员 |
 | 审计 | `/api/v1/audit-logs` | 只读审计查询，限管理员 |
 
 API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支持 `page`、`page_size`，并限制最大 `page_size`。所有写操作需要 CSRF 防护或 Bearer 认证，所有报告读取执行 ACL。
@@ -564,7 +585,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T13 邮件/Webhook 推送 — 依赖：T11/T12 — 验证：仅已批准报告可推送，失败可重试
 - [x] T14 评测数据集与 Runner — 依赖：T8/T10 — 验证：Baseline、Agent、消融版本可输出统一报告
 - [x] T15 监控指标与看板 — 依赖：T6/T10/T14 — 验证：窗口内任务成功率、Token、成本、延迟分位数、失败原因、工具成功率和报告人工阻断率全部真实可见；评测段复用 `compare_latest` 裁决；`/ui/dashboard` 与运行轨迹页在真实应用上渲染；`VIEWER` 被拒且导航不暴露入口
-- [ ] T16 数据回填与端到端演示 — 依赖：T4/T5/T14 — 验证：完成一次历史回填和完整周报生成
+- [x] T16 数据回填与端到端演示 — 依赖：T4/T5/T14 — 验证：真实 `GitHubCollector` + 真实 `run_backfill` 在一个 GitHub 形状的 mock transport 上完成一次四页历史回填（`total_count` 报 4210 却只服务 4 页，走查按缺席的 `rel="next"` 停下）；第 3 页被注入 500 后作业停在 `next_page=3`/`pages_completed=2`，续传只请求第 3、4 页、两个尝试各留一条运行行、重放走查不新增任何仓库行；限流按 `60/per_minute` 间隔执行且默认预算取自源行；并发守卫与过期接管、越界预算、不可分页源、已完成作业的续传全部被拒；随后真实 `run_daily_pipeline`（collect→snapshot→rank）→ 真实 Agent → `generate_report` → `verify_report` → 策略判定 `pending_review`（`FIRST_RUN`）→ 人工 `approve` → `publish_due_reports` 发布，落库行由**只读会话**重新读回；真实 CLI 子进程的 `list`/`status` 与两处拒绝；真实 GitHub 上另跑一次三页走查（12 条，逐页 `has_more=true`）与一次走到未认证限流（7 页 700 条后 `403`，游标保留在 `next_page=8`）
 - [ ] T17 安全测试与故障演练 — 依赖：T3/T9/T13 — 验证：越权、Prompt Injection、API 失败和重复任务均被正确处理
 - [ ] T18 文档同步与发布检查 — 依赖：T1-T17 — 验证：架构、API、数据模型和评测文档与代码一致
 
@@ -624,3 +645,9 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-14 | 校正 `docs/api-contract.md` §5：移除从未实现的 `POST /agent/runs`。Agent 运行始终由 pipeline 在 worker 进程内创建（`run_research_agent`），HTTP 对运行只读；§5 补齐 `GET /agent/runs` 账本端点与 `GET /agent/runs/{id}/steps` 的完整轨迹形状 | 9.12、10、15 | T15 | 与 `api/routes/agent_runs.py`、`api/routes/*.py` 的路由清单逐条比对（全部 `router.post` 落点确认无该端点）；契约同步 `INTERFACES.md` §3/§4/§5 与 `docs/api-contract.md` §9 |
 | 2026-10-14 | 修复测试套件的环境泄漏（产品代码无改动）：`tests/support.py:build_settings` 的 docstring 声明"不读 `.env`"，但 `Settings.model_validate(...)` 仍会走 dotenv 源 —— 开发者 `.env` 里填了 `AGENT_PROVIDER=openai_compatible` 后，agent 测试会构造真实 Provider 客户端并发出真实网络请求，既拖慢整套测试又消耗真实额度 | 9.12、15 | T15 | 改为 `Settings(_env_file=None, **values)`；实测 `build_settings().agent_provider` 由 `openai_compatible` 变为 `offline`，显式传参仍可覆盖。修复后全量 546 项测试由「9 分 40 秒只跑到 24%、5 项失败」变为「1 分 3 秒 100% 通过」 |
 | 2026-10-14 | T10-T14 复审：修复报告 owner 丢失、Webhook SSRF、推送/评测失败详情脱敏、推送重试串版本、wheel 未打包 Web 资源、README/评测数据集未入镜像，以及 MySQL 非事务 DDL 半完成后的迁移重入问题 | 5、7、9.9、9.10、9.11、11、14、15 | T10-T14 复审 | 定向回归测试、全量 pytest、Ruff、mypy 通过；`verify_t2` 完成全链升级/回滚/再次升级；`verify_t11`、`verify_t12`、`verify_t13`、`verify_t14` 全部通过；本地 wheel 清单验证 `web/templates` 和 `web/static` 均被打包 |
+| 2026-10-14 | 完成 T16 数据回填与端到端演示：统一分页抽象（`CollectedPage` / `PaginatedRepositoryCollector.collect_page` / `describe_query`，`collect(limit)` 契约不变）、`RateLimiter` 起始间隔限流、以作业行为检查点的可断点续传走查（每页提交、当页仓库与游标同事务）、`heartbeat_at` 心跳与并发守卫、`backfill` 全局运行类型、Celery `run_backfill`（不入 beat，重试续传同一作业）、`backfill` CLI 四动作 | 5、6、7、9.13、10、14 | T16 | 609 项测试、Ruff check+format 211 文件、mypy 124 源文件 0 错误；`alembic heads` 单 head `c8b4e6f2a013`（`down_revision` = `f1a7c9d3b582`），升级/降级 DDL 双向离线渲染与 ORM 元数据逐字段一致；`verify_t16.ps1 -SqliteFixture` 端到端通过（历史回填 + 完整周报生成）；真实 GitHub 上另跑一次三页走查与一次走到未认证限流（`403` → `COLLECTOR_FAILED`，游标保留） |
+| 2026-10-14 | 新增 `backfill_jobs` 表，并给 `pipeline_runs.run_type` 增加 `backfill` 取值（同步四处：`run_type_valid`、`topic_scope_valid`、迁移两条 CHECK、`GLOBAL_RUN_TYPES`） | 6、7、9.13、14 | T16 | 迁移 `c8b4e6f2a013`；`backfill_jobs` 8 条 CHECK（状态、页码、页预算、页大小、两个非负计数、attempt、时间顺序）+ 2 条索引；降级先 `DELETE FROM pipeline_runs WHERE run_type='backfill'` 再复原两条 CHECK，`alembic downgrade` 实测通过 |
+| 2026-10-14 | 修复 T16 开发中发现的真实缺陷：`collectors/http.py` 用 `dict(response.headers)` 收集响应头，普通 dict 大小写敏感而 HTTP 头名不敏感，键实际是小写 `link`，`get("Link")` 永远取不到 —— 表现是 GitHub 每页 `has_more` 都为 `False`，一次 50 页的回填在第一页就"读完整段历史"且不报错 | 9.13、15 | T16 | 真实 GitHub 上复现（三页请求的 `has_more` 全为 `False`）后修复：键统一小写化 + 只经 `JsonResponse.header(name)` 读取；新增回归测试 `test_github_reads_a_header_case_insensitively`，修复后真实 GitHub 逐页 `has_more=true` |
+| 2026-10-14 | 修复 T16 开发中发现的第二处真实缺陷：并发守卫以 `TimestampMixin.updated_at` 当心跳，但 SQLAlchemy 2.0.34 的 Python 侧 `onupdate` 在 UPDATE 时会**覆盖显式赋值**（INSERT 不覆盖），守卫因此永远看到"心跳新鲜"，"另一个进程正在走这个游标"分支不可达 | 9.13、15 | T16 | 用 SQLite 夹具复现（写入 `NOW=12:00` 后读回 `06:10:25` 的墙钟值）后修复：新增独立 `heartbeat_at` 列（ORM + 迁移 + `jobs.py` 全部改用），并在 `jobs.py` 模块 docstring 记录该陷阱；回归测试 `test_claiming_a_job_with_a_live_heartbeat_is_refused` 由 DID NOT RAISE 转为通过 |
+| 2026-10-14 | 修正 T16 走查的 `paced_seconds` 口径：限流器可跨走查复用（续传是显而易见的场景），而 outcome 原先读取它的**累计**等待值，会把上一次尝试的等待记到本次头上 | 9.13、15 | T16 | 夹具实测（续传 outcome 报 4.0 而非本次的 2.0）后修复：改为读取增量 `limiter.total_waited_seconds - paced_before`；回归测试 `test_reported_pacing_counts_only_this_walk` 与冒烟断言 `resumed_paced_seconds == 2 × interval` 同时锁住 |
+| 2026-10-14 | 修正 T16 冒烟脚本（不影响产品代码）：`list_jobs` 取回的是**活** ORM 对象，续传会推进它，因此"失败瞬间"的断言必须在续传之前取快照；审计行的断言按本次创建的作业号过滤，否则第二次运行会把上一次残留的行一并计入 | 9.13、15 | T16 | 两处均由冒烟自身失败暴露（`the failed job stopped at succeeded/5`、`the audit trail reads [15 条]`）后修复；`verify_t16.ps1 -SqliteFixture` 端到端通过，并对同一库连续运行两次结果一致 |

@@ -1,11 +1,37 @@
 """Retrying synchronous HTTP helper for public repository APIs."""
 
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from open_source_intelligence.collectors.types import SourceUnavailableError
+
+
+@dataclass(frozen=True, slots=True)
+class JsonResponse:
+    """Decoded JSON together with the headers a caller may need in order to page.
+
+    Pagination is answered in a header, not in a body: GitHub states whether another page
+    exists in `Link`. A client that could only ever return `response.json()` would push
+    every adapter into a second request path that re-implements retry and pacing by hand,
+    which is how the retry policy ends up with two definitions that drift.
+
+    `headers` keys are lowercased, because a plain dict is case-sensitive while HTTP header
+    names are not. Reading a header through `header()` is therefore not a convenience but
+    the only correct way: `headers["Link"]` would silently miss the `link` that the server
+    actually sent, and a paging walk reading a missing `Link` concludes it has reached the
+    end of a history it has not begun to read.
+    """
+
+    data: Any
+    headers: Mapping[str, str]
+
+    def header(self, name: str) -> str | None:
+        """Return one header case-insensitively."""
+        return self.headers.get(name.lower())
 
 
 class RetryingHttpClient:
@@ -32,6 +58,16 @@ class RetryingHttpClient:
         headers: dict[str, str] | None = None,
     ) -> Any:
         """Return decoded JSON, retrying rate limits and server failures."""
+        return self.get_json_response(url, params=params, headers=headers).data
+
+    def get_json_response(
+        self,
+        url: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> JsonResponse:
+        """Return decoded JSON and the response headers, retrying transient failures."""
         last_error: Exception | None = None
         for attempt in range(self._max_attempts):
             try:
@@ -46,7 +82,10 @@ class RetryingHttpClient:
                     break
                 response.raise_for_status()
                 try:
-                    return response.json()
+                    return JsonResponse(
+                        data=response.json(),
+                        headers={key.lower(): value for key, value in response.headers.items()},
+                    )
                 except ValueError as exc:
                     last_error = SourceUnavailableError("source returned invalid JSON")
                     raise last_error from exc
