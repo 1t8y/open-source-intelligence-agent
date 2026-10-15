@@ -1,8 +1,8 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T13 已对齐）
-> 文档版本：v0.11
-> 最后更新：2026-10-13
+> 文档状态：实施基线（T1-T18 已对齐）
+> 文档版本：v0.12
+> 最后更新：2026-10-15
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
 ## 1. 契约范围
@@ -33,9 +33,9 @@
 | 系统 | `GET /` | 公开 | 浏览器预览重定向到 `/docs` 或 `/health` |
 | 系统 | `GET /health` | 公开 | 进程存活状态、服务名和版本 |
 | 认证 | `POST /auth/login`、`GET /auth/me` | 登录用户 | JWT/Cookie、角色和数据范围 |
-| 数据源 | `/sources` | ADMIN/EDITOR | 不保存明文凭证 |
-| 主题 | `/topics`、`POST /topics/{id}/run` | ADMIN/EDITOR | 过滤条件、候选上限、发布模式 |
-| 仓库 | `/repositories`、`/repositories/{id}/snapshots` | 有主题权限 | 趋势和快照查询 |
+| 数据源 | **无 HTTP 端点** | 部署/运维 | 行由采集器按 `(source_type)` 幂等自供给（`collectors/service.py:ensure_data_source`）；`base_url` / `credential_ref` / 限流预算属**部署配置**，改它们走环境变量与迁移，不走请求处理器 —— 一个能改限流预算的端点等于把公共 API 的用量控制交给任意已登录客户端 |
+| 主题 | **无 HTTP 端点** | 部署/运维 | 主题增删改属运维配置（当前由种子/脚本写入）；**触发研究也不在 API 上**，与 Agent 运行同一条理由：一次运行消耗模型预算，触发权属于调度器与操作员 CLI，不属于任意已登录客户端 |
+| 仓库 | `/repositories`、`/repositories/{id}/snapshots` | ADMIN/EDITOR/VIEWER | 仓库元数据为公开级（`security-and-privacy.md` §2），不做逐行 ACL；`topic_id` 过滤要求主题可见（`enabled` 对全角色、禁用主题仅 ADMIN），越权 `403` + `repository.read` 审计。快照窗口是**闭区间**，与 `get_snapshot_series` 一致 |
 | Agent | `GET /agent/runs`、`/agent/runs/{id}`、`/agent/runs/{id}/steps` | ADMIN/EDITOR | **只读**（运行由 pipeline/worker 创建，不经 API）；列表按 `status`/`topic_id` 过滤并分页，轨迹含未挂到步骤的工具调用 |
 | 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
 | 推送 | `/push/targets`、`/push/records`、`/push/retry` | ADMIN/EDITOR | 投递允许列表、投递记录与失败重试扫描 |
@@ -43,7 +43,7 @@
 | 评测 | `/evaluations`、`/evaluations/runs`、`/evaluations/runs/{id}`、`/evaluations/{dataset_id}/cases`、`/evaluations/{dataset_id}/run`、`/evaluations/{dataset_id}/comparison` | ADMIN/EDITOR（全部，含读） | 数据集版本、样本、按变体执行与统一对比报告；未知变体 `400`、版本冲突 `409`、关闭时 `503` |
 | 监控 | `/metrics/overview` | ADMIN/EDITOR | 纯只读的运维总览：任务、Token、延迟、失败率、报告人工阻断率与最新一轮评测裁决；`window_days` 1-90 越界 `422`（不夹取），窗口半开，未行使的指标为 `null` 而非 `0`，评测段不随窗口变化 |
 | 回填 | **无 HTTP 端点**；CLI `backfill --action start\|resume\|status\|list`、Celery `run_backfill` | 部署/运维（无 API 角色） | 一次性、昂贵、对共享公共 API 施压的历史走查，因此只服务操作员而不暴露给请求处理器；`target_pages` 与 `per_page` 均为 `1..100`，`--provider` 一次只走一个源（无 `all`）；作业行即检查点，可断点续传；操作失误（越界、并发占用、不可续传、源不可分页）以非零码退出并打印原因，走查失败打印游标停在哪后退出，作业保持可续传 |
-| 审计 | `/audit-logs` | ADMIN | 只读，不可修改 |
+| 审计 | `/audit-logs` | ADMIN | **只读，不可修改**：不提供修改与删除端点，而不是用权限挡住它们；支持按 `actor_id` / `action` / `resource_type` / `resource_id` / `result` / 时间过滤与分页；`metadata_json` 不出站（未定义允许键的 JSON 不该放在 egress 上） |
 
 完整请求、响应和错误示例见 [api-contract.md](docs/api-contract.md)。
 
@@ -111,7 +111,7 @@ create_session_factory(engine: Engine) -> sessionmaker[Session]
 Base.metadata
 ```
 
-首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`；此后 T10 追加 `report_versions`，T11 追加 `report_verifications`、`report_reviews`，T13 追加 `push_targets`、`report_pushes`，T14 追加 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results`，元数据共 **28 张表**（`feedback` 属计划内、尚未实现）。
+首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`；此后 T10 追加 `report_versions`，T11 追加 `report_verifications`、`report_reviews`，T13 追加 `push_targets`、`report_pushes`，T14 追加 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results`，T16 追加 `backfill_jobs`，元数据共 **29 张表**（`feedback` 属计划内、尚未实现）。
 
 Security 接口：
 

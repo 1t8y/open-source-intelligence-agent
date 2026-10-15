@@ -669,3 +669,37 @@ def test_list_rejects_an_out_of_range_page_size(
 
     assert response.status_code == 422
     assert response.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_list_refuses_a_timestamp_without_an_offset(
+    editor: Actor,
+    client: TestClient,
+) -> None:
+    """`created_after` must say which zone it is in.
+
+    `repositories.first_seen_at` and `reports.generated_at` are both `UTCDateTime`, which refuses
+    to guess a zone for a naive value. Before T18 that refusal reached callers as a `500` from
+    inside the query builder — the parameter had never been exercised, so nothing caught it.
+    The shared `UtcDateTime` parameter type turns it into the `422` the contract promises.
+    """
+    response = client.get(
+        f"{BASE}?created_after=2026-09-24T00:00:00",
+        headers=auth_headers(client, editor),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert "timezone offset" in response.json()["detail"]
+
+
+def test_list_accepts_an_offset_timestamp(
+    editor: Actor,
+    client: TestClient,
+) -> None:
+    """The same parameter works once it names a zone."""
+    response = client.get(
+        f"{BASE}?created_after=2026-09-24T00:00:00Z",
+        headers=auth_headers(client, editor),
+    )
+
+    assert response.status_code == 200

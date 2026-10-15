@@ -2,7 +2,7 @@
 
 > 项目事实基线由 `REQUIREMENTS.md`、`INTERFACES.md` 和本文档共同构成。  
 > 任何影响需求、架构、接口、数据模型、依赖或目录结构的代码变更，都必须同步更新对应文档。  
-> 最后更新：2026-10-14 ｜ 文档版本：v0.9.1
+> 最后更新：2026-10-15 ｜ 文档版本：v0.10.0
 
 ## 1. 概述与目标
 
@@ -147,14 +147,17 @@ open-source-intelligence-agent/
 | 实体 | 关键职责 |
 |---|---|
 | `users`, `roles`, `user_roles` | 身份和角色 |
-| `data_sources`, `topics` | 采集源与监控主题配置 |
+| `data_sources`, `topics`, `topic_repositories` | 采集源、监控主题，以及主题盯住哪些仓库（含排序分与排名） |
 | `repositories`, `repo_snapshots` | 仓库主数据和每日时间序列 |
+| `repository_contents` | 按 `content_type` 缓存的仓库正文（首期为 README） |
 | `pipeline_runs` | 采集、筛选、回填、报告任务的运行记录 |
 | `backfill_jobs` | 历史回填作业的检查点：游标 `next_page`、已完成页数、累计入库数与心跳 |
 | `agent_configs`, `agent_runs`, `agent_steps`, `tool_calls` | Agent 版本、状态、轨迹和工具调用 |
 | `reports`, `report_versions`, `report_sources`, `report_verifications`, `report_reviews` | 报告、当前版本与不可变版本、按版本归属的证据引用、验证结论和人工审核 |
+| `report_drafts`, `report_sections` | Agent 写出的草稿与其章节，报告发布前的中间产物 |
+| `push_targets`, `report_pushes` | 推送目标（允许列表）与逐次投递记录 |
 | `eval_datasets`, `eval_cases`, `eval_runs`, `eval_results` | 评测集、样本、按变体执行与逐样本指标 |
-| `feedback` | 人工反馈和 Bad Case |
+| `feedback` | 人工反馈和 Bad Case（**计划内、尚未实现**：无 ORM 模型与迁移） |
 | `audit_logs` | 权限、配置、审核、发布和导出审计 |
 
 ### 7.1 运行时不变量
@@ -510,6 +513,28 @@ T17 已实现以下能力：
 - **传输失败是记录的结果，不是异常。** 推送三次扫描压在同一个 idempotency key 上：拒收渠道下 `failed`/`PUSH_DELIVERY_FAILED`，重试**递增 `attempt` 而不新增行**（`push_rows` 始终为 1），换成接收渠道后转 `sent`，重放请求返回已存结果并标 `replayed=True`。落库行数若随重试增长，"这条推送重试了几次"就要靠在多行间做计数。
 - **重复任务的不变量要显式跑，因为它没有端点会失败。** 同一业务日连跑两次采集（仓库仍为 2）、两次发布扫描（均为 0）、两次推送（渠道只被真正调用 1 次）。幂等落在三个不同的键上：`(source_id, provider_repo_id)`、`snapshot_date`、推送 idempotency key。这类破坏只会多出几行，不会报错，所以只能靠演练钉住。
 
+### 9.15 T18 文档同步与发布检查
+
+一键入口 `scripts/verify_t18.ps1`（`-SqliteFixture` 为引擎不可用时的等价路径）；比较器本体在 `scripts/check_docs_drift.py`，运行时证据在 `scripts/t18_mysql_smoke.py`。契约细节见 [docs/api-contract.md](docs/api-contract.md) §3/§4/§8。下面是实现层面的决定。
+
+T18 已实现以下能力：
+
+- **"读一遍文档"不是检查，比较才是。** T18 的验收口径是"架构、API、数据模型和评测文档与代码一致"，而按字面读一遍 `INTERFACES.md` §3 与 `docs/api-contract.md` 就查出了四组从未实现的接口。**读**正是让它们漂移了十七个任务都没被发现的原因：读者看到的是一张看着合理的端点表，而不是一份 diff。所以交付物是一条命令 —— `scripts/check_docs_drift.py` 的十项比较，任一项不通过即退出非零，并把每条漂移以 `DRIFT [检查名] 说明` 打到 stderr。
+- **处置分两类，各有各的理由。** 一是**实现**：`REQUIREMENTS.md` FR-D-05 点名要求「报告、**仓库**、Agent、评测和**审计** API」，于是补 `/repositories`（含 `/repositories/{id}/snapshots`）与 `/audit-logs`，并各配 18 项与 9 项测试。二是**删除**：`POST /topics/{id}/run` 与 T15 已删的 `POST /agent/runs` 同一条理由 —— 一次研究运行消耗模型预算，触发权属于受调度控制的管道与操作员 CLI；`/sources` 的字段就是部署配置（`base_url` 来自 `GITHUB_API_BASE`、`credential_ref` 指向环境变量 Token、`rate_limit_per_minute` 既是默认限流又是回填预算），"一个能改限流预算的 HTTP 端点等于把公共 API 的用量控制交给任意已登录客户端"。
+- **`GET /repositories` 的目录是 join，不是表；权限过滤不在行上。** `docs/security-and-privacy.md` §2 把公开仓库元数据列为"公开"级，所以**不做逐行 ACL**：所有已登录角色读同一份列表，`REPOSITORY_READ_ROLES = (ADMIN, EDITOR, VIEWER)`。真正需要裁决的是"哪些主题在盯哪些仓库"，因此唯一带授权决策的查询参数是 `topic_id`：**`enabled` 主题对所有已登录角色可见，禁用主题仅 `ADMIN`** —— `topics` 表没有 ACL 列，为它发明逐主题授权属新功能（完整 ABAC 是 `REQUIREMENTS.md` 的 Out of scope），不是文档同步。禁用主题按"未发布的配置"处理，所以门是角色检查而不是所有权检查；拒绝沿用报告资源的两段式（不存在 `404 NOT_FOUND`，不可见 `403 FORBIDDEN` 且响应体不含主题名）并落 `repository.read` / `denied` 审计、带 `resource_id`。
+- **排名字段是"有或没有"，不能凭空造值。** `score` / `rank` / `selected_for_agent` 是**某个主题**排序过程的产物；不带 `topic_id` 时返回 `null` 而不是 `0` / `false` —— 后者是对一次从未发生的排序做出断言。同理 `score` 出站为字符串：`NUMERIC(12,6)` 转 JSON float 会让回来的值与存的值不同。
+- **排序必须有全序，未知取值是 `422` 而不是静默回落。** `id` 永远是 tiebreaker（同 star 的仓库很常见，新采集的一批常常都是 0），否则翻页时数据库可能返回不同顺序，结果是重复一条、漏掉一条。未知 `sort` 直接拒绝："按你没要求的顺序翻页"会真的跳行。分页查询与计数查询**共用同一份条件列表**，否则 `total` 会报出调用方永远翻不到的页数。
+- **快照窗口是全平台唯一的闭区间。** 与 `pipeline/snapshots.py:get_snapshot_series` 一致（`start <= snapshot_date <= end`），理由是它按**自然日**而非时刻切分：`end=2026-09-24` 时用户想要包含 24 日，而监控总览那套半开时刻区间（`start <= started_at < end`）会静默少掉一天。**空窗口不是错误**（`200` + 空数组）——仓库存在，诚实的回答是"这段时间没有快照"；仓库不存在才是 `404`。窗口越界与倒置都是 `422` 而**不是夹取**：夹取后的答案静默变成另一段时间，两边数字都"看起来正常"。
+- **审计的只读用"不提供端点"表达，而不是用权限表达。** 审计是追加式的，模块 `security/queries.py` 是只读的一半，删改端点不存在 —— 权限无法被错误配置成存在。`metadata_json` **不出站**：它是写入方自由发挥的字段，可能含未脱敏上下文，"未定义允许键的 JSON 不该放在 egress 上"；`ip_address` 是 `VARBINARY(16)`（一列同时装 IPv4 与 IPv6），出站经 `format_ip_address` 还原为文本。
+- **天真时间戳的拒绝必须发生在边界上。** `UTCDateTime.process_bind_param` 会拒绝无时区的时间戳（`UTC timestamps must be timezone-aware`），这是对的 —— 静默假设成 UTC，或按本地时区解析（同一个 URL 在不同部署上含义不同），两者都比说"不"更糟。但**拒绝发生的位置**要改：不修则 `ValueError` 从查询构造器里冒成 `500`（看起来像故障），修后是边界上的 `422` 并指明字段。`api/params.py:UtcDateTime` 是 `Annotated[datetime, AfterValidator(...)]`，三个路由统一使用；422 的 detail 同时给出**字段路径与原因**（路径只说去哪里看，不说改什么，而对"时间戳必须带时区偏移"这类规则原因本身就是全部答案；原因取 Pydantic 的消息模板而非违规输入，不构成回显 payload）。
+- **检查器必须拒绝相信"什么都没找到"。** 原先直接遍历 `app.routes` 取 `.path`：宿主机上找到 41 条路由，容器里（FastAPI 0.143）**一条都找不到** —— `include_router` 在新版本把子路由藏在 `_IncludedRouter` 节点后面，而它随后把契约里每个端点都报成"缺失"。改为递归下钻 `routes` 与 `original_router` 两种形状，并且走到 0 条路由就直接报错，而不是当作"契约干净"。同一个道理的另一处：`_prose()` 先把围栏代码块整段剥掉再提取反引号 token —— 围栏内的反引号不成对，扫描原文会让配对错位，结果是 JSON 示例里的散文被读成端点、真正的标题反而找不到。
+- **"声明的"与"提到的"是两件事。** 契约里也会写出端点**为了说明它不存在**（`POST /topics/{id}/run` 与 `POST /agent/runs` 都由解释它们为何不提供的段落写下来）。所以方向一（文档承诺的必须存在）只比较**标题行与表格行**——只有这两处断言"这个端点存在"；方向二（每条路由都要被提到）接受任意位置。早先版本用"路径至少有两个斜杠"来近似这个区分，那个启发式恰好放过了漂移本身的形状：`GET /sources` 与 `GET /topics` 各只有一个斜杠。
+- **每个"加了值要同步多处"的约定，都要把文档算作其中一处。** 新增评测变体要同步 `TARGET_ORDER` + `EVAL_TARGET_TYPES` + `ABLATION_PROFILES` + 迁移的 CHECK，而 `docs/evaluation.md` §1 是第五处 —— 它自己声明"与该三处逐字一致"。代码不会与自己漂移，所以没人比较的那一处正是会漂移的那一处（`feedback` 就是这么被当成真表列了三个任务的，而它至今仍是计划内、尚未实现）。`check_evaluation_targets` 因此做的是**有序**比较，而不是"名字出现过"：变体表的顺序就是报告里的阅读顺序。
+- **比较器的价值在于它会失败，所以验证脚本必须证明这一点。** `verify_t18.ps1` 把三份文档各临时改错一处 —— `docs/api-contract.md` 补一个只含一个斜杠的幽灵端点（`GET /t18-not-a-real-endpoint`）、`docs/data-model.md` 补一张幽灵表（`zz_fake_table`）、`ARCHITECTURE.md` 把 `- [x] T18` 改回 `- [ ] T18` —— 要求检查器**同时**报出三条漂移（分属 `endpoints` / `tables` / `status-lines`）并退出 `1`，再复原并重新通过。三处一起改是有意的：一处漂移可能被单个检查的偶然巧合盖住，"三条一起被报出"才说明每一侧都在真的比较。一个永远回答"一致"的比较器不会比它取代的"读一遍"更好，那四组幽灵接口今天还会留在契约里。
+- **改写文档的那段，复原必须"不可能失败"。** 反向验证要临时改坏三份文档，问题在于怎么把它们放回去：最初用 `Copy-Item` 存一份 `.t18backup` 再 `Move-Item` 还原，而备份文件是**第二份拷贝，可以被消耗** —— 两次并发运行会互相移走对方的备份，`finally` 里的 `Move-Item` 随即失败，留下的正好是"故意改坏的文档"。这比没有检查器更糟：一个会让仓库文档停在错误状态的验证脚本，比它要取代的"读一遍"更危险。改为开始时把三份原文读进内存、`finally` 里 `WriteAllText` 写回 —— 从字符串复原没有失败路径。同时明确该脚本**不支持并发调用**（改写是全局的）。附带一个同类教训值得记下：这个缺陷是被**我自己并行跑了两次验证**暴露的，说明"工具说通过"和"工具把仓库留在什么状态"是两件必须分开检查的事。
+- **摘要行里不能出现宿主相关的值。** 冒烟摘要最初打印被拒主题的 `resource_ids`，而那是数据库自增主键：Compose 库上为 `13`、新建夹具上为 `2`（按库里已有的行数走）。把它混进一串引擎无关的语义值里，会让"两个引擎 payload 逐值一致"这句话看上去不成立，而它其实是成立的 —— 更糟的是，读的人会去怀疑实现，而不是去怀疑摘要。改为只打印计数 `audited=1`；"审计行挂在对被拒主题上"这个事实由断言段表达（`closed_topic_audit.resource_ids == closed_topic_id`），摘要只负责说数量。
+- **冒烟按名字前缀清理自己的行，不按主键高水位。** T17 用高水位是因为它每次都在同一张不断增长的账本上工作；T18 的 `__t18_drill__` 前缀让清理**幂等**：被打断的上一次运行留下的行会被下一次清掉，因此冒烟可以在有数据的库上重复执行，也不需要 `down -v`。顺带一处 MySQL 方言约束：`DELETE FROM t WHERE id IN (SELECT ... FROM t)` 被拒绝（`1093`），所以 id 要先读进 Python 再删。
+
 ## 10. 关键接口摘要
 
 
@@ -518,9 +543,9 @@ T17 已实现以下能力：
 | 接口组 | 代表接口 | 说明 |
 |---|---|---|
 | 认证 | `POST /api/v1/auth/login`, `GET /api/v1/auth/me` | 登录和当前用户 |
-| 数据源 | `/api/v1/sources` | 采集源配置 |
-| 主题 | `/api/v1/topics` | 监控主题与筛选条件 |
-| 仓库 | `/api/v1/repositories`, `/api/v1/repositories/{id}/snapshots` | 仓库和趋势查询 |
+| 数据源 | **无 HTTP 端点** | 行由采集器按 `(source_type)` 幂等自供给；`base_url` / `credential_ref` / 限流预算属部署配置，改它们走环境变量与迁移 |
+| 主题 | **无 HTTP 端点** | 主题增删改属运维配置；**触发研究也不在 API 上**（与 Agent 运行同理：消耗模型预算，触发权属调度器与 CLI） |
+| 仓库 | `/api/v1/repositories`、`/api/v1/repositories/{id}/snapshots` | 公开级元数据，已登录用户可读；`topic_id` 过滤要求主题可见（禁用主题仅 `ADMIN`），越权 `403` + `repository.read` 审计 |
 | Agent | `GET /api/v1/agent/runs`, `/api/v1/agent/runs/{id}`, `/api/v1/agent/runs/{id}/steps` | 只读：运行账本、单个运行与完整轨迹（含未挂到步骤的工具调用）；运行由 pipeline 创建，不经 API |
 | 报告 | `/api/v1/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 查询、校验、审核、发布、回退和推送 |
 | 推送 | `/api/v1/push/targets`、`/api/v1/push/records`、`/api/v1/push/retry` | 投递允许列表、投递记录与失败重试扫描，需写角色 |
@@ -528,7 +553,7 @@ T17 已实现以下能力：
 | 评测 | `/api/v1/evaluations`、`/runs`、`/runs/{id}`、`/{dataset_id}/cases`、`/{dataset_id}/run`、`/{dataset_id}/comparison` | 数据集版本、样本、按变体执行与统一对比报告，全部需写角色 |
 | 监控 | `GET /api/v1/metrics/overview` | 纯只读运维总览：任务、Token、延迟、失败率、报告人工阻断率与最新一轮评测裁决，需 `ADMIN`/`EDITOR` |
 | 回填 | CLI `backfill --action start\|resume\|status\|list`、Celery `run_backfill` | 历史分页走查；一次性、昂贵、对共享公共 API 施压，因此**不暴露 HTTP 端点**，只服务操作员 |
-| 审计 | `/api/v1/audit-logs` | 只读审计查询，限管理员；拒绝事件按 `auth.csrf` / `auth.rbac` / `report.read` 归档，报告资源的拒绝带 `resource_id`（T17） |
+| 审计 | `GET /api/v1/audit-logs` | 只读审计查询，仅 `ADMIN`；拒绝事件按 `auth.csrf` / `auth.rbac` / `report.read` / `repository.read` 归档，资源域拒绝带 `resource_id`；无修改与删除端点 |
 
 API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支持 `page`、`page_size`，并限制最大 `page_size`。所有写操作需要 CSRF 防护或 Bearer 认证，所有报告读取执行 ACL。
 
@@ -606,7 +631,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 - [x] T15 监控指标与看板 — 依赖：T6/T10/T14 — 验证：窗口内任务成功率、Token、成本、延迟分位数、失败原因、工具成功率和报告人工阻断率全部真实可见；评测段复用 `compare_latest` 裁决；`/ui/dashboard` 与运行轨迹页在真实应用上渲染；`VIEWER` 被拒且导航不暴露入口
 - [x] T16 数据回填与端到端演示 — 依赖：T4/T5/T14 — 验证：真实 `GitHubCollector` + 真实 `run_backfill` 在一个 GitHub 形状的 mock transport 上完成一次四页历史回填（`total_count` 报 4210 却只服务 4 页，走查按缺席的 `rel="next"` 停下）；第 3 页被注入 500 后作业停在 `next_page=3`/`pages_completed=2`，续传只请求第 3、4 页、两个尝试各留一条运行行、重放走查不新增任何仓库行；限流按 `60/per_minute` 间隔执行且默认预算取自源行；并发守卫与过期接管、越界预算、不可分页源、已完成作业的续传全部被拒；随后真实 `run_daily_pipeline`（collect→snapshot→rank）→ 真实 Agent → `generate_report` → `verify_report` → 策略判定 `pending_review`（`FIRST_RUN`）→ 人工 `approve` → `publish_due_reports` 发布，落库行由**只读会话**重新读回；真实 CLI 子进程的 `list`/`status` 与两处拒绝；真实 GitHub 上另跑一次三页走查（12 条，逐页 `has_more=true`）与一次走到未认证限流（7 页 700 条后 `403`，游标保留在 `next_page=8`）
 - [x] T17 安全测试与故障演练 — 依赖：T3/T9/T13 — 验证：真实应用 + 真实数据库上跑完四类演练。**越权**：三角色 × 四份报告（`INTERNAL`/`TEAM`/`PRIVATE(owner=editor)`/`PRIVATE(owner=NULL)`），匿名 API `401`、匿名 UI `303`，列表 `total` 为 `admin=4 / editor=3 / viewer=1` 且可见 id 与之一致；`viewer` 读 `TEAM`、`viewer` 与 `editor` 读孤儿 `PRIVATE` 全 `403` 且响应体不含标题，`editor` 读自己的 `PRIVATE` 为 `200`；四类写拒绝（`viewer` 写 API / `viewer` 写 UI / `viewer` 看板 / CSRF 缺失与不匹配 / `editor` 写越权报告）全 `403`；审计按动作归档 `report.read=["2","4"]`、`auth.rbac=["1","None"]`、`auth.csrf=["1"]`。**Prompt Injection**：双语（英/中）注入混在正常 README 里直写 `repository_contents` 缓存，真实 `run_daily_pipeline` + 真实 `run_research_agent` 后 `status=needs_review`、`error_code=AGENT_PROMPT_INJECTION`、`guard_triggered=true`、`security_risk=true`（运行行与持久化一致），模型收到的全部消息中英两路注入均**未到达**、普通文本**存活**，五个白名单工具可达且 `tool_denials=0`、Prompt 内零凭据。**API 失败**：源 `5xx` 与超时各 `attempts=3` → `COLLECTOR_FAILED`（运行行 `failed`、`provider_errors=true`）；模型不可用 → `AGENT_MODEL_UNAVAILABLE`；推送首推 `failed`/`PUSH_DELIVERY_FAILED`，拒收扫描 `attempt=2` 仍 `failed`，换接收渠道 `attempt=3` 转 `sent`，`push_rows=1`、重放 `replayed=true`。**重复任务**：同一业务日两次采集仓库仍为 2、两次发布扫描均为 0、两次推送渠道只被真正调用 1 次（第二次 `replayed=true`）。一次真实 FastAPI 应用 + 真实 SQLAlchemy 库，唯一打桩处为模型客户端、GitHub HTTP 传输与推送渠道；两个引擎（SQLite 夹具 / Compose + 真实 MySQL）上 payload 逐值一致，容器路径含 `alembic upgrade head` 12 个迁移与 `alembic check`（`No new upgrade operations detected`）
-- [ ] T18 文档同步与发布检查 — 依赖：T1-T17 — 验证：架构、API、数据模型和评测文档与代码一致
+- [x] T18 文档同步与发布检查 — 依赖：T1-T17 — 验证：架构、API、数据模型和评测文档与代码一致；契约声明的端点、`Base.metadata` 的表、`ARCHITECTURE.md` §7 摘要、`Settings` 与 `.env.example`、`docs/` 索引、单一迁移 head、`.env.example` 的无凭据性、两份根文档的状态行与 `__version__` 全部由 `scripts/check_docs_drift.py` 十项比较逐条核对；新补的 `/repositories`（含快照）与 `/audit-logs` 在真实库上冒烟，且比较器被反向验证过会失败
 
 任务顺序以数据模型和权限为地基，先跑通纵向切片，再扩展评测和界面。每个任务完成后必须真实运行核心路径，不能以单元测试替代冒烟验证。
 
@@ -678,3 +703,11 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-15 | 新增授权决策的直接测试 `tests/security/test_authorization.py`：`can_read_report`（Python 谓词）与 `readable_reports_filter`（SQL 谓词）逐组对照同一份期望集，并独立于实现拼出该期望集；另覆盖"`ADMIN` 短路保住无主 `PRIVATE`"（否则该行对所有人不可读，是锁死而非保护）与"可见范围门不查角色"（分层而非重复） | 11、15 | T17 | 19 个测试；全仓 632 passed（T16 基线 609，本轮 +23）；`tests/web/ + tests/api/ + tests/security/` 回归 167 passed |
 | 2026-10-15 | 新增凭据卫生测试 `tests/agent/test_prompt_hygiene.py`：此前"API Key / 连接串 / Cookie 不进 Prompt"只有数据库明文与日志两条有覆盖，第三条（模型收到的消息本身）零覆盖 | 11、15 | T17 | 3 个测试：真跑一次 `run_research_agent` 后断言全部消息不含凭据取值与凭据形状（`sk-` / `ghp_` / `github_pat_`）、持久化的 `AgentStep.summary` + `ToolCall.result_summary` + `arguments_json` 不含凭据、运行账本只含五个白名单工具 |
 | 2026-10-15 | T17 收口：`docs/security-and-privacy.md` 新增 §9「安全与故障演练（T17）」并在 §3.1.1 补"UI 与 API 共享拒绝动作名 / 对外沉默对内留痕"、§5 补双语注入实测、§6 补拒绝落点；`INTERFACES.md` 补授权一对入口（`can_read_report` / `readable_reports_filter` / `require_report_read` / `deny_request`）与共享审计动作名 | 9.14、10、11、14、15 | T17 | 文档与 `scripts/t17_security_drill.py` 的实测 payload 逐值对照 |
+| 2026-10-15 | 完成 T18 文档同步与发布检查：新增十项比较器 `scripts/check_docs_drift.py`（端点 / 表 / 架构摘要 / 评测变体 / 配置 / 文档索引 / 迁移 head / 密钥 / 状态行 / 版本），一键入口 `scripts/verify_t18.ps1`，运行时证据 `scripts/t18_mysql_smoke.py` | 9.15、14、15 | T18 | 十项比较全绿（`{"failures": 0, "passed": true}`）；`verify_t18.ps1` 另把三份文档各临时改错一处、要求比较器同时报出三条漂移并退出 `1` 后复原重跑通过；冒烟在两个引擎上 payload 逐值一致 |
+| 2026-10-15 | 修复 T18 查出的接口漂移：契约声明了四组从未实现的接口（`/sources`、`/topics` 含 `POST /topics/{id}/run`、`/repositories` 含 snapshots、`/audit-logs`）。按 `REQUIREMENTS.md` FR-D-05（点名"报告、**仓库**、Agent、评测和**审计** API"）**实现**仓库目录（含闭区间快照窗口）与审计两类，按"研究运行的触发权不属于任意已登录客户端"与"数据源字段就是部署配置"**删除**主题触发与数据源两组 | 9.15、10、14、15 | T18 | `GET /api/v1/repositories`、`GET /api/v1/repositories/{id}/snapshots`、`GET /api/v1/audit-logs` 三条路由实跑；`tests/api/test_repositories.py`（18 项）与 `tests/api/test_audit_logs.py`（9 项）落盘；`INTERFACES.md` §3 与 `docs/api-contract.md` §3/§4/§8 同步改写，漂移检查的端点项转绿 |
+| 2026-10-15 | 修复 T18 查出的真实缺陷（产品代码，自 T12 起潜伏）：`GET /reports` 等端点的 datetime 查询参数从不校验时区，天真时间戳直达 `UTCDateTime.process_bind_param` 并抛 `ValueError`，对外表现为 `500`；参数从未被行使，所以无人抓到 | 9.15、10、15 | T18 | 新增 `api/params.py:UtcDateTime`（`AfterValidator` 要求带偏移），`reports` / `repositories` / `audit` 三个路由统一改用；`api/errors.py` 的 422 detail 补"字段路径 + 原因"；`tests/api/test_reports.py` 补两例回归（拒绝天真时间戳、接受带偏移时间戳），冒烟断言 `naive_timestamp_status == 422` 且 detail 含 `timezone offset` |
+| 2026-10-15 | 修复 T18 查出的第二处真实缺陷（检查器本体）：端点比较原先扁平遍历 `app.routes`，宿主机找到 41 条路由而容器内（FastAPI 0.143 的 `_IncludedRouter`）一条都找不到，随后把契约里每个端点报成"缺失"；同时"路径至少两个斜杠"的启发式恰好放过漂移本身的形状（`GET /sources`、`GET /topics` 各只有一个斜杠） | 9.15、15 | T18 | 递归下钻 `routes` 与 `original_router` 两种形状，并在结果为空时报错而非判为"契约干净"；方向一改为只比较标题行与表格行（只有这两处断言端点存在），删掉长度启发式；两处改动后宿主机与容器内均得到 41 条路由、零漂移 |
+| 2026-10-15 | 修复 T18 查出的文档漂移：`docs/data-model.md` 把 `feedback` 当已实现的表列出（实际无 ORM 模型与迁移）、`.env.example` 缺 `APP_NAME`、`INTERFACES.md` 的"元数据共 28 张表"漏算 T16 的 `backfill_jobs`（实为 29）、`ARCHITECTURE.md` §7 摘要表漏 `topic_repositories` / `repository_contents` / `report_drafts` / `report_sections` / `push_targets` / `report_pushes` 且把 `feedback` 当已实现、`README.md` 与 `INTERFACES.md` 的状态行停在 T13 | 7、9.15、14、15 | T18 | `feedback` 加"计划内、尚未实现"标注（比较器的 `planned` 分支随之生效）；`.env.example` 补 `APP_NAME` 后配置项转绿；§7 摘要补齐 29/29 张表；两份状态行改为 T1-T18 后新增的 `status-lines` 检查转绿 |
+| 2026-10-15 | T18 收口：README「当前阶段」改写为 T18 并补 T18 验证命令段、文档索引保持不变；`INTERFACES.md` 与 `README.md` 头部状态与版本对齐 | 14、15、文档索引 | T18 | `check_docs_drift.py` 十项全绿；`README.md` 索引的 11 份详细文档与 `docs/` 实际文件一一对应 |
+| 2026-10-15 | 修复 T18 验证脚本自身的缺陷（测试基础设施，不影响产品代码）：反向验证段原用 `Copy-Item` 存一份 `.t18backup` 再用 `Move-Item` 复原，而备份文件是**可被消耗的第二份拷贝** —— 两次并发运行会互相移走对方的备份，`finally` 里的 `Move-Item` 随即失败，并把三份文档留在"故意改坏"的状态（幽灵端点、幽灵表、`T18` 被取消勾选）| 9.15、15 | T18 收口 | 改为开始时把三份原文读进内存、`finally` 里 `WriteAllText` 写回，复原不存在失败路径；被污染的文档按已知的追加内容定点还原（`grep -c` 三项均归零、`- [x] T18` 复原），`check_docs_drift.py` 复核十项全绿、无残留 `.t18backup`；脚本内注明不支持并发调用；此后两个引擎各顺序实跑一次均 exit 0 |
+| 2026-10-15 | 修正 T18 冒烟摘要行的口径（测试基础设施）：摘要原打印被拒主题的 `resource_ids`，而那是**数据库自增主键**（Compose 库上 `13`、新建夹具上 `2`，按库里已有行数走），把它混进一串引擎无关的语义值里，会让"两个引擎 payload 逐值一致"这句话看上去不成立 | 9.15、15 | T18 收口 | 摘要改为只打印计数 `audited=1`；"审计行确实挂在对被拒主题上"仍由断言 `closed_topic_audit.resource_ids == closed_topic_id` 表达。重跑两个引擎（Compose + MySQL 与 `-SqliteFixture`），摘要行**逐字相同** |

@@ -25,6 +25,7 @@ from sqlalchemy import ColumnElement, and_, or_, true
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.persistence.models.identity import User
+from open_source_intelligence.persistence.models.intelligence import Topic
 from open_source_intelligence.persistence.models.reporting import Report
 from open_source_intelligence.security.dependencies import deny_request
 from open_source_intelligence.security.service import get_role_codes
@@ -43,6 +44,16 @@ REPORT_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWE
 #: operator roles rather than with report readers - a viewer sees reports, not the ledger that
 #: produced them.
 METRICS_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR)
+
+#: Roles allowed to read the repository catalog. The catalog holds public repository metadata
+#: (`docs/security-and-privacy.md` §2 classifies it as public), so every authenticated role
+#: reads it; what needs adjudicating is not the catalog but whose topics it may be sliced by,
+#: which is what `can_read_topic` decides.
+REPOSITORY_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER)
+
+#: Roles allowed to read the audit log. Reading it is itself a privilege: the entries name
+#: every refused request, every configuration change and every publish on the platform.
+AUDIT_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN,)
 
 TEAM_DATA_SCOPE: Final[str] = "team"
 
@@ -116,3 +127,54 @@ def authorize_report_read(
         )
     require_report_read(session, request, user, report)
     return report
+
+
+def can_read_topic(user: User, topic: Topic, roles: set[str]) -> bool:
+    """Return whether `user` may slice the repository catalog by `topic`.
+
+    The catalog itself is public, so this is not a container ACL. It guards the membership
+    question: which repositories a topic tracks is internal strategy, and `topic_repositories`
+    is where that becomes observable.
+
+    `ADMIN` reads every topic. Everyone else reads `enabled` topics — that is the whole of the
+    rule, deliberately. `topics` has no ACL column, and inventing a per-topic grant would be a
+    new feature (`REQUIREMENTS.md` puts full ABAC out of scope), not documentation sync. A
+    disabled topic is treated as unpublished configuration rather than as someone else's
+    private data, which is why the gate is a role check and not an ownership check.
+    """
+    if ROLE_ADMIN in roles:
+        return True
+    return topic.enabled
+
+
+def authorize_topic_read(
+    session: Session,
+    request: Request,
+    user: User,
+    *,
+    topic_id: int,
+) -> Topic:
+    """Load one topic for catalog filtering, or refuse the request.
+
+    The failure split follows the report resource: a topic that does not exist is `404`, and a
+    topic that exists but is not visible is `403`. The `403` body carries no topic metadata and
+    the audit row names the topic — the same mirror the report ACL uses, for the same reason.
+    """
+    topic = session.get(Topic, topic_id)
+    if topic is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"topic {topic_id} does not exist",
+        )
+    if can_read_topic(user, topic, get_role_codes(user)):
+        return topic
+    deny_request(
+        session,
+        request,
+        action="repository.read",
+        resource_type="topic",
+        resource_id=str(topic.id),
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="insufficient permissions for this topic",
+        actor_id=user.id,
+    )

@@ -18,6 +18,22 @@ def pack_ip_address(value: str | None) -> bytes | None:
         return None
 
 
+def format_ip_address(value: bytes | None) -> str | None:
+    """Convert a packed address back to text for egress.
+
+    The counterpart of `pack_ip_address`, kept next to it so the two stay in step: one column
+    holds both IPv4 (4 bytes) and IPv6 (16 bytes), and only the pair of functions knows that.
+    A value the packing side would have rejected cannot appear here, so `None` and a textual
+    address are the only two outcomes.
+    """
+    if not value:
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
 def record_audit_event(
     session: Session,
     *,

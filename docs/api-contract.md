@@ -83,78 +83,56 @@
 
 ## 3. 数据源与主题
 
-### `GET /sources`
+**本节没有 HTTP 端点。** 早期设计在这里声明过 `GET /sources`、`POST /sources`、`GET /topics` 与 `POST /topics/{topic_id}/run`，实现从未存在；T18 把它们从契约中移除，而不是留着一份文档去承诺一个没人打算做的接口。
 
-权限：`ADMIN`、`EDITOR` 可读；分页返回。
+移除的理由分两类，都不是"没来得及做"：
 
-```json
-{
-  "items": [{
-    "id": 1,
-    "name": "GitHub",
-    "source_type": "github",
-    "enabled": true,
-    "rate_limit": 30,
-    "last_success_at": "2026-09-24T02:00:00Z"
-  }],
-  "page": 1,
-  "page_size": 20,
-  "total": 1
-}
-```
+- **数据源自供给。** `data_sources` 的行由采集器在首次采集时按 `(source_type)` 幂等建立（`collectors/service.py:ensure_data_source`），它的可变字段就是部署配置：`base_url` 取自 `GITHUB_API_BASE` / `HUGGINGFACE_API_BASE`，`credential_ref` 指向环境变量里的 Token，`rate_limit_per_minute` 既是默认限流预算也是回填的默认预算。这些值属于**部署**，改它们应该走环境变量与迁移，而不是走一个会写 `data_sources` 的请求处理器 —— 一个能改限流预算的 HTTP 端点等于把公共 API 的用量控制交给任意一个已登录客户端。
+- **主题的触发权不在 API 上。** `POST /topics/{id}/run` 与 §5 拒绝 `POST /agent/runs` 是同一条理由：一次研究运行会消耗模型预算，触发权属于受调度控制的管道（Celery beat 的每日任务）与操作员 CLI（`python -m open_source_intelligence.pipeline.cli --action daily`），而不是任意一个已登录客户端。T15 已经为 Agent 运行确立过这条决策，主题触发的接口会把它绕开。
 
-### `POST /sources`
-
-权限：`ADMIN`。请求可包含 `name`、`source_type`、`base_url`、`credential_ref`、`enabled`、`config_json`。API 不直接接收明文长期凭证，应接收 Secret Manager 引用或一次性写入后立即加密。
-
-### `GET /topics`
-
-```json
-{
-  "id": 7,
-  "name": "AI Agent 基础设施",
-  "publish_mode": "AUTO_WITH_DELAY",
-  "enabled": true
-}
-```
-
-### `POST /topics/{topic_id}/run`
-
-权限：`ADMIN`、`EDITOR`。手动触发一次该主题的采集、筛选与 Agent 研究。
-
-```json
-{
-  "window_start": "2026-09-17T00:00:00Z",
-  "window_end": "2026-09-24T00:00:00Z",
-  "force": false
-}
-```
-
-响应 `202 Accepted`：
-
-```json
-{
-  "pipeline_run_id": 101,
-  "status": "queued"
-}
-```
+主题本身的增删改同样没有 HTTP 面：它属于运维配置，当前由种子/脚本写入，`docs/requirements.md` 未把主题管理列为首期交付。这条不构成"设计已定"，而是"设计未做"——将来要加，应当先回到 `INTERFACES.md` §3 补一行契约，再实现。
 
 ## 4. 仓库与趋势
 
 ### `GET /repositories`
 
-查询参数：`topic_id`、`language`、`min_stars`、`created_after`、`q`、`sort`、`page`、`page_size`。
+权限：任何已登录用户（`ADMIN` / `EDITOR` / `VIEWER`）。**仓库元数据是公开数据** —— `docs/security-and-privacy.md` §2 把公开仓库元数据列为"公开"级，因此这一层不做逐行 ACL；真正需要保护的是"哪些主题在盯哪些仓库"，那部分由下面的 `topic_id` 过滤规则承担。
+
+查询参数：
+
+| 参数 | 语义 |
+|---|---|
+| `topic_id` | 只返回该主题的候选仓库；**要求主题对该调用者可见**（见下），越权 `403` |
+| `language` | 主语言，大小写不敏感精确匹配 |
+| `min_stars` | `stars >= min_stars` |
+| `created_after` | 过滤 `repositories.first_seen_at`（我们把"首次发现"当作目录意义上的创建时间；该表没有 `created_at` 列，`first_seen_at` 就是它） |
+| `q` | 对 `full_name` 与 `description` 的大小写不敏感子串匹配；这是**子串搜索，不是全文检索** |
+| `sort` | `stars`（默认，降序）、`forks`（降序）、`last_seen`（降序）；未知取值 `422` |
+| `page` / `page_size` | 同平台约定，`page_size` 上限 100 |
+
+`topic_id` 的可见性规则：`enabled` 主题对所有已登录角色可见，**禁用主题仅 `ADMIN` 可见**。这是数据模型能表达的"主题权限"的全部 —— `topics` 表没有 ACL 列，为它发明一套逐主题授权属于新功能（`REQUIREMENTS.md` 把完整 ABAC 列为 Out of scope），不属于文档同步。契约原文写的"有主题权限"过于含糊，T18 把它钉到 `topics.enabled` 上。
+
+拒绝语义沿用报告资源的两段式：主题不存在 `404 NOT_FOUND`；主题存在但调用者不可见 `403 FORBIDDEN`（不泄露元数据），并写一条 `repository.read` / `denied` 审计。
 
 ```json
 {
   "items": [{
     "id": 501,
+    "source_id": 1,
     "provider": "github",
     "full_name": "example/agent-runtime",
+    "html_url": "https://github.com/example/agent-runtime",
+    "description": "A runtime for tool-using agents.",
     "language": "Python",
+    "license": "Apache-2.0",
+    "topics": ["agents", "runtime"],
     "stars": 12400,
     "forks": 920,
-    "last_seen_at": "2026-09-24T02:00:00Z"
+    "first_seen_at": "2026-08-01T02:00:00Z",
+    "last_seen_at": "2026-09-24T02:00:00Z",
+    "score": null,
+    "rank": null,
+    "selected_for_agent": null
   }],
   "page": 1,
   "page_size": 20,
@@ -162,9 +140,17 @@
 }
 ```
 
+`provider` 是 `data_sources.source_type`（`github` / `huggingface`），不是仓库自身的字段。`score` / `rank` / `selected_for_agent` 只在带 `topic_id` 时填充 —— 它们是**候选排序的产物**，离开主题就没有意义，返回 `null` 比返回一个凭空的值诚实。
+
+`total` 与 `items` 都受过滤条件约束，且过滤在数据库查询里完成：否则 `total` 会泄露无权主题的候选规模。
+
 ### `GET /repositories/{repository_id}/snapshots`
 
-查询参数：`start`、`end`、`granularity=day`。返回 `snapshot_date`、`stars`、`forks`、`stars_delta` 和 `forks_delta`。
+查询参数：`start`、`end`（日期）、`granularity=day`（当前仅支持 `day`，其他取值 `422`）。返回 `snapshot_date`、`stars`、`forks`、`open_issues`、`stars_delta` 和 `forks_delta`。
+
+**窗口是闭区间**，与 `pipeline/snapshots.py:get_snapshot_series` 一致：`start <= snapshot_date <= end`。这是平台内唯一一处闭区间窗口，理由是它按**自然日**而不是按时刻切分：用户问 `end=2026-09-24` 时想要的是包含 24 日，而监控总览那套半开时刻区间（`start <= started_at < end`）会静默少掉一天。端点直接复用 `get_snapshot_series`，让"窗口怎么算"只有一处定义。
+
+仓库不存在 `404`；仓库存在但窗口内没有快照返回 `200` 与空数组 —— **空窗口不是错误**，它是一次正常回答（"这段时间没有数据"）。首日快照的 `stars_delta` / `forks_delta` 为 `null` 而不是 `0`，因为增量只有在有前一日的快照时才存在。
 
 ## 5. Agent 运行与轨迹
 
@@ -798,7 +784,41 @@ UI 与 JSON API 的拒绝**共享同一组审计动作名**（T17）：`auth.csr
 
 ### `GET /audit-logs`
 
-仅 `ADMIN` 可读，支持按操作者、动作、资源、时间过滤；不提供修改接口。
+前缀 `/api/v1/audit-logs`。**仅 `ADMIN` 可读**：`EDITOR` 与 `VIEWER` 一律 `403`，匿名 `401`。审计行记录的是全平台的权限拒绝、配置变更、审核与发布动作，读它的能力本身就是一种权限。
+
+查询参数：
+
+| 参数 | 语义 |
+|---|---|
+| `actor_id` | 操作者；不传则不过滤 |
+| `action` | 精确匹配动作名（`report.read`、`auth.csrf`、`auth.rbac`、`backfill.run`……） |
+| `resource_type` / `resource_id` | 资源域过滤；两者可单独使用 |
+| `result` | `success` / `denied` / `failed`，未知取值 `422` |
+| `created_after` / `created_before` | 时间过滤，**半开区间** `created_after <= created_at < created_before`（与监控总览同一约定） |
+| `page` / `page_size` | 同平台约定，`page_size` 上限 100 |
+
+```json
+{
+  "items": [{
+    "id": 9001,
+    "actor_id": 3,
+    "action": "report.read",
+    "resource_type": "report",
+    "resource_id": "2",
+    "result": "denied",
+    "request_id": "1f9c...",
+    "ip_address": "203.0.113.7",
+    "created_at": "2026-10-15T09:00:00Z"
+  }],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
+}
+```
+
+按 `id` 降序（最新在前）。**没有修改与删除接口**：`audit_logs` 是追加式账本，这条约束由"不提供端点"表达，而不是由权限表达。`ip_address` 在库里以 16 字节二进制存储（IPv4 与 IPv6 同列），出站时还原成文本；解析失败的原值不会落库（写入侧 `pack_ip_address` 丢弃），因此该字段要么是合法文本要么是 `null`，没有第三种情况。
+
+`metadata_json` 不返回：它是写入方自由发挥的字段，可能包含未经脱敏的上下文。要对审计做脱敏后展示，应当先定义 `metadata_json` 的允许键，再开这个字段 —— 直接透传等于把一个未定义契约的 JSON 放到 egress 上。
 
 ## 9. 状态码与幂等约定
 

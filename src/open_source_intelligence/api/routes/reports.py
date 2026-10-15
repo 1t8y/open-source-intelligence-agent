@@ -39,6 +39,7 @@ from open_source_intelligence.security.authorization import (
 from open_source_intelligence.security.dependencies import get_db_session, require_roles
 from open_source_intelligence.security.service import get_role_codes
 
+from ..params import UtcDateTime
 from .push import PushOutcomeResponse
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
@@ -300,7 +301,7 @@ def list_reports(
     status_filter: Annotated[ReportStatus | None, Query(alias="status")] = None,
     visibility: Annotated[ReportVisibility | None, Query()] = None,
     sensitivity: Annotated[ReportSensitivity | None, Query()] = None,
-    created_after: Annotated[datetime | None, Query()] = None,
+    created_after: Annotated[UtcDateTime | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ReportListResponse:

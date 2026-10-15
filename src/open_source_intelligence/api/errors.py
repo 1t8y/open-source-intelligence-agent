@@ -123,15 +123,26 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-        """Summarize field-level validation errors without echoing the whole payload."""
-        fields = ", ".join(
-            ".".join(str(part) for part in error.get("loc", ())) for error in exc.errors()[:5]
-        )
+        """Summarize field-level validation errors without echoing the whole payload.
+
+        Each entry pairs the field path with the reason, because the path alone tells a caller
+        where to look but not what to change - and for a rule like "a timestamp must carry a
+        timezone offset" the reason is the entire answer. The reason is Pydantic's message
+        template rather than the offending input, so including it does not echo the payload.
+        """
+        details: list[str] = []
+        for error in exc.errors()[:5]:
+            location = ".".join(str(part) for part in error.get("loc", ()))
+            reason = str(error.get("msg", "invalid value"))
+            if reason.startswith("Value error, "):
+                reason = reason[len("Value error, ") :]
+            details.append(f"{location}: {reason}" if location else reason)
+        summarized = "; ".join(details) if details else "invalid request"
         return problem_response(
             request,
             status_code=UNPROCESSABLE_CONTENT,
             code="VALIDATION_ERROR",
-            detail=f"invalid request fields: {fields}" if fields else "invalid request",
+            detail=f"invalid request fields: {summarized}" if details else summarized,
         )
 
     @app.exception_handler(ReportNotFoundError)

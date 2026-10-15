@@ -35,7 +35,7 @@ eval_datasets --< eval_cases；eval_datasets --< eval_runs
 eval_runs --< eval_results >-- eval_cases
 eval_runs >-- agent_configs（baseline 的 target_type 允许为 NULL）
 users --< eval_datasets（created_by）
-users --< feedback
+users --< feedback（计划内、尚未实现，无 ORM 模型与迁移）
 users --< audit_logs
 ```
 
@@ -541,6 +541,8 @@ T13 新增。一次投递尝试的记录（不论成败），同时也是重试�
 三个门禁指标存为 `NUMERIC(5,4)`：它们都是 `0.0`–`1.0` 的比率，四位小数与评分器的量化位数一致，因此"评分得到的值"就是"落库的值"。
 
 ### `feedback`
+
+> **计划内、尚未实现。** `feedback` 没有对应的 ORM 模型，也没有迁移；`Base.metadata` 里没有这张表。它留在这里是为了给评测的坏例回流留一个明确的目的地（`is_bad_case` 就是回流开关），而不是因为在运行中的系统里能找到它。这一行必须自己说出来：检查脚本 `scripts/check_docs_drift.py` 会把带此标注的表记入"计划"，其余"文档里有、代码里没有"的表一律判为漂移 —— 一张像普通表一样被列出来的表，读者没有义务去分辨它到底存不存在。
 
 字段：`id`、`agent_run_id`、`report_id`、`user_id`、`feedback_type`、`label`、`comment`、`is_bad_case`、`created_at`。索引：`(is_bad_case, created_at)`。
 
