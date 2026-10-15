@@ -115,7 +115,9 @@ def cleanup_verification_records(session: Session) -> None:
         session.execute(delete(TopicRepository).where(TopicRepository.topic_id.in_(topic_ids)))
         session.execute(delete(Topic).where(Topic.id.in_(topic_ids)))
     session.execute(
-        delete(Repository).where(Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%"))
+        delete(Repository).where(
+            Repository.provider_repo_id.startswith(PROVIDER_PREFIX, autoescape=True)
+        )
     )
     # The runtime creates this config on first use; smoke runs are its only consumer here.
     session.execute(delete(AgentConfig).where(AgentConfig.name == DEFAULT_AGENT_CONFIG_NAME))

@@ -126,7 +126,7 @@ tools_invoked=五个白名单工具   tool_denials=0        credentials_in_promp
 
 审计记录使用 `request_id` 关联应用日志和 Agent Trace。首期允许管理员清理过期测试数据，但正式运行后不得通过普通 API 修改审计记录。
 
-拒绝事件的落点是**写操作**，不是传输层（T17）：JSON API 与管理界面的每次拒绝都写一条 `result="denied"` 行，而只读页面渲染被拒不留痕 —— 改了数据才有审计价值。已落地的拒绝动作名为 `auth.csrf`、`auth.rbac`、`report.read`（见 §3.1.1）；报告资源的拒绝带 `resource_id`，请求域拒绝不带。T17 演练实测：一次三角色、四份报告（`INTERNAL` / `TEAM` / `PRIVATE(owner=editor)` / `PRIVATE(owner=NULL)`）的会话在 `report.read` 动作上归档了被拒报告 `["2","4"]`，而 403 响应体里找不到这两份报告的任何标题。
+拒绝事件的落点是**写操作**，不是传输层（T17）：JSON API 与管理界面的每次拒绝都写一条 `result="denied"` 行，而只读页面渲染被拒不留痕 —— 改了数据才有审计价值。已落地的拒绝动作名为 `auth.csrf`、`auth.rbac`、`report.read`（见 §3.1.1）；报告资源的拒绝带 `resource_id`，请求域拒绝不带。T17 演练实测：一次三角色、四份报告（`INTERNAL` / `TEAM` / `PRIVATE(owner=editor)` / `PRIVATE(owner=NULL)`）的会话在 `report.read` 动作上归档了被拒的那**两份**报告（`TEAM` 与孤儿 `PRIVATE`）的 id，而 403 响应体里找不到这两份报告的任何标题。
 
 ## 7. 传输、存储与密钥
 
@@ -155,16 +155,20 @@ tools_invoked=五个白名单工具   tool_denials=0        credentials_in_promp
 
 ```text
 匿名：API 401，UI 303 → /ui/login?next=%2Fui%2Freports
-列表 total：admin=4  editor=3  viewer=1
-可见 id：admin=[1,2,3,4]  editor=[1,2,3]  viewer=[1]
+列表 total：admin=基线+4  editor=基线+3  viewer=基线+1
+可见 id：与 total 一致，且恰好是演练自己建的那四份
+         admin 全见；editor 见 INTERNAL + TEAM + 自己拥有的 PRIVATE；viewer 只见 INTERNAL
 viewer 读 TEAM → 403      viewer 读孤儿 PRIVATE → 403
 editor 读别人的 PRIVATE → 403    editor 读自己的 PRIVATE → 200
 四类写拒绝（viewer 写 API、viewer 写 UI、viewer 看板、CSRF 缺失/不匹配、editor 写越权 PRIVATE）全 403
-审计：report.read → ["2","4"]   auth.rbac → ["1","None"]   auth.csrf → ["1"]
+审计：report.read → 被拒的那两份报告 id   auth.rbac → 内部报告 id 与 "None"
+      auth.csrf → 内部报告 id
 orphan_title_leaked=false
 ```
 
 `total` 与可见 id 一起断言是刻意的：只看 id 无法区分"过滤在数据库里跑"与"先取全量再在应用层过滤"，而后者会把无权报告的存在泄露给翻页的人。
+
+**期望值写成相对量，不写绝对 id。** `verify_t17.ps1` 从不 `down -v`，而 MySQL 的 `AUTO_INCREMENT` 不因 `DELETE` 回落 —— 演练清掉的是自己的行，不是自己的 id。所以"viewer 只看得到报告 1"这句话**只在从未写过报告的库上成立**：同一个脚本在全新卷上通过、在有历史的卷上失败，而两侧代码一字未改，看起来像越权判据被破坏，实际是断言在描述操作员的历史。演练因此先测量三个账号**在看之前**各自能读到什么（`measure_visibility_baseline`，以 `visibility` / `owner_id` 两列重述 §3.3 的规则，与 `security/authorization.py` 的谓词是同一规则的两个独立表达），再把它与演练自己报告的 id 合成期望值（`visibility_expectations`）；断言因此说的是"API 恰好返回了演练这四份、且可见范围正确"。演练自己的 id 超过一页（`MAX_LIST_PAGE`）时直接报错，而不是拿被截断的一页去比对完整期望。
 
 ### 9.2 API 失败（依赖 T4/T6/T9）
 

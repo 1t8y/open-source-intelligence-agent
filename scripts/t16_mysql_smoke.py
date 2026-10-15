@@ -427,7 +427,9 @@ def cleanup_verification_records(session: Session) -> dict[str, Any]:
     removed["repo_snapshots"] = int(snapshots.rowcount or 0)
 
     repositories = session.scalars(
-        select(Repository.id).where(Repository.provider_repo_id.like(f"{REPO_PREFIX}%"))
+        select(Repository.id).where(
+            Repository.provider_repo_id.startswith(REPO_PREFIX, autoescape=True)
+        )
     ).all()
     if repositories:
         session.execute(
@@ -498,7 +500,9 @@ def _repo_count(session: Session, prefix: str) -> int:
         session.scalar(
             select(func.count())
             .select_from(Repository)
-            .where(Repository.provider_repo_id.like(f"{REPO_PREFIX}{prefix}_%"))
+            .where(
+                Repository.provider_repo_id.startswith(f"{REPO_PREFIX}{prefix}_", autoescape=True)
+            )
         )
         or 0
     )
@@ -890,7 +894,9 @@ def _cache_readmes(session: Session) -> int:
     normally write.
     """
     repositories = session.scalars(
-        select(Repository).where(Repository.provider_repo_id.like(f"{REPO_PREFIX}%"))
+        select(Repository).where(
+            Repository.provider_repo_id.startswith(REPO_PREFIX, autoescape=True)
+        )
     ).all()
     written = 0
     for repository in repositories:

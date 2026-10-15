@@ -122,9 +122,12 @@ def purge_drill_rows(session: Session) -> None:
 
     The names are matched as **literal prefixes** (`startswith(..., autoescape=True)`) rather than
     as `LIKE` patterns. A prefix like `__t18_drill__` contains four underscores, and `_` is a
-    single-character wildcard in `LIKE`: the pattern `__t18_drill__%` therefore also matches
-    `xx/t18-drill-abc`, so a deployment that happened to hold such a repository would have had it
-    deleted by this drill. Escaped, the prefix means the prefix.
+    single-character wildcard in `LIKE`, so the pattern `__t18_drill__%` does not mean "begins
+    with `__t18_drill__`" - it means "begins with any two characters, then `t18`, then any one,
+    then `drill`, then any two" - and therefore also matches values this drill never wrote. The
+    actor prefix is the sharp one, because it is what the purge matches accounts on: `__t18_%`
+    matches the username `abt18c_smith`. Escaped, the prefix means the prefix. This drill is not
+    special in this respect: every smoke labels its rows with a prefix containing `_`.
 
     The ids are read into Python first instead of being passed as subqueries. MySQL refuses
     `DELETE FROM t WHERE id IN (SELECT ... FROM t)` outright (`1093 You can't specify target

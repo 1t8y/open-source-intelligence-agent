@@ -152,7 +152,9 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
             )
         )
         session.execute(delete(Report).where(Report.id.in_(report_ids)))
-    session.execute(delete(PushTarget).where(PushTarget.name.like(f"{TARGET_PREFIX}%")))
+    session.execute(
+        delete(PushTarget).where(PushTarget.name.startswith(TARGET_PREFIX, autoescape=True))
+    )
     ids = list(actor_ids.values())
     if ids:
         session.execute(delete(UserRole).where(UserRole.user_id.in_(ids)))

@@ -49,6 +49,13 @@ from open_source_intelligence.reports.verification import VERDICT_FAILED, VERDIC
 T11_NOW = datetime(2099, 6, 5, 12, 0, tzinfo=UTC)
 FABRICATED_REF = "repo_snapshots:999999:2099-01-01"
 
+#: What every report this smoke writes is titled, and therefore what the cleanup matches on. It is
+#: matched as a **literal** prefix (`startswith(..., autoescape=True)`): `_` is a single-character
+#: wildcard in `LIKE`, so the obvious `title.like("__T11%")` also matches a report titled
+#: `abT11foo`, which this smoke never wrote and has no business deleting. Both the title and the
+#: cleanup read this constant, so the two cannot drift apart.
+REPORT_TITLE_PREFIX = "__T11"
+
 CLI = ("-m", "open_source_intelligence.reports.cli")
 
 
@@ -96,7 +103,7 @@ def _published_sibling(session: Session, report: Report) -> Report:
     sibling = Report(
         agent_run_id=report.agent_run_id,
         topic_id=report.topic_id,
-        title="__T11 prior weekly report__",
+        title=f"{REPORT_TITLE_PREFIX} prior weekly report__",
         current_version=1,
         content_markdown="# prior\n",
         status="published",
@@ -315,10 +322,14 @@ def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
 
 def _cleanup(session: Session) -> None:
     """Remove T11 verdict and review rows, then the T8 records they hang off."""
-    report_ids = select(Report.id).where(Report.title.like("__T11%"))
+    report_ids = select(Report.id).where(
+        Report.title.startswith(REPORT_TITLE_PREFIX, autoescape=True)
+    )
     session.execute(delete(ReportReview).where(ReportReview.report_id.in_(report_ids)))
     session.execute(delete(ReportVerification).where(ReportVerification.report_id.in_(report_ids)))
-    session.execute(delete(Report).where(Report.title.like("__T11%")))
+    session.execute(
+        delete(Report).where(Report.title.startswith(REPORT_TITLE_PREFIX, autoescape=True))
+    )
     session.commit()
     t8.cleanup_verification_records(session)
 

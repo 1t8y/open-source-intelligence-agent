@@ -214,11 +214,22 @@ Assert-True $authz.ui_anonymous_location.StartsWith('/ui/login') 'the UI redirec
 # Criterion 2: the visibility filter runs inside the query, and the *total* is what proves it. A
 # list that fetched every row and filtered afterwards would return the same items as this one;
 # only the total tells the two apart.
-Assert-Equal $authz.api_totals.admin 4 'an administrator sees every report'
-Assert-Equal $authz.api_totals.editor 3 'an editor on the team scope sees three of four'
-Assert-Equal $authz.api_totals.viewer 1 'a viewer sees only the internal report'
-Assert-Equal ($authz.api_viewer_visible -join ',') '1' 'the viewer''s list holds exactly the internal report'
-Assert-Equal ($authz.api_editor_visible -join ',') '1,2,3' 'the editor''s list holds the internal, team, and owned private reports'
+#
+# Every expectation here comes from the payload rather than from a literal, because the report ids
+# are not the drill's to choose: this script never drops the database volume, and MySQL does not
+# reset AUTO_INCREMENT when rows are deleted, so the drill's four reports do not start at id 1 on a
+# database that has been used - after one run of the drill the table is empty again and the next
+# report still takes the next id. The literals that used to sit here (`'1'`, `'1,2,3'`, `'2,4'`,
+# `'1,None'`) passed on a fresh volume and failed on a used one, with the same code on both sides.
+# The drill measures what the accounts could read before it wrote (`measure_visibility_baseline`)
+# and reports the ids it created, so what is asserted is "the API returned exactly the drill's
+# four reports, filed under the right visibilities" rather than "the operator's volume was clean".
+Assert-Equal $authz.api_totals.admin $authz.expected_totals.admin 'an administrator sees every report'
+Assert-Equal $authz.api_totals.editor $authz.expected_totals.editor 'an editor on the team scope sees the internal, team, and owned private reports'
+Assert-Equal $authz.api_totals.viewer $authz.expected_totals.viewer 'a viewer sees only the internal report'
+Assert-Equal ($authz.api_admin_visible -join ',') ($authz.expected_visible.admin -join ',') 'the administrator''s list holds every report'
+Assert-Equal ($authz.api_viewer_visible -join ',') ($authz.expected_visible.viewer -join ',') 'the viewer''s list holds exactly the internal report'
+Assert-Equal ($authz.api_editor_visible -join ',') ($authz.expected_visible.editor -join ',') 'the editor''s list holds the internal, team, and owned private reports'
 
 # Criterion 3: a refused read carries no report metadata, and the audit row names what was
 # refused. The two are the point of the split: the caller learns nothing, the operator can
@@ -228,7 +239,7 @@ Assert-Equal $authz.api_viewer_reads_orphan_status 403 'a viewer may not read an
 Assert-Equal $authz.api_editor_reads_orphan_status 403 'an editor may not read someone else''s private report'
 Assert-Equal $authz.api_editor_reads_own_private_status 200 'an editor reads the private report it owns'
 Assert-Equal $authz.orphan_title_leaked $false 'the refusal names no report'
-Assert-Equal ($authz.denials.'report.read' -join ',') '2,4' 'each refused read is filed against the report it addressed'
+Assert-Equal ($authz.denials.'report.read' -join ',') ($authz.expected_denials.'report.read' -join ',') 'each refused read is filed against the report it addressed'
 
 # Criterion 4: a write is refused before it can take effect, and each guard files its own action.
 Assert-Equal $authz.api_viewer_write_status 403 'a viewer may not verify a report over the API'
@@ -237,8 +248,8 @@ Assert-Equal $authz.ui_viewer_dashboard_status 403 'a viewer may not open the op
 Assert-Equal $authz.ui_csrf_missing_status 403 'a missing CSRF token is refused'
 Assert-Equal $authz.ui_csrf_mismatch_status 403 'a mismatched CSRF token is refused'
 Assert-Equal $authz.ui_editor_write_orphan_status 403 'an editor may not write to a report it cannot read'
-Assert-Equal ($authz.denials.'auth.rbac' -join ',') '1,None' 'the role and page refusals are both filed'
-Assert-Equal ($authz.denials.'auth.csrf' -join ',') '1' 'the CSRF refusal is filed against the report it addressed'
+Assert-Equal ($authz.denials.'auth.rbac' -join ',') ($authz.expected_denials.'auth.rbac' -join ',') 'the role and page refusals are both filed'
+Assert-Equal ($authz.denials.'auth.csrf' -join ',') ($authz.expected_denials.'auth.csrf' -join ',') 'the CSRF refusal is filed against the report it addressed'
 
 # ---------------------------------------------------------------------------------------
 # Prompt injection: hostile README text never reaches the model as an instruction.
@@ -333,6 +344,10 @@ else {
     Assert-LastCommandSucceeded 'T17 MySQL cleanup'
 }
 
-Write-Host "T17 verification passed. authorization: anonymous=$($authz.api_anonymous_status) totals=$($authz.api_totals.viewer)/$($authz.api_totals.editor)/$($authz.api_totals.admin) refused-reads=$($authz.denials.'report.read'.Count); injection: status=$($injection.agent_status) code=$($injection.agent_error_code) blocked-messages=$($injection.blocked_tool_messages); failure: source=$($sourceFailure.server_error.raised_code) model=$($modelOutage.error_code) push=$($pushFailure.first_error_code) retries=$($pushFailure.swept_accepted_attempt); repeated: repositories=$($repeat.repositories_after_second) pushes-sent=$($repeat.channel_send_count)."
+# The summary line is what the two engines are compared on, so it reports the *delta* this drill
+# added to each role's list rather than the absolute totals: the totals include whatever the
+# database already held (`baseline_totals`), and this script never drops the volume. "+1/+3/+4"
+# says the same thing on a fresh fixture and on a used Compose database.
+Write-Host "T17 verification passed. authorization: anonymous=$($authz.api_anonymous_status) seeded-totals=+$($authz.api_totals.viewer - $authz.baseline_totals.viewer)/+$($authz.api_totals.editor - $authz.baseline_totals.editor)/+$($authz.api_totals.admin - $authz.baseline_totals.admin) refused-reads=$($authz.denials.'report.read'.Count); injection: status=$($injection.agent_status) code=$($injection.agent_error_code) blocked-messages=$($injection.blocked_tool_messages); failure: source=$($sourceFailure.server_error.raised_code) model=$($modelOutage.error_code) push=$($pushFailure.first_error_code) retries=$($pushFailure.swept_accepted_attempt); repeated: repositories=$($repeat.repositories_after_second) pushes-sent=$($repeat.channel_send_count)."
 
 [Console]::OutputEncoding = $previousOutputEncoding

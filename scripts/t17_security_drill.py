@@ -19,6 +19,11 @@ Nothing here re-implements the code under test. The collectors are the real adap
 mock *transport* (so URL building, retry, `Link` parsing, and normalization are the shipped
 ones), the API is the real ASGI application in process, and the Agent is the real graph over
 the deterministic offline model client.
+
+The drill is also written to be repeatable against a database that is already in use: it removes
+exactly the rows it added (by primary-key watermark, plus a literal-prefix purge for the rows that
+carry a marker) and it measures what the accounts could already read before it asserts anything
+about what they can read now. `verify_t17.ps1` leans on both - it never drops the volume.
 """
 
 from __future__ import annotations
@@ -82,6 +87,11 @@ from open_source_intelligence.persistence.session import (
 from open_source_intelligence.pipeline.daily import PipelineStageError, run_daily_pipeline
 from open_source_intelligence.pipeline.runs import ERROR_COLLECTOR_FAILED
 from open_source_intelligence.reports.publishing import publish_due_reports
+from open_source_intelligence.security.authorization import (
+    VISIBILITY_INTERNAL,
+    VISIBILITY_PRIVATE,
+    VISIBILITY_TEAM,
+)
 from open_source_intelligence.security.passwords import hash_password
 from open_source_intelligence.security.service import create_user
 from open_source_intelligence.web.security import CSRF_COOKIE
@@ -96,6 +106,13 @@ REPO_PREFIX = "__t17_drill_"
 DRILL_QUERY = "__t17_drill__ stars:>0"
 ACTOR_PREFIX = "__t17_"
 DRILL_CONFIG_NAME = "__t17_drill_config__"
+#: The two labels the drill gives rows that carry no other marker. The purge matches both as
+#: **literal** prefixes (`startswith(..., autoescape=True)`): every one of these labels contains
+#: `_`, which is a single-character wildcard in `LIKE`, so the obvious `title.like("__T17%")` also
+#: matches a report titled `abT17foo` that the drill never wrote. `PUSH_TARGET_PREFIX` ends in `_`
+#: because it prefixes `drill_target__` and `repeat_target__` alike.
+REPORT_TITLE_PREFIX = "__T17"
+PUSH_TARGET_PREFIX = "__t17_"
 SMOKE_PASSWORD = "t17-drill-password-not-for-production"
 PUSH_DESTINATION = "t17-drill@example.com"
 
@@ -111,6 +128,13 @@ DRILL_NOW = datetime(2099, 9, 9, 9, 0, tzinfo=UTC)
 AGENT_CANDIDATES = 2
 DAILY_LIMIT = 4
 MOCK_STARS = 900
+
+#: How many rows of a report list the authorization half reads. `GET /api/v1/reports` caps
+#: `page_size` at 100, so that is as much of a role's view as one request can see - and it is why
+#: `measure_visibility_baseline` refuses to run against a database that already holds more than
+#: this many readable reports for any of the drill accounts: past that point the ids on the page
+#: stop being the whole answer, and an assertion built on them would be measuring pagination.
+MAX_LIST_PAGE = 100
 
 #: The instruction lines planted in the repository README. Two languages, because the guard
 #: ships both pattern sets and a drill that only proves one of them proves half a guard.
@@ -132,10 +156,10 @@ ROLES = {"admin": "ADMIN", "editor": "EDITOR", "viewer": "VIEWER"}
 SCOPES = {"admin": "personal", "editor": "team", "viewer": "personal"}
 
 REPORT_TITLES = {
-    "internal": "__T17 internal report__",
-    "team": "__T17 team report__",
-    "private_editor": "__T17 editor private report__",
-    "private_orphan": "__T17 ownerless private report__",
+    "internal": f"{REPORT_TITLE_PREFIX} internal report__",
+    "team": f"{REPORT_TITLE_PREFIX} team report__",
+    "private_editor": f"{REPORT_TITLE_PREFIX} editor private report__",
+    "private_orphan": f"{REPORT_TITLE_PREFIX} ownerless private report__",
 }
 
 
@@ -312,9 +336,9 @@ class Watermark:
 
     The drill cleans up by deleting rows above its watermark rather than by matching a marker,
     because half of what it creates (`pipeline_runs`, `agent_steps`, `tool_calls`, `audit_logs`)
-    carries no marker to match on. That is safe only because the verification script rebuilds
-    the schema before every run, so the drill owns the database from start to finish; the
-    docstring of `main` says so too.
+    carries no marker to match on. That is safe only while the drill is the only writer: the delete
+    cannot tell the drill's rows from a concurrent writer's, and `scripts/verify_t17.ps1` does not
+    drop the database volume, so rows from an earlier run are still there and stay below the mark.
     """
 
     pipeline_runs: int
@@ -476,12 +500,22 @@ def purge_drill_rows(session: Session) -> None:
     names, so it can only ever remove the drill's rows from a shared database.
     """
     topic_ids = list(session.scalars(select(Topic.id).where(Topic.name == TOPIC_NAME)).all())
-    report_ids = list(session.scalars(select(Report.id).where(Report.title.like("__T17%"))).all())
+    report_ids = list(
+        session.scalars(
+            select(Report.id).where(Report.title.startswith(REPORT_TITLE_PREFIX, autoescape=True))
+        ).all()
+    )
     user_ids = list(
-        session.scalars(select(User.id).where(User.username.like(f"{ACTOR_PREFIX}%"))).all()
+        session.scalars(
+            select(User.id).where(User.username.startswith(ACTOR_PREFIX, autoescape=True))
+        ).all()
     )
     target_ids = list(
-        session.scalars(select(PushTarget.id).where(PushTarget.name.like("__t17_%"))).all()
+        session.scalars(
+            select(PushTarget.id).where(
+                PushTarget.name.startswith(PUSH_TARGET_PREFIX, autoescape=True)
+            )
+        ).all()
     )
     agent_run_ids: list[int] = []
     pipeline_run_ids: list[int] = []
@@ -494,7 +528,9 @@ def purge_drill_rows(session: Session) -> None:
         )
     repository_ids = list(
         session.scalars(
-            select(Repository.id).where(Repository.provider_repo_id.like(f"{REPO_PREFIX}%"))
+            select(Repository.id).where(
+                Repository.provider_repo_id.startswith(REPO_PREFIX, autoescape=True)
+            )
         ).all()
     )
     push_ids = (
@@ -654,7 +690,7 @@ def seed_reports(session: Session, *, topic_id: int, actor_ids: dict[str, int]) 
             topic_id=topic_id,
             agent_run_id=agent_run.id,
             title=REPORT_TITLES["internal"],
-            visibility="INTERNAL",
+            visibility=VISIBILITY_INTERNAL,
             owner_id=None,
         ),
         "team": _seed_report(
@@ -662,7 +698,7 @@ def seed_reports(session: Session, *, topic_id: int, actor_ids: dict[str, int]) 
             topic_id=topic_id,
             agent_run_id=agent_run.id,
             title=REPORT_TITLES["team"],
-            visibility="TEAM",
+            visibility=VISIBILITY_TEAM,
             owner_id=None,
         ),
         "private_editor": _seed_report(
@@ -670,7 +706,7 @@ def seed_reports(session: Session, *, topic_id: int, actor_ids: dict[str, int]) 
             topic_id=topic_id,
             agent_run_id=agent_run.id,
             title=REPORT_TITLES["private_editor"],
-            visibility="PRIVATE",
+            visibility=VISIBILITY_PRIVATE,
             owner_id=actor_ids["editor"],
         ),
         "private_orphan": _seed_report(
@@ -678,7 +714,7 @@ def seed_reports(session: Session, *, topic_id: int, actor_ids: dict[str, int]) 
             topic_id=topic_id,
             agent_run_id=agent_run.id,
             title=REPORT_TITLES["private_orphan"],
-            visibility="PRIVATE",
+            visibility=VISIBILITY_PRIVATE,
             owner_id=None,
         ),
     }
@@ -732,7 +768,7 @@ def _api_readable_ids(client: TestClient, headers: dict[str, str]) -> tuple[list
     rows were fetched and filtered afterwards" are indistinguishable from the ids alone: both
     hand back the same list. Only the total tells them apart.
     """
-    response = client.get("/api/v1/reports?page=1&page_size=100", headers=headers)
+    response = client.get(f"/api/v1/reports?page=1&page_size={MAX_LIST_PAGE}", headers=headers)
     if response.status_code != 200:
         raise RuntimeError(f"report list failed: {response.status_code} {response.text}")
     body = response.json()
@@ -751,12 +787,121 @@ def _denials_by_action(factory: sessionmaker[Session], mark: int) -> dict[str, s
         return grouped
 
 
+@dataclass(frozen=True)
+class RoleView:
+    """One drill account's view of the reports table: the ids on the first page, and the total."""
+
+    ids: tuple[int, ...]
+    total: int
+
+
+@dataclass(frozen=True)
+class VisibilityBaseline:
+    """What each account could already read before the drill seeded its own four reports."""
+
+    admin: RoleView
+    editor: RoleView
+    viewer: RoleView
+
+
+def measure_visibility_baseline(session: Session, *, editor_id: int) -> VisibilityBaseline:
+    """Measure what the drill accounts could read *before* the drill wrote anything.
+
+    `verify_t17.ps1` never drops the database volume, and MySQL does not reset `AUTO_INCREMENT`
+    when rows are deleted, so the drill's own reports do not start at id 1 on a database that has
+    seen any use - after one run of this very drill the table is empty again but the next report
+    still gets the next id. An assertion written against the literal `1` therefore measures the
+    operator's history rather than the access rule: it passes on a fresh volume and fails on a
+    used one, with the same code on both sides. Measuring the pre-existing rows here is what turns
+    "the viewer sees exactly one report" into a claim about the four reports this drill wrote.
+
+    The rule is restated as plain SQL over `visibility` and `owner_id`, while the application
+    states it as a SQLAlchemy predicate in `security/authorization.py`. They are two independent
+    expressions of `docs/security-and-privacy.md` §3.3, which is what keeps the comparison below
+    an assertion rather than a tautology.
+
+    A role that can already read more reports than one page holds is refused outright: the drill
+    would be comparing a truncated page against a full expectation, and silently asserting the
+    wrong thing is worse than not running.
+    """
+    every = set(session.scalars(select(Report.id)).all())
+    internal = set(
+        session.scalars(select(Report.id).where(Report.visibility == VISIBILITY_INTERNAL)).all()
+    )
+    team = set(session.scalars(select(Report.id).where(Report.visibility == VISIBILITY_TEAM)).all())
+    owned = set(
+        session.scalars(
+            select(Report.id).where(
+                Report.visibility == VISIBILITY_PRIVATE, Report.owner_id == editor_id
+            )
+        ).all()
+    )
+    baseline = VisibilityBaseline(
+        # `ADMIN` sees every report, regardless of visibility or owner (`can_read_report`).
+        admin=RoleView(tuple(sorted(every)), len(every)),
+        # The editor holds the team data scope, so it adds `TEAM` rows to the shared `INTERNAL`
+        # ones and its own `PRIVATE` ones.
+        editor=RoleView(tuple(sorted(internal | team | owned)), len(internal | team | owned)),
+        # The viewer holds the personal scope: `INTERNAL` only.
+        viewer=RoleView(tuple(sorted(internal)), len(internal)),
+    )
+    views = {
+        "admin": baseline.admin,
+        "editor": baseline.editor,
+        "viewer": baseline.viewer,
+    }
+    for role, view in views.items():
+        if view.total > MAX_LIST_PAGE:
+            raise RuntimeError(
+                f"the {role} account can already read {view.total} reports, which is more than the "
+                f"{MAX_LIST_PAGE}-row page this drill lists; the visibility assertions only mean "
+                "something on a database that has not been filled with reports"
+            )
+    return baseline
+
+
+def visibility_expectations(
+    reports: dict[str, int], baseline: VisibilityBaseline
+) -> tuple[dict[str, list[int]], dict[str, int]]:
+    """Return, per role, the report ids and the list total the API is expected to answer with.
+
+    Both are built from the ids the drill created and from what the accounts could already read -
+    never from the ids' values. The verification script compares the API against these rather than
+    against literals, so the claim being asserted is "the API returned exactly the drill's four
+    reports, filed under the right visibilities" rather than "the operator's volume was clean".
+
+    The deltas are the four combinations the drill seeds: every role gains the `INTERNAL` report;
+    the editor also gains `TEAM` and its own `PRIVATE` one, which is why the administrator gains
+    all four and the viewer only one.
+    """
+    expected_visible = {
+        "admin": sorted((*baseline.admin.ids, *reports.values())),
+        "editor": sorted(
+            (
+                *baseline.editor.ids,
+                reports["internal"],
+                reports["team"],
+                reports["private_editor"],
+            )
+        ),
+        "viewer": sorted((*baseline.viewer.ids, reports["internal"])),
+    }
+    expected_totals = {
+        "admin": baseline.admin.total + 4,
+        "editor": baseline.editor.total + 3,
+        "viewer": baseline.viewer.total + 1,
+    }
+    return expected_visible, expected_totals
+
+
 def authorization_checks(
     session: Session,
     factory: sessionmaker[Session],
     client: TestClient,
     reports: dict[str, int],
     mark: int,
+    *,
+    baseline: VisibilityBaseline,
 ) -> dict[str, Any]:
     """Drive the real application through the access-control matrix on both surfaces."""
     anonymous = client.get("/api/v1/reports")
@@ -812,6 +957,16 @@ def authorization_checks(
     sorted_denials = {
         action: sorted(str(value) for value in values) for action, values in denials.items()
     }
+    expected_visible, expected_totals = visibility_expectations(reports, baseline)
+    # The refusals name the report they addressed: the viewer's two refused reads (the team report
+    # and the ownerless private one), the viewer's two refused writes (`auth.rbac` on the internal
+    # report, and the dashboard, which names no resource at all), and its two refused CSRF tokens
+    # (the same report twice, so one entry).
+    expected_denials = {
+        "report.read": sorted(str(value) for value in (reports["team"], reports["private_orphan"])),
+        "auth.rbac": sorted(str(value) for value in (reports["internal"], None)),
+        "auth.csrf": [str(reports["internal"])],
+    }
     return {
         "api_anonymous_status": anonymous.status_code,
         "ui_anonymous_status": anonymous_ui.status_code,
@@ -820,6 +975,18 @@ def authorization_checks(
         "api_editor_visible": sorted(editor_ids),
         "api_viewer_visible": sorted(viewer_ids),
         "api_totals": {"admin": admin_total, "editor": editor_total, "viewer": viewer_total},
+        # Reported so the verification script's one-line summary can print the *delta* rather than
+        # the absolute totals: "the viewer gained exactly one report" is a statement about this
+        # drill, while "the viewer's total is 1" is a statement about how full the database was
+        # before it started. The summary is the line two engines are compared on.
+        "baseline_totals": {
+            "admin": baseline.admin.total,
+            "editor": baseline.editor.total,
+            "viewer": baseline.viewer.total,
+        },
+        "expected_visible": expected_visible,
+        "expected_totals": expected_totals,
+        "expected_denials": expected_denials,
         "api_viewer_reads_team_status": viewer_reads_team.status_code,
         "api_viewer_reads_orphan_status": viewer_reads_orphan.status_code,
         "api_viewer_orphan_detail": viewer_reads_orphan.text,
@@ -914,7 +1081,11 @@ def injection_checks(
             session.scalar(
                 select(func.count())
                 .select_from(Repository)
-                .where(Repository.provider_repo_id.like(f"{REPO_PREFIX}injection_%"))
+                .where(
+                    Repository.provider_repo_id.startswith(
+                        f"{REPO_PREFIX}injection_", autoescape=True
+                    )
+                )
             )
             or 0
         ),
@@ -1024,7 +1195,7 @@ def push_failure_checks(
 ) -> dict[str, Any]:
     """Push an approved report through a refusing transport, then retry it into success."""
     target = PushTarget(
-        name="__t17_drill_target__",
+        name=f"{PUSH_TARGET_PREFIX}drill_target__",
         channel="email",
         destination=PUSH_DESTINATION,
         enabled=True,
@@ -1118,7 +1289,9 @@ def repeated_work_checks(
             session.scalar(
                 select(func.count())
                 .select_from(Repository)
-                .where(Repository.provider_repo_id.like(f"{REPO_PREFIX}repeat_%"))
+                .where(
+                    Repository.provider_repo_id.startswith(f"{REPO_PREFIX}repeat_", autoescape=True)
+                )
             )
             or 0
         )
@@ -1155,7 +1328,7 @@ def repeated_work_checks(
     # reusing that one would make the first push here a replay, which is the property this part
     # is trying to establish rather than assume.
     target = PushTarget(
-        name="__t17_repeat_target__",
+        name=f"{PUSH_TARGET_PREFIX}repeat_target__",
         channel="email",
         destination="t17-repeat@example.com",
         enabled=True,
@@ -1222,9 +1395,12 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the drill against the configured database and print the assertion payload.
 
-    The normal path owns the database for the duration and cleans up by primary-key watermark,
-    which is only sound while nothing else is writing; `scripts/verify_t17.ps1` rebuilds the
-    schema first, and the docstring of `Watermark` records the same precondition.
+    The drill is written to run against a database that is already in use: it cleans up by
+    primary-key watermark, so a run leaves behind exactly the rows that were there before it, and
+    its authorization expectations are measured against what it found rather than against ids it
+    assumes (`measure_visibility_baseline`). The precondition it *does* rely on is that it is the
+    only writer for the duration - the watermark delete cannot tell the drill's rows from a
+    concurrent writer's - which is why `scripts/verify_t17.ps1` runs it as a single drill step.
     """
     args = _parse_args()
     settings = get_settings()
@@ -1246,11 +1422,14 @@ def main() -> None:
         with factory() as session:
             actor_ids = seed_actors(session)
             topic_id = seed_topic(session, actor_id=actor_ids["editor"])
+            # Measured after the accounts exist and before the drill's own reports do, so it
+            # describes the database as the drill found it and nothing the drill wrote.
+            baseline = measure_visibility_baseline(session, editor_id=actor_ids["editor"])
             reports = seed_reports(session, topic_id=topic_id, actor_ids=actor_ids)
             denial_mark = _max_id(session, AuditLog)
             with TestClient(create_app(settings)) as client:
                 payload["authorization"] = authorization_checks(
-                    session, factory, client, reports, denial_mark
+                    session, factory, client, reports, denial_mark, baseline=baseline
                 )
             payload["injection"] = injection_checks(session, topic_id=topic_id, settings=settings)
             payload["source_failure"] = {

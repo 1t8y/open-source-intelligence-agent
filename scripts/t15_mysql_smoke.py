@@ -215,14 +215,16 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
     if topic_ids:
         agent_run_ids = select(AgentRun.id).where(AgentRun.topic_id.in_(topic_ids))
         session.execute(delete(Report).where(Report.topic_id.in_(topic_ids)))
-        session.execute(delete(Report).where(Report.title.like(f"{REPORT_TITLE_PREFIX}%")))
+        session.execute(
+            delete(Report).where(Report.title.startswith(REPORT_TITLE_PREFIX, autoescape=True))
+        )
         session.execute(delete(ToolCall).where(ToolCall.agent_run_id.in_(agent_run_ids)))
         session.execute(delete(AgentStep).where(AgentStep.agent_run_id.in_(agent_run_ids)))
         session.execute(delete(AgentRun).where(AgentRun.topic_id.in_(topic_ids)))
         session.execute(delete(PipelineRun).where(PipelineRun.topic_id.in_(topic_ids)))
         session.execute(delete(TopicRepository).where(TopicRepository.topic_id.in_(topic_ids)))
         repository_ids = select(Repository.id).where(
-            Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%")
+            Repository.provider_repo_id.startswith(PROVIDER_PREFIX, autoescape=True)
         )
         session.execute(
             delete(RepositoryContent).where(RepositoryContent.repository_id.in_(repository_ids))
@@ -231,7 +233,9 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
         session.execute(delete(Topic).where(Topic.id.in_(topic_ids)))
 
     session.execute(
-        delete(Repository).where(Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%"))
+        delete(Repository).where(
+            Repository.provider_repo_id.startswith(PROVIDER_PREFIX, autoescape=True)
+        )
     )
 
     ids = list(actor_ids.values())

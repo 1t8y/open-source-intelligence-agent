@@ -263,14 +263,16 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
         session.execute(delete(Topic).where(Topic.id.in_(topic_ids)))
 
     repository_ids = select(Repository.id).where(
-        Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%")
+        Repository.provider_repo_id.startswith(PROVIDER_PREFIX, autoescape=True)
     )
     session.execute(
         delete(RepositoryContent).where(RepositoryContent.repository_id.in_(repository_ids))
     )
     session.execute(delete(RepoSnapshot).where(RepoSnapshot.repository_id.in_(repository_ids)))
     session.execute(
-        delete(Repository).where(Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%"))
+        delete(Repository).where(
+            Repository.provider_repo_id.startswith(PROVIDER_PREFIX, autoescape=True)
+        )
     )
     session.execute(delete(Report).where(Report.title == REPORT_TITLE))
 

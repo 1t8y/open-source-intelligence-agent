@@ -94,9 +94,13 @@ def cleanup_verification_records(session: Session) -> None:
         session.execute(delete(TopicRepository).where(TopicRepository.topic_id.in_(topic_ids)))
         session.execute(delete(Topic).where(Topic.id.in_(topic_ids)))
     session.execute(
-        delete(Repository).where(Repository.provider_repo_id.like(f"{PROVIDER_PREFIX}%"))
+        delete(Repository).where(
+            Repository.provider_repo_id.startswith(PROVIDER_PREFIX, autoescape=True)
+        )
     )
-    session.execute(delete(AgentConfig).where(AgentConfig.name.like(f"{CONFIG_PREFIX}%")))
+    session.execute(
+        delete(AgentConfig).where(AgentConfig.name.startswith(CONFIG_PREFIX, autoescape=True))
+    )
     session.execute(delete(User).where(User.username == VERIFIER_USERNAME))
     session.commit()
 

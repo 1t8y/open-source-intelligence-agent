@@ -48,7 +48,10 @@ open_source_intelligence = [
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["src", "tests"]
+# `scripts` is on the path so the tests can import the smoke drills directly: the drill cleanups
+# are the thing under test in `tests/scripts/`, and several drills already import each other by
+# bare module name.
+pythonpath = ["src", "tests", "scripts"]
 testpaths = ["tests"]
 
 [tool.ruff]
