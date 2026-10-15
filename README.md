@@ -68,7 +68,7 @@ T18 的交付物是一条命令 —— `scripts/check_docs_drift.py`，十项比
 
 **处置分两类。** 一是**实现**：`REQUIREMENTS.md` FR-D-05 点名要求「报告、**仓库**、Agent、评测和**审计** API」，所以 `/repositories`（含 `/repositories/{id}/snapshots`，闭区间窗口）与 `/audit-logs` 补上，并各配 18 项与 9 项测试。二是**删除**：`POST /topics/{id}/run` 与 T15 已删的 `POST /agent/runs` 是同一条理由 —— 一次研究运行消耗模型预算，触发权属于调度器与操作员 CLI，不属于任意已登录客户端；`/sources` 的字段就是部署配置（`base_url` 来自 `GITHUB_API_BASE`、`credential_ref` 指向环境变量 Token），改它们走环境变量与迁移，"一个能改限流预算的 HTTP 端点等于把公共 API 的用量控制交给任意已登录客户端"。
 
-一键入口 `.\scripts\verify_t18.ps1`（引擎不可用时 `-SqliteFixture`）。它除了静态门禁与十项比较之外，还会**故意把两份文档改错**再跑一次比较、要求检查器报出漂移并退出 1，然后复原 —— 一个永远回答"一致"的比较器不会比它取代的"读一遍"更好，那四组幽灵接口今天还会留在契约里。
+一键入口 `.\scripts\verify_t18.ps1`（引擎不可用时 `-SqliteFixture`）。它除了静态门禁与十项比较之外，还会**故意把三份文档各改错一处**（`docs/api-contract.md` 的幽灵端点、`docs/data-model.md` 的幽灵表、`ARCHITECTURE.md` 的 `- [x] T18` 勾选）再跑一次比较、要求检查器**同时**报出三条漂移并退出 1，然后复原 —— 一个永远回答"一致"的比较器不会比它取代的"读一遍"更好，那四组幽灵接口今天还会留在契约里。三处一起改是有意的：一处漂移可能被单个检查的偶然巧合盖住，"三条一起被报出"才说明每一侧都在真的比较。
 
 **T18 顺手修掉的两个真实缺陷**（都不是 T18 新引入的）：
 
@@ -76,6 +76,15 @@ T18 的交付物是一条命令 —— `scripts/check_docs_drift.py`，十项比
 - **路由遍历在不同 FastAPI 版本下答案不同。** 检查器原先直接遍历 `app.routes`，在宿主机上找到 41 条路由，在容器里（FastAPI 0.143）**一条都找不到** —— 而它随后把契约里每个端点都报成"缺失"。改为递归下钻 `routes` 与 `original_router` 两种形状，并且**拒绝相信空结果**：走到 0 条路由就直接报错，而不是当作"契约干净"。
 
 判据与实测值见 [docs/api-contract.md](docs/api-contract.md) §3/§4/§8。
+
+**T18 交付后的复核又修掉七处缺陷**（探针先行：每条都先写一个**能失败**的测试或脚本证明它真实存在，再落最小修复）：
+
+- **`q` 是子串搜索，就要把 `%` / `_` 当字符。** 实现原把调用方输入直接拼进 `LIKE`，于是 `q=_` 匹配每个至少一字符的仓库、`q=%` 匹配整份目录 —— 与契约 §4 说的"子串匹配"正好相反。新增 `_literal_like()` 转义并给 `like(...)` 传 `escape`，补一条同时钉住两个方向的回归测试（转义过头也会失败）。
+- **冒烟的清理删不到"匿名拒绝"留下的行。** 未认证请求写下的 `auth.token` / `failed` 行 `actor_id` 为 `NULL`，按 actor 过滤**永远够不到**，每次运行都在只增不删的账本上永久留 3 行（Compose 库上已积累 24 行）。改为**字面前缀 + 请求 id** 两条句柄（`X-Request-ID` 由中间件写进审计行），并新增 Criterion 17 断言清理之后的 `leftovers` 四项全 `0`。
+- **比较器的结论不能被"把输入改窄"放大。** `check_docs_drift.py --only endpoints` 原会报 `{"passed": true}` 并退出 `0`（"跑过的都过了"被读成"文档一致"）。载荷补 `run` / `total` / `complete`，**十项全跑且全过才退 `0`**。
+- **断言里的日期不能是"写脚本那天"的日期。** 快照窗口断言原比对硬编码的 `2026-10-13,…`，而窗口由时钟推出，该断言只在当天成立；改为与冒烟报出的 `requested_window` 比较。
+
+其余三处（`LIKE` 前缀越界删除、载荷里写常量而非观测、docstring 与实现相矛盾的排序说明）见 `ARCHITECTURE.md` §9.15。
 
 `ARCHITECTURE.md` §14 的实施任务清单已无剩余项。
 
@@ -240,7 +249,7 @@ D:\python\ana\python.exe scripts\check_docs_drift.py --only endpoints --only tab
 D:\python\ana\python.exe scripts\t18_mysql_smoke.py --cleanup-only
 ```
 
-该脚本做三件事：静态门禁（pytest / Ruff check+format / mypy / `docker compose config`）→ **十项文档一致性比较**（并故意把 `docs/api-contract.md` 与 `docs/data-model.md` 各改错一处，要求检查器报出漂移、退出 `1`，再复原后重新通过）→ 在真实数据库上冒烟 T18 新交付的两组端点（仓库目录与快照、审计日志），断言段覆盖 16 条判据。冒烟按名字前缀清理自己的行，因此**不要求全新数据库**，可在有数据的库上重复执行。
+该脚本做三件事：静态门禁（pytest / Ruff check+format / mypy / `docker compose config`）→ **十项文档一致性比较**（并故意把 `docs/api-contract.md`、`docs/data-model.md`、`ARCHITECTURE.md` 各改错一处，要求检查器**同时**报出三条漂移、退出 `1`，再复原后重新通过）→ 在真实数据库上冒烟 T18 新交付的两组端点（仓库目录与快照、审计日志），断言段覆盖 17 条判据。冒烟按名字前缀清理自己的行，因此**不要求全新数据库**，可在有数据的库上重复执行；第 17 条判据断言清理之后的 `leftovers` 四项全 `0` —— 把脚本末尾那句"把库留在原样"从注释变成测量。
 
 两个引擎上均已实跑（2026-10-15）：`-SqliteFixture` 与默认 Compose + 真实 MySQL 路径，payload 逐值一致。
 

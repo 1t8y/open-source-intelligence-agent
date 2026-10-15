@@ -102,6 +102,10 @@ if (-not $checkJson) {
 $drift = $checkJson | ConvertFrom-Json
 Assert-Equal $drift.failures 0 'the documentation set matches the code'
 Assert-True $drift.passed 'every documentation check passes'
+# `passed` is only about the checks that ran. Without this, someone who narrowed the run with
+# `--only` would read the same verdict as a full pass.
+Assert-True $drift.complete 'every comparison ran, so the verdict covers the whole document set'
+Assert-Equal $drift.run 10 'all ten comparisons report a result'
 foreach ($name in $drift.checks.PSObject.Properties.Name) {
     Assert-True $drift.checks.($name).ok "documentation check '$name' reports no drift"
 }
@@ -290,6 +294,7 @@ $catalog = $smoke.catalog
 $snapshots = $smoke.snapshots
 $audit = $smoke.audit
 $documentation = $smoke.documentation
+$leftovers = $smoke.leftovers
 $expected = $smoke.expected
 
 # ---------------------------------------------------------------------------------------
@@ -362,12 +367,20 @@ Assert-Equal ($catalog.closed_topic_audit.results -join ',') 'denied' 'the refus
 # Criterion 10: the trend window is closed on both ends - the only closed interval in the
 # platform, because it cuts on calendar days rather than instants - and the first observation
 # reports no delta rather than a zero.
+#
+# The window is compared against the one the drill *asked* for (`requested_window`), never against
+# literal dates. Naming the days here would make this the one assertion in the block that is true
+# only on the calendar day the script was written: the drill derives its window from the clock, so
+# '2026-10-13,...' passed on 2026-10-15 and would have failed at the next UTC midnight.
 Assert-Equal $snapshots.anonymous_status 401 'an anonymous read of a trend is refused'
 Assert-Equal $snapshots.closed_window_dates.Count 3 'a three-day window returns all three days'
-Assert-Equal ($snapshots.closed_window_dates -join ',') '2026-10-13,2026-10-14,2026-10-15' 'the window includes both of the dates it was given'
+Assert-Equal $snapshots.closed_window_dates[0] $snapshots.requested_window[0] 'the window starts on the day it was given'
+Assert-Equal $snapshots.closed_window_dates[-1] $snapshots.requested_window[1] 'the window includes the day it was given as the end'
+Assert-Equal ($snapshots.closed_window_resolved -join ',') ($snapshots.requested_window -join ',') 'the endpoint reports the window it served, and it is the one that was asked for'
 Assert-Equal $snapshots.first_day_delta $null 'the first observation has nothing to subtract from'
 Assert-Equal $snapshots.second_day_delta 30 'the second observation reports the movement'
 Assert-Equal $snapshots.single_day_count 1 'a single-day window returns that day'
+Assert-Equal $snapshots.single_day_date $snapshots.requested_window[1] 'a single-day window is the day that was asked for'
 Assert-Equal $snapshots.empty_window_status 200 'a window with no snapshots is empty, not missing'
 Assert-Equal $snapshots.empty_window_count 0 'an empty window is an empty list'
 
@@ -421,6 +434,21 @@ Assert-Equal $audit.page_size_cap_status 422 'a page larger than the cap is refu
 Assert-Equal $audit.naive_timestamp_status 422 'a timestamp without a timezone offset is refused here too'
 
 # ---------------------------------------------------------------------------------------
+# The drill's own footprint, measured after its purge.
+# ---------------------------------------------------------------------------------------
+
+# Criterion 17: the drill leaves nothing behind. `leftovers` is counted after the cleanup pass, by
+# the same literal prefixes the pass deletes by, so this is the promise printed at the end of this
+# script ("leave the database as it was found") rendered as something that can fail. `audit_rows`
+# is the one that mattered: an anonymous request is refused with a row whose `actor_id` is NULL, so
+# an actor-based purge could never reach it, and every run used to leave one in the append-only
+# ledger for good.
+Assert-Equal $leftovers.users 0 'the drill leaves no account behind'
+Assert-Equal $leftovers.repositories 0 'the drill leaves no repository behind'
+Assert-Equal $leftovers.topics 0 'the drill leaves no topic behind'
+Assert-Equal $leftovers.audit_rows 0 'the drill leaves no audit row behind, including the ones no actor owns'
+
+# ---------------------------------------------------------------------------------------
 # The documentary verdict, produced by the same run.
 # ---------------------------------------------------------------------------------------
 
@@ -445,6 +473,6 @@ else {
 # would put one host-specific value in an otherwise engine-independent digest and invite exactly
 # the misreading that the two payloads differ. That the row is filed against the addressed topic is
 # asserted below, where it belongs.
-Write-Host "T18 verification passed. catalog: total=$($catalog.total) order=$($catalog.full_names_ordered -join '/') providers=$($catalog.providers -join '+') unranked-nulls=$(@($rankValues | Where-Object { $null -ne $_ }).Count) disabled-topic=$($catalog.closed_topic_status)/$($catalog.closed_topic_admin_status) audited=$($catalog.closed_topic_audit.count); snapshots: window=$($snapshots.closed_window_dates.Count)d first-delta=$($snapshots.first_day_delta) second-delta=$($snapshots.second_day_delta) default=$($snapshots.default_window_days)d; audit: viewer=$($audit.viewer_status) refused=$($audit.viewer_refusals) admin-total=$($audit.admin_total) metadata-leaked=$($audit.metadata_leaked); documentation: run=$($documentation.run) passed=$($documentation.passed)."
+Write-Host "T18 verification passed. catalog: total=$($catalog.total) order=$($catalog.full_names_ordered -join '/') providers=$($catalog.providers -join '+') unranked-nulls=$(@($rankValues | Where-Object { $null -ne $_ }).Count) disabled-topic=$($catalog.closed_topic_status)/$($catalog.closed_topic_admin_status) audited=$($catalog.closed_topic_audit.count); snapshots: window=$($snapshots.closed_window_dates.Count)d first-delta=$($snapshots.first_day_delta) second-delta=$($snapshots.second_day_delta) default=$($snapshots.default_window_days)d; audit: viewer=$($audit.viewer_status) refused=$($audit.viewer_refusals) admin-total=$($audit.admin_total) metadata-leaked=$($audit.metadata_leaked); documentation: run=$($documentation.run) passed=$($documentation.passed); leftovers: users=$($leftovers.users) repos=$($leftovers.repositories) topics=$($leftovers.topics) audit=$($leftovers.audit_rows)."
 
 [Console]::OutputEncoding = $previousOutputEncoding

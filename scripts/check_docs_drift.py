@@ -26,8 +26,10 @@ Ten checks, each of which can only fail for a reason worth a human's attention:
    `ARCHITECTURE.md` §14 marks complete.
 10. **Version** - `__version__` and `pyproject.toml` agree.
 
-Exit code is 0 only when every check passes. The payload goes to stdout as one JSON object on the
-last line, which is the convention `scripts/verify_*.ps1` reads.
+Exit code is 0 only when every check passed *and* every check ran: `--only` narrows the input, so
+the payload reports how many comparisons ran and whether that was all of them, and a partial run
+exits non-zero. The payload goes to stdout as one JSON object on the last line, which is the
+convention `scripts/verify_*.ps1` reads.
 """
 
 from __future__ import annotations
@@ -609,13 +611,20 @@ def main(argv: list[str] | None = None) -> int:
         },
         "failures": sum(len(result.failures) for result in results),
         "passed": all(result.ok for result in results),
+        # `passed` is only a statement about the checks that ran. Saying how many ran, and whether
+        # that was all of them, is what keeps `--only endpoints` from being read as "the whole
+        # documentation set is consistent" - a checker whose verdict can be widened by narrowing
+        # its input has the same hole it was built to close.
+        "run": len(results),
+        "total": len(CHECKS),
+        "complete": len(results) == len(CHECKS),
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     for result in results:
         if not result.ok:
             for failure in result.failures:
                 print(f"DRIFT [{result.name}] {failure}", file=sys.stderr)
-    return 0 if payload["passed"] else 1
+    return 0 if payload["passed"] and payload["complete"] else 1
 
 
 if __name__ == "__main__":

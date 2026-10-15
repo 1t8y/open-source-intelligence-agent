@@ -29,9 +29,10 @@ import json
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from open_source_intelligence.api.app import create_app
@@ -65,6 +66,12 @@ from open_source_intelligence.security.service import create_user
 #: being counted.
 NAME_PREFIX = "__t18_drill__"
 ACTOR_PREFIX = "__t18_"
+#: The `X-Request-ID` every drill request carries. The middleware copies an incoming header into
+#: `request.state.request_id`, and `audit_logs.request_id` is written from it, so this is what
+#: makes the drill's *anonymous* audit rows - a 401 writes a row with `actor_id` NULL, which no
+#: actor-based purge can ever reach - identifiable and removable. Without it every run of this
+#: script left one `auth.token` failure in an append-only ledger permanently.
+REQUEST_ID_PREFIX = "__t18_drill__"
 SOURCE_NAME = "__t18_drill_source__"
 HF_SOURCE_NAME = "__t18_drill_hf_source__"
 OPEN_TOPIC_NAME = "__T18 Open Drill Topic__"
@@ -113,6 +120,12 @@ def purge_drill_rows(session: Session) -> None:
     was left dirty by an interrupted run, and that running the smoke twice in a row is the same
     as running it once.
 
+    The names are matched as **literal prefixes** (`startswith(..., autoescape=True)`) rather than
+    as `LIKE` patterns. A prefix like `__t18_drill__` contains four underscores, and `_` is a
+    single-character wildcard in `LIKE`: the pattern `__t18_drill__%` therefore also matches
+    `xx/t18-drill-abc`, so a deployment that happened to hold such a repository would have had it
+    deleted by this drill. Escaped, the prefix means the prefix.
+
     The ids are read into Python first instead of being passed as subqueries. MySQL refuses
     `DELETE FROM t WHERE id IN (SELECT ... FROM t)` outright (`1093 You can't specify target
     table for update in FROM clause`), so a correlated delete that looks portable is not: the
@@ -120,7 +133,9 @@ def purge_drill_rows(session: Session) -> None:
     """
     drill_user_ids = [
         int(value)
-        for value in session.scalars(select(User.id).where(User.username.like(f"{ACTOR_PREFIX}%")))
+        for value in session.scalars(
+            select(User.id).where(User.username.startswith(ACTOR_PREFIX, autoescape=True))
+        )
     ]
     drill_topic_ids = [
         int(value)
@@ -131,11 +146,19 @@ def purge_drill_rows(session: Session) -> None:
     drill_repository_ids = [
         int(value)
         for value in session.scalars(
-            select(Repository.id).where(Repository.full_name.like(f"{NAME_PREFIX}%"))
+            select(Repository.id).where(
+                Repository.full_name.startswith(NAME_PREFIX, autoescape=True)
+            )
         )
     ]
 
+    # Both halves of the audit plan are needed. The actor filter reaches every row an account of
+    # the drill caused; the request-id filter is the only thing that reaches the refusals written
+    # for a caller that never authenticated, whose `actor_id` is NULL by definition.
     session.execute(delete(AuditLog).where(AuditLog.actor_id.in_(drill_user_ids)))
+    session.execute(
+        delete(AuditLog).where(AuditLog.request_id.startswith(REQUEST_ID_PREFIX, autoescape=True))
+    )
     session.execute(
         delete(RepoSnapshot).where(RepoSnapshot.repository_id.in_(drill_repository_ids))
     )
@@ -149,6 +172,51 @@ def purge_drill_rows(session: Session) -> None:
     session.execute(delete(UserRole).where(UserRole.user_id.in_(drill_user_ids)))
     session.execute(delete(User).where(User.id.in_(drill_user_ids)))
     session.commit()
+
+
+def count_drill_rows(session: Session) -> dict[str, int]:
+    """Count the rows the drill still owns, by the same literal prefixes the purge uses.
+
+    This is how the promise "leave the database as it was found" becomes a measurement instead of
+    a comment: the smoke reports what it left behind, and the verification script asserts the
+    count is zero. Counting by prefix rather than by "rows newer than X" keeps the measurement
+    honest on a database another process is also writing to.
+    """
+    drill_user_ids = [
+        int(value)
+        for value in session.scalars(
+            select(User.id).where(User.username.startswith(ACTOR_PREFIX, autoescape=True))
+        )
+    ]
+    return {
+        "users": len(drill_user_ids),
+        "repositories": int(
+            session.scalar(
+                select(func.count())
+                .select_from(Repository)
+                .where(Repository.full_name.startswith(NAME_PREFIX, autoescape=True))
+            )
+            or 0
+        ),
+        "topics": int(
+            session.scalar(
+                select(func.count())
+                .select_from(Topic)
+                .where(Topic.name.in_([OPEN_TOPIC_NAME, CLOSED_TOPIC_NAME]))
+            )
+            or 0
+        ),
+        # Row count, not a flag: the residue this guards against is exactly the row that no
+        # actor-based purge could see, so it has to be counted by its own attribute.
+        "audit_rows": int(
+            session.scalar(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.request_id.startswith(REQUEST_ID_PREFIX, autoescape=True))
+            )
+            or 0
+        ),
+    }
 
 
 def seed_actors(session: Session) -> dict[str, int]:
@@ -497,17 +565,21 @@ def snapshot_checks(
         )
     )
     defaulted = _body(_get(client, path, headers=viewer))
-    empty = _body(
-        _get(
-            client,
-            path,
-            headers=viewer,
-            params={
-                "start": (today - timedelta(days=5)).isoformat(),
-                "end": (today - timedelta(days=4)).isoformat(),
-            },
-        )
+    # The status is taken off the response before `_body` asserts it, so the payload reports what
+    # the endpoint answered rather than restating the 200 `_body` demands. A field that is written
+    # as a constant cannot support an assertion: "an empty window is a 200, not a 404" is only a
+    # claim about the endpoint if the 200 was observed here.
+    empty_response = _get(
+        client,
+        path,
+        headers=viewer,
+        params={
+            "start": (today - timedelta(days=5)).isoformat(),
+            "end": (today - timedelta(days=4)).isoformat(),
+        },
     )
+    empty_status = empty_response.status_code
+    empty = _body(empty_response)
     single = _body(
         _get(
             client,
@@ -520,6 +592,11 @@ def snapshot_checks(
     return {
         "closed_window_dates": [item["snapshot_date"] for item in explicit["items"]],
         "closed_window_resolved": [explicit["start_date"], explicit["end_date"]],
+        # The window this drill *asked* for, reported alongside the one it got. The two are equal
+        # precisely because the range is closed at both ends, and that comparison is what the
+        # verification script can assert without hard-coding a date: naming the days here would
+        # make the assertion true only on the calendar day the drill was written.
+        "requested_window": [first.isoformat(), today.isoformat()],
         # The first observation has nothing to subtract from, so the delta is `None` rather than
         # `0`. The distinction is the same one the rank fields make.
         "first_day_delta": explicit["items"][0]["stars_delta"],
@@ -528,7 +605,7 @@ def snapshot_checks(
         "default_window_days": (
             date.fromisoformat(defaulted["end_date"]) - date.fromisoformat(defaulted["start_date"])
         ).days,
-        "empty_window_status": 200,
+        "empty_window_status": empty_status,
         "empty_window_count": len(empty["items"]),
         "single_day_count": len(single["items"]),
         "single_day_date": single["items"][0]["snapshot_date"] if single["items"] else None,
@@ -566,7 +643,10 @@ def audit_checks(
 ) -> dict[str, Any]:
     """Drive the audit endpoint and report what it answered."""
     refused = _get(client, "/api/v1/audit-logs", headers=viewer)
-    trail = _body(_get(client, "/api/v1/audit-logs", headers=admin, params={"page_size": 100}))
+    # Observed, not restated: see the note on `empty_window_status`.
+    trail_response = _get(client, "/api/v1/audit-logs", headers=admin, params={"page_size": 100})
+    admin_status = trail_response.status_code
+    trail = _body(trail_response)
     returned_ids = [int(item["id"]) for item in trail["items"]]
     admin_trail = _body(
         _get(
@@ -603,7 +683,7 @@ def audit_checks(
         "viewer_refusals": len(refusal),
         "viewer_refusal_actor": refusal[0].actor_id if refusal else None,
         "viewer_refusal_resource_type": refusal[0].resource_type if refusal else None,
-        "admin_status": 200,
+        "admin_status": admin_status,
         "newest_first": returned_ids == sorted(returned_ids, reverse=True),
         # The newest row is the *viewer's* refusal, because the refusal was the last thing that
         # happened before the administrator read the trail. `admin_total` is the stronger claim:
@@ -718,6 +798,12 @@ def main() -> None:
             seed_audit_rows(session, actor_id=actor_ids["admin"])
 
         with TestClient(create_app(settings)) as client:
+            # Every request carries a drill-owned correlation id. The middleware copies it into
+            # `request.state.request_id`, the audit writer stores it, and the purge deletes by it -
+            # which is the only handle on the rows a *refusal to an unauthenticated caller* writes,
+            # since those carry no actor. HTTPX merges these client-level headers into each
+            # request, so the per-call `Authorization` headers still apply.
+            client.headers["X-Request-ID"] = f"{REQUEST_ID_PREFIX}{uuid4().hex[:8]}"
             admin = _api_login(client, "admin")
             viewer = _api_login(client, "viewer")
             payload["catalog"] = catalog_checks(client, viewer, admin, seeded)
@@ -739,6 +825,11 @@ def main() -> None:
     finally:
         with factory() as session:
             purge_drill_rows(session)
+            # Measured after the purge, so the payload answers "what did this run leave behind?"
+            # rather than "what did it create?". All four counts are zero on a clean pass; the
+            # verification script asserts that, which is what turns the promise printed as
+            # "Leave the database as it was found" into something that can fail.
+            payload["leftovers"] = count_drill_rows(session)
         engine.dispose()
 
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))

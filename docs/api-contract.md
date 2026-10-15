@@ -106,7 +106,7 @@
 | `language` | 主语言，大小写不敏感精确匹配 |
 | `min_stars` | `stars >= min_stars` |
 | `created_after` | 过滤 `repositories.first_seen_at`（我们把"首次发现"当作目录意义上的创建时间；该表没有 `created_at` 列，`first_seen_at` 就是它） |
-| `q` | 对 `full_name` 与 `description` 的大小写不敏感子串匹配；这是**子串搜索，不是全文检索** |
+| `q` | 对 `full_name` 与 `description` 的大小写不敏感子串匹配；这是**子串搜索，不是全文检索**，因此 `%` 与 `_` 是**普通字符**（按字面匹配），不是通配符 |
 | `sort` | `stars`（默认，降序）、`forks`（降序）、`last_seen`（降序）；未知取值 `422` |
 | `page` / `page_size` | 同平台约定，`page_size` 上限 100 |
 

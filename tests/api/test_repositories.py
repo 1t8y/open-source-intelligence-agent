@@ -233,6 +233,43 @@ def test_catalog_filters_narrow_the_total_as_well_as_the_page(
     assert after["total"] == 0
 
 
+def test_a_text_filter_is_a_literal_substring_rather_than_a_like_pattern(
+    client: TestClient,
+    session: Session,
+    viewer: Actor,
+    catalog: Catalog,
+    workspace: Workspace,
+) -> None:
+    """`q` is a substring search, so `%` and `_` are characters and not `LIKE` wildcards.
+
+    Passed straight into `LIKE`, `q=_` becomes `LIKE '%_%'` and matches every row that has at
+    least one character, while `q=%` matches the entire catalog - so a caller searching for the
+    literal character is answered with the opposite of what they asked for. The third case is the
+    other half: a name that really contains the character still has to be found, otherwise
+    "escape everything so nothing ever matches" would satisfy this test as well.
+    """
+    gitlab = workspace.add_source(source_type="gitlab")
+    workspace.add_repository(
+        source_id=gitlab.id,
+        provider_repo_id="r-4",
+        full_name="octo/under_score",
+        stars=10,
+        forks=1,
+        language="Go",
+        description="a name that really contains an underscore",
+    )
+    session.commit()
+
+    headers = auth_headers(client, viewer)
+    literal = client.get(CATALOG, headers=headers, params={"q": "_"}).json()
+    assert [item["full_name"] for item in literal["items"]] == ["octo/under_score"]
+    assert literal["total"] == 1
+
+    wildcard = client.get(CATALOG, headers=headers, params={"q": "%"}).json()
+    assert wildcard["total"] == 0
+    assert wildcard["items"] == []
+
+
 def test_a_timestamp_without_an_offset_is_refused_at_the_boundary(
     client: TestClient,
     viewer: Actor,

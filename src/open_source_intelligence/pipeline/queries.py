@@ -13,6 +13,9 @@ Two decisions are load-bearing here:
   topic's ranking pass; without a `topic_id` there is no meaningful value for them, so they come
   back as `None` rather than as `0` or `False`.
 
+A third rule is small but user-visible: `q` is documented as a substring search, so the caller's
+`%` and `_` are escaped before they reach `LIKE`. Left unescaped, `q=_` matches every row.
+
 Nothing in this module writes a row, and it needs no migration: every column it reads already
 existed.
 """
@@ -48,7 +51,21 @@ SORT_LAST_SEEN: Final[str] = "last_seen"
 #: The `sort` values `docs/api-contract.md` §4 documents. Anything else is a 422, not a
 #: silent fallback to the default: a caller that asked for an ordering they did not get has no
 #: way to notice, and paginating under an ordering you did not ask for can skip rows entirely.
+#: The 422 is raised at the route, which declares `sort` as a `Literal` over exactly these values;
+#: the default below is what a *direct* caller of `list_repositories` gets, and is deliberately
+#: not the enforcement point.
 SORT_OPTIONS: Final[tuple[str, ...]] = (SORT_STARS, SORT_FORKS, SORT_LAST_SEEN)
+
+#: The escape character used when a caller's `q` is turned into a `LIKE` pattern. The contract
+#: calls `q` a substring search, so the characters `LIKE` reserves have to keep meaning themselves:
+#: without escaping, `q=_` matches every row that has at least one character and `q=%` matches the
+#: entire catalog, which is the opposite of a search. The backslash is the SQL standard default and
+#: SQLAlchemy renders it for both dialects (`ESCAPE '\\'` on MySQL, `ESCAPE '\'` on SQLite).
+LIKE_ESCAPE_CHAR: Final[str] = "\\"
+
+#: The characters that have to be escaped to be read literally, `\` first: escaping it after the
+#: others would escape the escape characters just inserted.
+LIKE_METACHARACTERS: Final[tuple[str, ...]] = (LIKE_ESCAPE_CHAR, "%", "_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +94,14 @@ def clamp_page_size(page_size: int) -> int:
     return max(1, min(page_size, MAX_PAGE_SIZE))
 
 
+def _literal_like(fragment: str) -> str:
+    """Return `fragment` with the `LIKE` metacharacters escaped, so they match themselves."""
+    escaped = fragment
+    for character in LIKE_METACHARACTERS:
+        escaped = escaped.replace(character, f"{LIKE_ESCAPE_CHAR}{character}")
+    return escaped
+
+
 def _catalog_conditions(
     *,
     topic_id: int | None,
@@ -100,11 +125,13 @@ def _catalog_conditions(
     if first_seen_after is not None:
         conditions.append(Repository.first_seen_at >= first_seen_after)
     if query is not None:
-        pattern = f"%{query.strip().lower()}%"
+        pattern = f"%{_literal_like(query.strip().lower())}%"
         conditions.append(
             or_(
-                func.lower(Repository.full_name).like(pattern),
-                func.lower(func.coalesce(Repository.description, "")).like(pattern),
+                func.lower(Repository.full_name).like(pattern, escape=LIKE_ESCAPE_CHAR),
+                func.lower(func.coalesce(Repository.description, "")).like(
+                    pattern, escape=LIKE_ESCAPE_CHAR
+                ),
             )
         )
     return conditions

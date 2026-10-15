@@ -55,9 +55,14 @@ def list_audit_logs(
     """Return one page of audit events, newest first.
 
     The window is half-open (`created_after <= created_at < created_before`), matching the
-    convention the monitoring overview uses. `audit_logs` has no `updated_at` and no soft
-    delete, so `created_at` is the only ordering that can be stable: an append-only table
-    ordered by anything else would let a row move between pages while a caller is reading.
+    convention the monitoring overview uses.
+
+    "Newest first" is `id DESC`, not `created_at DESC`, and the contract §8 says the same. `id`
+    is monotonic on an append-only table and is a *total* order, which `created_at` is not:
+    several rows can share a timestamp, and a page boundary falling inside such a group lets the
+    database return the group in either arrangement, so a row can appear on two pages or on none
+    (the same reason `pipeline/queries.py` always appends `id` as a tiebreaker). Ordering by a
+    column that can tie is what makes an otherwise stable read unstable.
     """
     resolved_page = max(1, page)
     resolved_size = clamp_page_size(page_size)
