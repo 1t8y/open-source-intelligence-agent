@@ -35,10 +35,21 @@ class WebRedirect(Exception):
 
 
 class WebForbidden(Exception):
-    """Raised when the signed-in user may not perform the requested UI action."""
+    """Raised when the signed-in user may not perform the requested UI action.
 
-    def __init__(self, message: str = "当前用户无权执行该操作") -> None:
+    `action` carries the audit action the refusal is recorded under, so a UI denial and the
+    JSON API's denial of the same request land in the trail under the same name. It defaults to
+    the role check because that is the common case.
+    """
+
+    def __init__(
+        self,
+        message: str = "当前用户无权执行该操作",
+        *,
+        action: str = "auth.rbac",
+    ) -> None:
         self.message = message
+        self.action = action
 
 
 class WebNotFound(Exception):
@@ -96,4 +107,4 @@ def verify_csrf(request: Request, submitted: str | None) -> None:
     """Reject a mutating request whose CSRF field does not match its cookie."""
     expected = request.cookies.get(CSRF_COOKIE, "")
     if not expected or not submitted or not secrets.compare_digest(expected, submitted):
-        raise WebForbidden("CSRF 校验失败，请刷新页面后重试")
+        raise WebForbidden("CSRF 校验失败，请刷新页面后重试", action="auth.csrf")

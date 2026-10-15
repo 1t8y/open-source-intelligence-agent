@@ -124,9 +124,15 @@ authenticate_user(session: Session, username: str, password: str) -> User | None
 record_audit_event(session: Session, ...) -> AuditLog
 get_current_user(...) -> User
 require_roles(*allowed_roles: str) -> Callable[..., User]
+can_read_report(user: User, report: Report) -> bool
+readable_reports_filter(user: User) -> ColumnElement[bool]
+require_report_read(session, request, user, report) -> Report
+deny_request(session, request, *, action, resource_type, resource_id=None, ...) -> None
 ```
 
 认证接口：`POST /api/v1/auth/login`、`GET /api/v1/auth/me`。RBAC 每次请求从数据库读取当前角色，不依赖 Token 中的历史角色快照。
+
+报告授权有**一对**入口，规则一致但用途不同：`can_read_report` 判单行（Python 谓词），`readable_reports_filter` 判集合（SQL 谓词，必须进 `WHERE`）。列表页用后者，否则 `total` 与翻页位置会泄露无权报告的存在。`require_report_read` 是写路径的对象门：通过则返回该行，越权则经 `deny_request` 写审计后抛 `403`。`deny_request` 的 `resource_id` 可空 —— 请求域拒绝（缺 Token、缺角色）本来就没有资源可命名，而资源域拒绝必须能说清拒了哪一条，因此 `report.read` / `report.verify` 这类动作一律带 `resource_id`。
 
 Collector 接口：
 
@@ -678,6 +684,8 @@ failed            -> （终态，无出边）
 | `POST /reports/{id}/push` | `200`（`status` 为 `sent` 或 `failed`） | `400 PUSH_TARGET_NOT_ALLOWED`（未配置的 `live` 渠道/未知渠道）；`401` 未登录；`403 FORBIDDEN` 越权或只读角色；`404 NOT_FOUND`；`409 PUSH_BLOCKED` / `PUSH_APPROVAL_REQUIRED` / `PUSH_ERROR`；`502 PUSH_DELIVERY_FAILED`；`503 PUSH_DISABLED` |
 | `GET /api/v1/push/targets`、`/records`、`POST /api/v1/push/retry` | `200` | `401` 未登录；`403 FORBIDDEN`（只读角色不可读允许列表与投递记录，也不可驱动重试） |
 | UI 写操作 | `200` 渲染片段 | `403` CSRF 校验失败或角色只读；`409` 同上；`303` 未登录重定向到 `/ui/login` |
+
+UI 与 JSON API 的拒绝**共享同一组审计动作名**（T17）：`auth.csrf`（CSRF 双提交不符）、`auth.rbac`（角色不足以写）、`report.read`（角色够但报告不可见）。两组传输各自的拒绝都会落一条 `result="denied"` 的 `audit_logs` 行，因此"谁想读写哪一份报告"是一次查询就能回答的问题，而不是只有 API 面答得上来。审计写在**写操作**上而非传输层：只读页面渲染被拒不需要留痕，改了数据才有审计价值。
 
 推送的 HTTP 语义有两点与直觉不同：其一，**传输失败返回 `200`**，`status="failed"` 且带稳定 `error_code`（`PUSH_DELIVERY_FAILED`），因为它是被记录的可重试结果而非请求错误 —— 与 `publish-due` 对"被拦发布"的处理一致；只有守卫违规（状态、审批、允许列表）才抛异常并映射为 `4xx`/`5xx`。其二，`400` 保留给**部署配置错误**：`live` 渠道缺 SMTP 主机或发件人时在写行之前就被拒，避免把配置问题伪装成可重试的传输失败。
 

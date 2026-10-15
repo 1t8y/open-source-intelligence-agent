@@ -284,7 +284,9 @@
 | 报告负责人（`reports.owner_id = user.id`） | 追加本人的 `visibility=PRIVATE` |
 | `ADMIN`（无负责人的 `PRIVATE`） | `owner_id IS NULL` 的 `visibility=PRIVATE` |
 
-写操作（`PATCH`、`verify`、`review`、`publish`、`rollback`）要求 `ADMIN` 或 `EDITOR`，并且**仍然**要求对该报告有读权限。越权读取返回 `403 FORBIDDEN` 且响应体不含报告标题等元数据；越权写返回 `403 FORBIDDEN` 并写 `auth.rbac` / `denied` 审计。
+写操作（`PATCH`、`verify`、`review`、`publish`、`rollback`）要求 `ADMIN` 或 `EDITOR`，并且**仍然**要求对该报告有读权限。越权读取返回 `403 FORBIDDEN` 且响应体不含报告标题等元数据；越权写返回 `403 FORBIDDEN` 并写 `auth.rbac` 或 `report.read` / `denied` 审计。
+
+**对外沉默与对内留痕是一对，不是两条独立规则**（T17）：`403` 的响应体不泄露任何报告元数据，而对应的审计行**必须**带被拒资源的 `resource_id`。只做前者则事后答不出「谁想读哪一份」，只做后者则等于在错误响应里报出资源 id。这里的 `resource_id` 为空**不是漏填**——`auth.rbac` 是请求域拒绝（角色不足以写）或门在资源之前就被挡住，本来就没有资源可命名；`report.read` 是资源域拒绝，一律带 id。
 
 ### `GET /reports`
 
@@ -506,6 +508,8 @@
 | `POST /ui/reports/publish-due` | 到期释放驱动，返回释放结果片段 |
 
 写操作必须携带与 Cookie 一致的 `csrf_token` 表单字段（双提交校验）：缺失或不匹配返回 `403`。只读角色（`VIEWER`）的写操作返回 `403`。未登录访问任意 `/ui` 页面返回 `303` 重定向到 `/ui/login?next=<原路径>`。
+
+UI 与 JSON API 的拒绝**共享同一组审计动作名**（T17）：`auth.csrf`（CSRF 双提交不符）、`auth.rbac`（角色不足以写）、`report.read`（角色够但报告不可见）。两个传输面都落 `result="denied"` 的 `audit_logs` 行，因此「谁在什么时候想读写哪一份报告」是一次查询就能回答的问题，而不是只有 API 面答得上来。审计写在**写操作**上而非传输层：只读页面渲染被拒不留痕。
 
 ## 7. 评测
 

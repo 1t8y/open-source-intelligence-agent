@@ -41,12 +41,20 @@ def deny_request(
     detail: str,
     actor_id: int | None = None,
     resource_type: str = "auth",
+    resource_id: str | None = None,
 ) -> NoReturn:
-    """Record a denied or failed request and raise an HTTP error."""
+    """Record a denied or failed request and raise an HTTP error.
+
+    `resource_id` is passed through when the caller already knows which resource it refused.
+    A resource-scoped denial that omits it produces an audit row reading "someone was denied
+    something", which is not enough to investigate; a request-scoped denial (a missing token,
+    a missing role) legitimately has no resource to name.
+    """
     record_audit_event(
         session,
         action=action,
         resource_type=resource_type,
+        resource_id=resource_id,
         result="denied" if status_code == status.HTTP_403_FORBIDDEN else "failed",
         actor_id=actor_id,
         request_id=request_id(request),

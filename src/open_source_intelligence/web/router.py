@@ -8,6 +8,8 @@ same service layer as the JSON API; the UI never touches SQL itself.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -215,20 +217,57 @@ def render(
     return response
 
 
+@contextmanager
+def _audited_action(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    *,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> Iterator[None]:
+    """Record a UI refusal before it is rendered.
+
+    The JSON API writes an audit row for every denial; the UI rendered the same refusal and
+    wrote nothing, so the trail only ever held the API's half of the story. §3.1.1 of
+    `docs/security-and-privacy.md` asks for the audit on the *write*, not on the transport, so
+    the UI has to record it too.
+
+    It is recorded here rather than in the `WebForbidden` handler because the handler runs
+    outside the request's dependency graph and has no database session to write through.
+    """
+    try:
+        yield
+    except WebForbidden as exc:
+        record_audit_event(
+            session,
+            action=exc.action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            result="denied",
+            actor_id=web.user.id,
+            request_id=request_id(request),
+            ip_address=client_ip(request),
+        )
+        session.commit()
+        raise
+
+
 def _require_write_role(session: WebSession) -> None:
     """Reject a mutating UI action from a read-only role."""
     if get_role_codes(session.user).isdisjoint(REPORT_WRITE_ROLES):
         raise WebForbidden("只读角色不能执行该操作")
 
 
-def _require_metrics_role(web: WebSession) -> None:
+def _require_metrics_role(request: Request, session: Session, web: WebSession) -> None:
     """Reject a viewer from the operations dashboard.
 
     The dashboard exposes cross-topic cost, failure reasons and evaluation verdicts rather than
     the contents of one report, so it follows `METRICS_ROLES` instead of the report read roles.
     """
-    if get_role_codes(web.user).isdisjoint(METRICS_ROLES):
-        raise WebForbidden("该页面仅对管理员和编辑者开放")
+    with _audited_action(request, session, web, resource_type="metrics"):
+        if get_role_codes(web.user).isdisjoint(METRICS_ROLES):
+            raise WebForbidden("该页面仅对管理员和编辑者开放")
 
 
 def _can_view_dashboard(context: dict[str, Any]) -> bool:
@@ -256,20 +295,25 @@ def _authorize_action(
     """Guard a mutating UI action: CSRF, then write role, then read access.
 
     The read check runs *before* the service call so an action can never take effect on a
-    report the caller may not see.
+    report the caller may not see, and any of the three refusals is audited as it is raised.
     """
-    verify_csrf(request, csrf)
-    _require_write_role(web)
-    _load_visible_report(session, web, report_id)
+    with _audited_action(request, session, web, resource_type="report", resource_id=str(report_id)):
+        verify_csrf(request, csrf)
+        _require_write_role(web)
+        _load_visible_report(session, web, report_id)
 
 
 def _load_visible_report(session: Session, web: WebSession, report_id: int) -> Report:
-    """Load a report the current user may read, or render the matching error page."""
+    """Load a report the current user may read, or render the matching error page.
+
+    The refusal is filed as `report.read`, the same action the JSON API records, so "who tried
+    to reach which report" is one query over one action name rather than two.
+    """
     report = session.get(Report, report_id)
     if report is None:
         raise WebNotFound(f"报告 {report_id} 不存在")
     if not can_read_report(web.user, report, get_role_codes(web.user)):
-        raise WebForbidden("当前用户无权查看该报告")
+        raise WebForbidden("当前用户无权查看该报告", action="report.read")
     return report
 
 
@@ -390,7 +434,7 @@ def dashboard_page(
     The role check runs before anything is read, so a viewer's request never touches the ledger
     and the page they get back says why rather than showing an empty dashboard.
     """
-    _require_metrics_role(web)
+    _require_metrics_role(request, session, web)
     overview = collect_metrics(
         session,
         now=now,
@@ -424,7 +468,7 @@ def dashboard_run_page(
     the run in the dashboard, opens it, and reaches the exact tool call that failed with its
     error code. The role check runs first, as on the dashboard itself.
     """
-    _require_metrics_role(web)
+    _require_metrics_role(request, session, web)
     trace = get_agent_run_trace(session, run_id=run_id)
     if trace is None:
         raise WebNotFound(f"运行 {run_id} 不存在")
@@ -662,8 +706,9 @@ def publish_due_action(
     csrf: CsrfField = "",
 ) -> HTMLResponse:
     """Run the release driver once, mirroring the scheduled sweep."""
-    verify_csrf(request, csrf)
-    _require_write_role(web)
+    with _audited_action(request, session, web, resource_type="report"):
+        verify_csrf(request, csrf)
+        _require_write_role(web)
     released = publish_due_reports(session)
     blocked = [entry for entry in released if entry["status"] == "failed"]
     message = f"释放 {len(released) - len(blocked)} 条，被拦截 {len(blocked)} 条"

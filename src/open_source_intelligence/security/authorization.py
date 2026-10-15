@@ -82,7 +82,9 @@ def require_report_read(
     """Deny and audit when the current user may not read the report.
 
     The 403 body carries no report metadata, so a denied request learns nothing about a
-    report it may not see.
+    report it may not see. The audit row is the mirror image: it *does* name the report, since
+    an internal trail that cannot say which resource was refused cannot answer "who tried to
+    read what", which is the only question a denial record exists to answer.
     """
     if can_read_report(user, report, get_role_codes(user)):
         return
@@ -91,6 +93,7 @@ def require_report_read(
         request,
         action="report.read",
         resource_type="report",
+        resource_id=str(report.id),
         status_code=status.HTTP_403_FORBIDDEN,
         detail="insufficient permissions for this report",
         actor_id=user.id,

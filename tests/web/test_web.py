@@ -31,9 +31,11 @@ from reports_support import (
     build_report,
     seed_published_sibling,
 )
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from support import NOW, Workspace
 
+from open_source_intelligence.persistence.models.audit import AuditLog
 from open_source_intelligence.reports import queries
 from open_source_intelligence.web.security import SESSION_COOKIE
 
@@ -322,6 +324,53 @@ def test_read_only_role_cannot_mutate(
 
     assert response.status_code == 403
     assert "只读角色不能执行该操作" in response.text
+
+
+def _denials_by_action(factory: sessionmaker[Session]) -> dict[str, set[str | None]]:
+    """Return the resource id each denied audit action was filed against."""
+    with factory() as fresh:
+        rows = fresh.scalars(select(AuditLog).where(AuditLog.result == "denied")).all()
+        result: dict[str, set[str | None]] = {}
+        for row in rows:
+            result.setdefault(row.action, set()).add(row.resource_id)
+        return result
+
+
+def test_refused_ui_actions_are_audited(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    viewer: Actor,
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """Every UI refusal leaves an audit row naming the action, the report, and the actor.
+
+    The UI is the surface an operator actually uses, so a refusal that renders a 403 page and
+    records nothing would leave the trail holding only the JSON API's half of the story. The
+    action names are shared with the API on purpose: `auth.rbac` for a role that may not write,
+    `auth.csrf` for a token that does not match, `report.read` for a report out of scope.
+    """
+    internal = _seed(session, workspace, visibility="INTERNAL")
+    out_of_scope = _seed(session, workspace, visibility="PRIVATE")
+
+    assert web_login(client, viewer).status_code == 303
+    read_only = client.post(f"{BASE}/{internal.report_id}/verify", data=_token(client))
+    bad_csrf = client.post(
+        f"{BASE}/{internal.report_id}/verify",
+        data={"csrf_token": "not-the-cookie"},
+    )
+
+    web_logout(client)
+    assert web_login(client, editor).status_code == 303
+    unreadable = client.post(f"{BASE}/{out_of_scope.report_id}/verify", data=_token(client))
+
+    assert (read_only.status_code, bad_csrf.status_code, unreadable.status_code) == (403, 403, 403)
+
+    denials = _denials_by_action(session_factory)
+    assert denials["auth.rbac"] == {str(internal.report_id)}
+    assert denials["auth.csrf"] == {str(internal.report_id)}
+    assert denials["report.read"] == {str(out_of_scope.report_id)}
 
 
 # --------------------------------------------------------------------------------------
