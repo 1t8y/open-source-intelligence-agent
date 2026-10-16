@@ -5,6 +5,11 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from open_source_intelligence.core.text import (
+    clean_untrusted_text,
+    content_digest,
+    truncate_text,
+)
 from open_source_intelligence.persistence.models.intelligence import RepositoryContent
 
 from .access import load_authorized_repository
@@ -16,7 +21,6 @@ from .contracts import (
 )
 from .errors import ToolExecutionError
 from .outcome import ToolOutcome
-from .truncation import clean_untrusted_text, content_digest, truncate_text
 
 
 def get_repository_content(

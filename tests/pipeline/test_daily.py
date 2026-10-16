@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from open_source_intelligence.collectors.types import (
     CollectedRepository,
+    FetchedContent,
     SourceUnavailableError,
 )
 from open_source_intelligence.persistence import models  # noqa: F401
@@ -17,6 +18,7 @@ from open_source_intelligence.persistence.models.identity import User
 from open_source_intelligence.persistence.models.intelligence import (
     PipelineRun,
     Repository,
+    RepositoryContent,
     RepoSnapshot,
     Topic,
     TopicRepository,
@@ -284,3 +286,65 @@ def test_attempt_is_recorded_on_every_stage_for_the_retry_trail() -> None:
 
     assert result.attempt == 3
     assert list(attempts) == [3, 3, 3]
+
+
+class StubContentSource:
+    """Content source double for the orchestration tests."""
+
+    provider = "github"
+
+    def __init__(self, text: str = "# README") -> None:
+        self._text = text
+        self.calls: list[str] = []
+
+    def fetch_readme(self, full_name: str) -> FetchedContent:
+        """Return one README and record the name that was asked for."""
+        self.calls.append(full_name)
+        return FetchedContent(
+            provider=self.provider,
+            full_name=full_name,
+            content_type="readme",
+            source_url=f"https://github.com/{full_name}/blob/main/README.md",
+            content=self._text,
+            fetched_at=OBSERVED_AT,
+        )
+
+
+def test_the_contents_stage_is_opt_in_and_caches_the_ranked_candidates() -> None:
+    """The batch stays three stages until a source is supplied, and then it warms the cache."""
+    session_factory = build_session_factory()
+    collector = StubCollector([build_item(1), build_item(2, stars=500)])
+    source = StubContentSource()
+    with session_factory() as session:
+        add_topic(session, name="AI Agent")
+
+        without = run_daily_pipeline(
+            session,
+            business_date=BUSINESS_DATE,
+            collectors=[collector],
+            limit=5,
+        )
+        with_content = run_daily_pipeline(
+            session,
+            business_date=BUSINESS_DATE,
+            collectors=[collector],
+            limit=5,
+            content_sources=[source],
+            content_limit=1,
+        )
+
+        cached = session.scalars(select(RepositoryContent)).all()
+
+    assert [stage.run_type for stage in without.stages] == ["collect", "snapshot", "rank"]
+    assert without.content_counts == {}
+    assert [stage.run_type for stage in with_content.stages] == [
+        "collect",
+        "snapshot",
+        "rank",
+        "contents",
+    ]
+    assert with_content.content_counts["candidate_count"] == 1
+    assert with_content.content_counts["fetched"] == 1
+    assert len(source.calls) == 1
+    assert len(cached) == 1
+    assert cached[0].content == "# README"

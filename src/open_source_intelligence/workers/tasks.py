@@ -15,7 +15,7 @@ from open_source_intelligence.backfill.errors import BackfillWalkFailed
 from open_source_intelligence.backfill.jobs import DEFAULT_PER_PAGE, DEFAULT_TARGET_PAGES
 from open_source_intelligence.backfill.service import resume_backfill as execute_resume_backfill
 from open_source_intelligence.backfill.service import start_backfill as execute_start_backfill
-from open_source_intelligence.collectors.cli import build_collectors
+from open_source_intelligence.collectors.cli import build_collectors, build_content_sources
 from open_source_intelligence.collectors.service import collect_repositories
 from open_source_intelligence.core.config import Settings, get_settings
 from open_source_intelligence.notifications.service import PUSH_BATCH_LIMIT
@@ -26,8 +26,9 @@ from open_source_intelligence.persistence.session import (
     create_database_engine,
     create_session_factory,
 )
-from open_source_intelligence.pipeline.daily import PipelineStageError
+from open_source_intelligence.pipeline.contents import business_day_start
 from open_source_intelligence.pipeline.daily import run_daily_pipeline as execute_daily_pipeline
+from open_source_intelligence.pipeline.runs import PipelineStageError
 from open_source_intelligence.reports.publishing import (
     PUBLISH_BATCH_LIMIT,
 )
@@ -100,7 +101,7 @@ def run_daily_pipeline(
     limit: int | None = None,
     business_date: str | None = None,
 ) -> dict[str, Any]:
-    """Run collect, snapshot, and rank once, retrying transient stage failures.
+    """Run collect, snapshot, rank, and contents once, retrying transient stage failures.
 
     Each attempt writes its own PipelineRun records, so the retry trail stays
     visible: attempt 1 fails, attempt 2 succeeds, and both remain queryable.
@@ -118,12 +119,16 @@ def run_daily_pipeline(
     try:
         with httpx.Client(timeout=20, follow_redirects=True) as client:
             collectors = build_collectors(provider, client)
+            content_sources = build_content_sources(provider, client)
             with session_factory() as session:
                 result = execute_daily_pipeline(
                     session,
                     business_date=resolved_date,
                     collectors=collectors,
                     limit=resolved_limit,
+                    content_sources=content_sources,
+                    content_limit=settings.pipeline_content_limit,
+                    content_refresh_after=business_day_start(resolved_date, settings.app_timezone),
                     attempt=attempt,
                 )
     except PipelineStageError as exc:

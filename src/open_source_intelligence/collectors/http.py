@@ -68,10 +68,44 @@ class RetryingHttpClient:
         headers: dict[str, str] | None = None,
     ) -> JsonResponse:
         """Return decoded JSON and the response headers, retrying transient failures."""
+        response = self._request_json(url, params=params, headers=headers, allow_not_found=False)
+        if response is None:  # pragma: no cover - `allow_not_found=False` never returns None
+            raise SourceUnavailableError(f"failed to collect from {url}: unexpected empty response")
+        return response
+
+    def get_json_or_none(
+        self,
+        url: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> JsonResponse | None:
+        """Return decoded JSON, or `None` when the source answers `404`.
+
+        A `404` on a per-resource endpoint is the source stating a fact - this repository
+        has no README - and it must stay distinguishable from "the request failed". Folding
+        it into the retry path would turn a definite answer into a retried error and then
+        into a reported failure, which is how a repository with no README ends up looking
+        like a broken source. Every other status keeps the retry semantics of
+        `get_json_response`.
+        """
+        return self._request_json(url, params=params, headers=headers, allow_not_found=True)
+
+    def _request_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, str | int] | None,
+        headers: dict[str, str] | None,
+        allow_not_found: bool,
+    ) -> JsonResponse | None:
+        """Run the bounded retry loop and decode the body of a successful response."""
         last_error: Exception | None = None
         for attempt in range(self._max_attempts):
             try:
                 response = self._client.get(url, params=params, headers=headers)
+                if response.status_code == 404 and allow_not_found:
+                    return None
                 if response.status_code == 429 or response.status_code >= 500:
                     last_error = SourceUnavailableError(
                         f"source returned HTTP {response.status_code}"

@@ -36,7 +36,11 @@ from open_source_intelligence.agent.errors import (
 from open_source_intelligence.agent.guards import GuardDecision, guard_tool_payload
 from open_source_intelligence.agent.llm.base import ModelClient
 from open_source_intelligence.agent.llm.errors import ModelClientError
-from open_source_intelligence.agent.llm.messages import ChatMessage, ToolSchema
+from open_source_intelligence.agent.llm.messages import (
+    ChatMessage,
+    ToolSchema,
+    tool_error_payload,
+)
 from open_source_intelligence.agent.profile import WRITE_TOOL
 from open_source_intelligence.agent.recording import StepRecorder, digest_text
 from open_source_intelligence.agent.state import (
@@ -50,8 +54,8 @@ from open_source_intelligence.agent.state import (
 from open_source_intelligence.agent.tools.context import ToolContext
 from open_source_intelligence.agent.tools.contracts import SectionRef, ToolResult
 from open_source_intelligence.agent.tools.registry import ToolRegistry
-from open_source_intelligence.agent.tools.truncation import content_digest
 from open_source_intelligence.agent.writing import DraftPayloadError, parse_draft_payload
+from open_source_intelligence.core.text import content_digest
 
 #: The draft-writing tool. `profile.WRITE_TOOL` is the single definition; this alias keeps the
 #: name the graph has always exported for tests and documentation.
@@ -127,13 +131,13 @@ def _tool_message_content(result: ToolResult[Any]) -> tuple[str, GuardDecision]:
     if result.error is not None:
         return (
             json.dumps(
-                {"error": {"code": result.error.code, "message": result.error.message}},
+                tool_error_payload(result.error.code, result.error.message),
                 ensure_ascii=False,
             ),
             GuardDecision(False, 0),
         )
     return (
-        json.dumps({"error": {"code": "UNKNOWN", "message": "tool failed"}}),
+        json.dumps(tool_error_payload("UNKNOWN", "tool failed"), ensure_ascii=False),
         GuardDecision(False, 0),
     )
 

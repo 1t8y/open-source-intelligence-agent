@@ -95,6 +95,56 @@ def clamp_per_page(per_page: int) -> int:
     return per_page
 
 
+READABLE_CONTENT_TYPES: Final[tuple[str, ...]] = ("readme",)
+"""Content kinds a source may hand back, mirroring the `repository_contents` CHECK."""
+
+
+@dataclass(frozen=True, slots=True)
+class FetchedContent:
+    """One provider's long-form repository text, still uncleaned.
+
+    `content` is deliberately raw: cleaning and truncation belong to the single write path
+    into `repository_contents`, so every caller shares one definition of what "cached"
+    means. Cleaning here would let the cached text and the digest of it drift apart from
+    what a second cleaner would produce.
+
+    `source_url` has to be an `https` link because report citations carry it out to
+    readers, and `reports/citations.py` rejects anything else.
+    """
+
+    provider: str
+    full_name: str
+    content_type: str
+    source_url: str
+    content: str
+    fetched_at: datetime
+
+
+@runtime_checkable
+class RepositoryContentSource(Protocol):
+    """A repository source that can also hand back cached long-form text.
+
+    Kept separate from `RepositoryCollector` rather than folded into it, because the two
+    capabilities are asked for by different stages and are not equally available: a search
+    API answers "which repositories exist" for every provider, while "what does this
+    repository's README say" is answered differently (or not at all) by each. A provider
+    that cannot answer simply does not implement this, and the content stage records its
+    repositories as unsupported instead of demanding an empty method.
+
+    `fetch_readme` returns `None` when the source *answered* that there is no such content
+    (GitHub's `404`). Raising `SourceUnavailableError` is reserved for "the source could not
+    answer" - a refusal, a timeout, or a body that is not the documented shape. The two are
+    different facts about the world and the ledger keeps them apart: `missing` says the
+    repository has no README, `failed` says we did not find out.
+    """
+
+    provider: str
+
+    def fetch_readme(self, full_name: str) -> FetchedContent | None:
+        """Return the repository README, or `None` when the source says there is none."""
+        ...
+
+
 def require_page(page: int) -> int:
     """Reject a page number that is not 1-based."""
     if page < 1:

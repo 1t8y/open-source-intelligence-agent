@@ -240,7 +240,8 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
     __table_args__ = (
         CheckConstraint(
-            "run_type IN ('collect', 'snapshot', 'rank', 'backfill', 'agent', 'publish', 'push')",
+            "run_type IN ('collect', 'snapshot', 'rank', 'contents', 'backfill', "
+            "'agent', 'publish', 'push')",
             name="run_type_valid",
         ),
         CheckConstraint(
@@ -253,7 +254,8 @@ class PipelineRun(Base):
             name="time_order_valid",
         ),
         CheckConstraint(
-            "run_type IN ('collect', 'snapshot', 'rank', 'backfill') OR topic_id IS NOT NULL",
+            "run_type IN ('collect', 'snapshot', 'rank', 'contents', 'backfill') "
+            "OR topic_id IS NOT NULL",
             name="topic_scope_valid",
         ),
         Index("ix_pipeline_runs_topic_type_status", "topic_id", "run_type", "status"),

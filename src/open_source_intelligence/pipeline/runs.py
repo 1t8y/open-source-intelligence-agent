@@ -20,7 +20,7 @@ from open_source_intelligence.collectors.types import CollectorError
 from open_source_intelligence.core.logging import redact_text
 from open_source_intelligence.persistence.models.intelligence import PipelineRun
 
-GLOBAL_RUN_TYPES: Final[tuple[str, ...]] = ("collect", "snapshot", "rank", "backfill")
+GLOBAL_RUN_TYPES: Final[tuple[str, ...]] = ("collect", "snapshot", "rank", "contents", "backfill")
 TOPIC_RUN_TYPES: Final[tuple[str, ...]] = ("agent", "publish", "push")
 RUN_TYPES: Final[tuple[str, ...]] = GLOBAL_RUN_TYPES + TOPIC_RUN_TYPES
 RUN_STATUSES: Final[tuple[str, ...]] = ("queued", "running", "succeeded", "failed", "partial")
@@ -29,12 +29,14 @@ TERMINAL_STATUSES: Final[tuple[str, ...]] = ("succeeded", "failed", "partial")
 ERROR_COLLECTOR_FAILED: Final[str] = "COLLECTOR_FAILED"
 ERROR_SNAPSHOT_FAILED: Final[str] = "SNAPSHOT_FAILED"
 ERROR_RANK_FAILED: Final[str] = "RANK_FAILED"
+ERROR_CONTENT_FAILED: Final[str] = "CONTENT_FETCH_FAILED"
 ERROR_UNEXPECTED: Final[str] = "PIPELINE_UNEXPECTED_ERROR"
 
 STAGE_ERROR_CODES: Final[dict[str, str]] = {
     "collect": ERROR_COLLECTOR_FAILED,
     "snapshot": ERROR_SNAPSHOT_FAILED,
     "rank": ERROR_RANK_FAILED,
+    "contents": ERROR_CONTENT_FAILED,
 }
 # `backfill` is deliberately absent: `classify_error` already maps every `CollectorError` to
 # `COLLECTOR_FAILED`, so a walk that fails for any other reason falls through to
@@ -73,6 +75,53 @@ class PipelineRunSummary:
             "error_code": self.error_code,
             "error_message": self.error_message,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class StageOutcome:
+    """Recorded outcome of one orchestrator stage.
+
+    Lives beside the run-record helpers rather than in the module that first needed it,
+    because the contents stage and the daily orchestrator both produce one: whichever module
+    defined it would have to be imported by the other for no reason but the type.
+    """
+
+    run_id: int
+    run_type: str
+    topic_id: int | None
+    status: str
+    metrics: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-ready payload."""
+        return {
+            "run_id": self.run_id,
+            "run_type": self.run_type,
+            "topic_id": self.topic_id,
+            "status": self.status,
+            "metrics": self.metrics,
+        }
+
+
+class PipelineStageError(RuntimeError):
+    """Raised when a stage fails in a way that must stop the batch.
+
+    The context keyword arguments default to empty values so Celery can rebuild the error from
+    its JSON result backend, which only carries the message.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: int = 0,
+        run_type: str = "",
+        error_code: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.run_type = run_type
+        self.error_code = error_code
 
 
 def _utc_now() -> datetime:

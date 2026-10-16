@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Final
 
 from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -11,10 +12,26 @@ from sqlalchemy.orm import Session
 from open_source_intelligence.collectors.types import (
     CollectedRepository,
     CollectorError,
+    FetchedContent,
     RepositoryCollector,
 )
-from open_source_intelligence.persistence.models.intelligence import DataSource, Repository
+from open_source_intelligence.core.text import clean_untrusted_text, content_digest, truncate_text
+from open_source_intelligence.persistence.models.intelligence import (
+    DataSource,
+    Repository,
+    RepositoryContent,
+)
 from open_source_intelligence.security.audit import record_audit_event
+
+MAX_CACHED_CONTENT_CHARS: Final[int] = 20000
+"""Upper bound on one cached README, in characters.
+
+The tool that reads this cache truncates to at most 12000 characters anyway, so this bound is
+not the one that protects the model — it protects the table. A README is a document a stranger
+wrote, and the far tail of one is release notes from years ago; storing megabytes of it to then
+always truncate it is storage without a reader. The bound sits above the tool's own maximum so
+that raising the tool's limit does not silently start reading a truncated document.
+"""
 
 
 @dataclass(slots=True)
@@ -147,6 +164,70 @@ def ingest_items(
         upsert_repository(session, source=source, item=item)
     session.flush()
     return len(items)
+
+
+def upsert_repository_content(
+    session: Session,
+    *,
+    repository: Repository,
+    fetched: FetchedContent,
+    max_chars: int = MAX_CACHED_CONTENT_CHARS,
+) -> bool:
+    """Cache one repository's long-form text; return whether the stored body changed.
+
+    The row is written through this one function so that "cached" has a single definition:
+    cleaned by `clean_untrusted_text`, capped at `max_chars`, and digested over the cleaned
+    text. The reader (`get_repository_content`) cleans again on the way out, which is safe
+    because cleaning is idempotent - and it is the reason this has to be the same helper on
+    both sides rather than two similar ones.
+
+    `fetched_at` moves on every successful fetch, including one whose text did not change,
+    because it records *when this content was last confirmed*, and that is what the contents
+    stage uses to decide whether a repository has to be asked about again today. `content`
+    and `content_hash` move only when the text actually changed, so a stable README is not
+    rewritten once a day.
+
+    Returns:
+        `True` when the stored body changed (a new row, or different text), `False` when the
+        stored body already was this text.
+
+    Note:
+        Last write wins. There is no compare-and-swap because the daily contents stage is the
+        only production writer and it runs one repository at a time; two concurrent writers
+        would collide on the `(repository_id, content_type)` unique key and fail loudly rather
+        than interleave halves of two documents.
+    """
+    if not fetched.source_url.startswith("https://"):
+        raise ValueError(f"cached content source_url must use https: {fetched.source_url}")
+    cleaned, _ = truncate_text(clean_untrusted_text(fetched.content), max_chars)
+    digest = content_digest(cleaned)
+    record = session.scalar(
+        select(RepositoryContent).where(
+            RepositoryContent.repository_id == repository.id,
+            RepositoryContent.content_type == fetched.content_type,
+        )
+    )
+    if record is None:
+        session.add(
+            RepositoryContent(
+                repository_id=repository.id,
+                content_type=fetched.content_type,
+                source_url=fetched.source_url,
+                content=cleaned,
+                content_hash=digest,
+                fetched_at=fetched.fetched_at,
+            )
+        )
+        session.flush()
+        return True
+    changed = record.content_hash != digest
+    if changed:
+        record.content = cleaned
+        record.content_hash = digest
+    record.source_url = fetched.source_url
+    record.fetched_at = fetched.fetched_at
+    session.flush()
+    return changed
 
 
 def collect_from_collector(

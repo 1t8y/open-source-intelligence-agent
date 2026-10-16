@@ -1,8 +1,11 @@
 """GitHub repository search collector."""
 
+import base64
+import binascii
 import re
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 from pydantic import SecretStr
 
@@ -10,6 +13,7 @@ from open_source_intelligence.collectors.http import RetryingHttpClient
 from open_source_intelligence.collectors.types import (
     CollectedPage,
     CollectedRepository,
+    FetchedContent,
     SourceUnavailableError,
     clamp_per_page,
     nonnegative_int,
@@ -32,8 +36,27 @@ def parse_link_header(value: str | None) -> dict[str, str]:
     return {rel.strip(): url for url, rel in LINK_PATTERN.findall(value)}
 
 
+def decode_readme_content(payload: dict[str, Any]) -> str:
+    """Decode the README body GitHub returns, which is base64 by default.
+
+    Undecodable bytes are replaced rather than rejected: a README is external text that the
+    model reads for context, and losing one odd character is not the same failure as losing
+    the document. A payload with no content at all *is* that failure, so it raises.
+    """
+    raw = payload.get("content")
+    if not isinstance(raw, str) or not raw:
+        raise SourceUnavailableError("GitHub README response carried no content")
+    if payload.get("encoding") != "base64":
+        return raw
+    try:
+        decoded = base64.b64decode(raw)
+    except (binascii.Error, ValueError) as exc:
+        raise SourceUnavailableError("GitHub README content is not valid base64") from exc
+    return decoded.decode("utf-8", errors="replace")
+
+
 class GitHubCollector:
-    """Collect repositories through the GitHub Search API."""
+    """Collect repositories through the GitHub Search API, and their READMEs."""
 
     provider = "github"
     display_name = "GitHub"
@@ -95,6 +118,38 @@ class GitHubCollector:
     def describe_query(self) -> dict[str, Any]:
         """Return the search parameters this collector pages."""
         return {"q": self._query, "sort": "stars", "order": "desc"}
+
+    def fetch_readme(self, full_name: str) -> FetchedContent | None:
+        """Return one repository's README, or `None` when GitHub has none to serve.
+
+        The README endpoint answers `404` both for "no README" and for "no such
+        repository", and this method reports both as `None` on purpose: from the caller's
+        side they are the same fact - there is no content to cache for this name - and the
+        alternative is to guess which one it was from a payload that both cases lack.
+        Repositories reach here from `topic_repositories`, so a name that does not exist is
+        already anomalous; turning it into a retried source failure would be worse, because
+        it would make one stale row look like a broken upstream.
+        """
+        response = self._http.get_json_or_none(
+            f"{self.base_url}/repos/{quote(full_name, safe='/')}/readme",
+            headers=self._headers,
+        )
+        if response is None:
+            return None
+        payload = response.data
+        if not isinstance(payload, dict):
+            raise SourceUnavailableError("GitHub README response was not an object")
+        html_url = payload.get("html_url")
+        if not isinstance(html_url, str) or not html_url.startswith("https://"):
+            raise SourceUnavailableError("GitHub README response is missing an https html_url")
+        return FetchedContent(
+            provider=self.provider,
+            full_name=full_name,
+            content_type="readme",
+            source_url=html_url,
+            content=decode_readme_content(payload),
+            fetched_at=datetime.now(UTC),
+        )
 
     @staticmethod
     def _normalize(item: dict[str, Any], observed_at: datetime) -> CollectedRepository:

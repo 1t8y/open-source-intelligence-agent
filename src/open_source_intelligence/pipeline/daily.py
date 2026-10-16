@@ -1,27 +1,38 @@
 """Daily deterministic pipeline orchestration with one PipelineRun per stage.
 
-The order is fixed and rule-driven: collect -> snapshot -> rank. No language model
-is involved, so a rerun with the same inputs produces the same candidate ranking.
+The order is fixed and rule-driven: collect -> snapshot -> rank -> contents. No language
+model is involved, so a rerun with the same inputs produces the same candidate ranking.
 Each stage writes its own run record, which makes a partially failed batch
 diagnosable without reading container logs.
+
+`contents` is the last stage and the only optional one: it pre-warms the README cache for the
+ranked candidates, and it needs a network source to do anything. Callers that pass no content
+source get the three deterministic stages and no contents run record, which is exactly what a
+run with nothing to fetch should look like.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.collectors.service import collect_repositories
-from open_source_intelligence.collectors.types import RepositoryCollector
+from open_source_intelligence.collectors.types import (
+    RepositoryCollector,
+    RepositoryContentSource,
+)
 from open_source_intelligence.persistence.models.intelligence import Topic
+from open_source_intelligence.pipeline.contents import run_contents_stage
 from open_source_intelligence.pipeline.ranking import rank_topic_candidates
 from open_source_intelligence.pipeline.runs import (
     ERROR_COLLECTOR_FAILED,
+    PipelineStageError,
+    StageOutcome,
     classify_error,
     describe_error,
     fail_pipeline_run,
@@ -30,27 +41,6 @@ from open_source_intelligence.pipeline.runs import (
     start_pipeline_run,
 )
 from open_source_intelligence.pipeline.snapshots import create_daily_snapshots
-
-
-@dataclass(frozen=True, slots=True)
-class StageOutcome:
-    """Recorded outcome of one pipeline stage."""
-
-    run_id: int
-    run_type: str
-    topic_id: int | None
-    status: str
-    metrics: dict[str, Any]
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload."""
-        return {
-            "run_id": self.run_id,
-            "run_type": self.run_type,
-            "topic_id": self.topic_id,
-            "status": self.status,
-            "metrics": self.metrics,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +64,7 @@ class DailyPipelineResult:
     provider_errors: dict[str, str]
     snapshot_count: int
     topic_candidate_counts: dict[str, int]
+    content_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-ready payload for CLI, worker, and log output."""
@@ -87,28 +78,8 @@ class DailyPipelineResult:
             "provider_errors": self.provider_errors,
             "snapshot_count": self.snapshot_count,
             "topic_candidate_counts": self.topic_candidate_counts,
+            "content_counts": self.content_counts,
         }
-
-
-class PipelineStageError(RuntimeError):
-    """Raised when a mandatory stage fails and the batch must stop.
-
-    The context keyword arguments default to empty values so Celery can rebuild
-    the error from its JSON result backend, which only carries the message.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        run_id: int = 0,
-        run_type: str = "",
-        error_code: str = "",
-    ) -> None:
-        super().__init__(message)
-        self.run_id = run_id
-        self.run_type = run_type
-        self.error_code = error_code
 
 
 def list_enabled_topics(session: Session) -> Sequence[Topic]:
@@ -267,14 +238,26 @@ def run_daily_pipeline(
     business_date: date,
     collectors: Sequence[RepositoryCollector],
     limit: int,
+    content_sources: Sequence[RepositoryContentSource] = (),
+    content_limit: int | None = None,
+    content_refresh_after: datetime | None = None,
     attempt: int = 1,
 ) -> DailyPipelineResult:
-    """Run collect, snapshot, and rank as one observable batch.
+    """Run collect, snapshot, rank, and (optionally) contents as one observable batch.
+
+    `content_sources` is empty by default, and an empty list means the contents stage does not
+    run at all: no requests, no run record, `content_counts` empty. That default exists because
+    the content stage is the only one that talks to a per-repository endpoint, and a caller that
+    cannot supply one (a fixture, a drill, an offline replay) should get the deterministic three
+    stages rather than a stage that reports zero successes.
+
+    `content_limit` defaults to `limit` - the same order of magnitude as the collection batch -
+    so a caller that does not think about it still gets a bounded number of requests.
 
     Raises:
-        PipelineStageError: when collection or snapshotting fails. Ranking
-            failures stay inside the affected topic and are recorded as a failed
-            rank run instead.
+        PipelineStageError: when collection, snapshotting, or the contents stage itself fails.
+            Ranking failures stay inside the affected topic and are recorded as a failed rank
+            run; a single repository whose content cannot be fetched is counted, not raised.
     """
     stages: list[StageOutcome] = []
     collect_outcome = run_collect_stage(
@@ -289,6 +272,27 @@ def run_daily_pipeline(
     stages.append(snapshot_stage)
     rank_stages = run_rank_all_topics(session, business_date=business_date, attempt=attempt)
     stages.extend(rank_stages)
+
+    content_counts: dict[str, int] = {}
+    if content_sources:
+        contents_outcome = run_contents_stage(
+            session,
+            business_date=business_date,
+            sources=content_sources,
+            limit=limit if content_limit is None else content_limit,
+            refresh_after=content_refresh_after,
+            attempt=attempt,
+        )
+        stages.append(contents_outcome.stage)
+        summary = contents_outcome.summary
+        content_counts = {
+            "candidate_count": contents_outcome.candidate_count,
+            "fetched": summary.fetched,
+            "skipped": summary.skipped,
+            "missing": summary.missing,
+            "unsupported": summary.unsupported,
+            "failed": summary.failed,
+        }
 
     stage_statuses = {stage.status for stage in stages}
     overall_status = "partial" if stage_statuses & {"failed", "partial"} else "succeeded"
@@ -306,4 +310,5 @@ def run_daily_pipeline(
             for stage in rank_stages
             if stage.status == "succeeded"
         },
+        content_counts=content_counts,
     )

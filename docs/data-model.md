@@ -154,14 +154,16 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 | `id` | BIGINT UNSIGNED | PK | 内容 ID |
 | `repository_id` | BIGINT UNSIGNED | FK repositories.id, CASCADE | 所属仓库 |
 | `content_type` | VARCHAR(32) | NOT NULL | 当前仅 `readme` |
-| `source_url` | VARCHAR(512) | NOT NULL | 内容来源地址 |
-| `content` | MEDIUMTEXT | NOT NULL | 清理后的正文 |
-| `content_hash` | VARCHAR(64) | NOT NULL | 入库时的内容摘要 |
-| `fetched_at` | DATETIME(6) | NOT NULL | 抓取时间 UTC |
+| `source_url` | VARCHAR(512) | NOT NULL | 内容来源地址，必须是 `https`（报告引用会原样带出去） |
+| `content` | MEDIUMTEXT | NOT NULL | 清理后的正文（`clean_untrusted_text` + 按 20000 字符截断） |
+| `content_hash` | VARCHAR(64) | NOT NULL | 入库正文的 SHA-256 |
+| `fetched_at` | DATETIME(6) | NOT NULL | 最近一次**确认**该内容的时刻（UTC），内容未变也会推进 |
 | `created_at` | DATETIME(6) | NOT NULL | UTC |
 | `updated_at` | DATETIME(6) | NOT NULL | UTC |
 
 唯一约束：`UNIQUE(repository_id, content_type)`。CHECK：`content_type IN ('readme')`。
+
+**唯一生产写入方是 `pipeline/contents.py` 的 `contents` 阶段**（T23）。T7 到 T22 之间这张表没有任何写入方（只有 `scripts/t7..t17_*` 的演练直写），于是 `get_repository_content` 恒返回 `TOOL_NOT_FOUND`、研究报告的验证恒为 `sufficient=false`、`reports generate` 在解析 README 引用时硬失败 `readme source not found`。写入统一走 `collectors/service.py:upsert_repository_content`：清洗、截断、算摘要都发生在这一处，正文未变时只推进 `fetched_at`（它既是"最后确认时刻"，也是 `contents` 阶段幂等窗口的判据）。
 
 ### `topic_repositories`
 

@@ -1,6 +1,6 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T22 已对齐）
+> 文档状态：实施基线（T1-T23 已对齐）
 > 文档版本：v0.16
 > 最后更新：2026-10-16
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
@@ -70,8 +70,8 @@ api/web
 
 | 模块 | 对外能力 | 主要消费方 |
 |---|---|---|
-| `collectors` | `collect_source`、返回标准仓库数据；`PaginatedRepositoryCollector`（`collect_page` / `describe_query`）与 `RateLimiter` | pipeline/workers/backfill |
-| `pipeline` | 清洗、快照、候选排序、Pipeline 运行记录与编排 | workers/api |
+| `collectors` | `collect_source`、返回标准仓库数据；`PaginatedRepositoryCollector`（`collect_page` / `describe_query`）、`RepositoryContentSource`（`fetch_readme`）与 `RateLimiter` | pipeline/workers/backfill |
+| `pipeline` | 清洗、快照、候选排序、仓库正文缓存预热、Pipeline 运行记录与编排 | workers/api |
 | `backfill` | 作业生命周期与游标持久化（`jobs.py`）、走查本体（`service.py:run_backfill` / `start_backfill` / `resume_backfill`）、CLI 四动作 | workers/cli |
 | `agent.runtime` | `run_research_agent`、运行编排与 `AgentRunResult` | workers |
 | `agent.graph` | 有界状态图 `plan→tool→observe→verify→write` | agent.runtime |
@@ -263,7 +263,7 @@ list_pipeline_runs(session, *, topic_id=None, run_type=None, status=None, limit=
 summarize_pipeline_run(run) -> PipelineRunSummary
 ```
 
-`run_type` 取值为 `collect`、`snapshot`、`rank`、`agent`、`publish`、`push`；`status` 取值为 `queued`、`running`、`succeeded`、`failed`、`partial`。`agent`、`publish` 和 `push` 必须提供 `topic_id`，与数据库 CHECK 约束一致。运行记录的每次状态变化立即提交，避免进程崩溃后丢失失败证据；`error_message` 写入前经过脱敏并截断到 2000 字符。
+`run_type` 取值为 `collect`、`snapshot`、`rank`、`contents`、`agent`、`publish`、`push`；`status` 取值为 `queued`、`running`、`succeeded`、`failed`、`partial`。`agent`、`publish` 和 `push` 必须提供 `topic_id`，与数据库 CHECK 约束一致。运行记录的每次状态变化立即提交，避免进程崩溃后丢失失败证据；`error_message` 写入前经过脱敏并截断到 2000 字符。
 
 每日确定性 Pipeline 编排接口：
 
@@ -272,10 +272,13 @@ run_collect_stage(session, *, business_date, collectors, limit, attempt=1) -> Co
 run_snapshot_stage(session, *, business_date, attempt=1) -> StageOutcome
 run_rank_stage(session, *, topic, business_date, attempt=1) -> StageOutcome
 run_rank_all_topics(session, *, business_date, attempt=1) -> list[StageOutcome]
-run_daily_pipeline(session, *, business_date, collectors, limit, attempt=1) -> DailyPipelineResult
+run_contents_stage(session, *, business_date, sources, limit, refresh_after=None, attempt=1) -> ContentsStageOutcome
+run_daily_pipeline(session, *, business_date, collectors, limit, content_sources=(), content_limit=0, attempt=1) -> DailyPipelineResult
 ```
 
-固定顺序为 `collect -> snapshot -> rank`，每个阶段各写一条运行记录。采集阶段只有在所有供应商都失败时才抛 `PipelineStageError`（错误码 `COLLECTOR_FAILED`）并停止批次；部分失败记为 `partial` 后继续。快照失败抛 `PipelineStageError`（`SNAPSHOT_FAILED`）。单个主题的排序失败只把该主题记为 `failed`（`RANK_FAILED`），不阻塞其他主题，整体状态为 `partial`。排序阶段不调用大模型。
+固定顺序为 `collect -> snapshot -> rank -> contents`，每个阶段各写一条运行记录。采集阶段只有在所有供应商都失败时才抛 `PipelineStageError`（错误码 `COLLECTOR_FAILED`）并停止批次；部分失败记为 `partial` 后继续。快照失败抛 `PipelineStageError`（`SNAPSHOT_FAILED`）。单个主题的排序失败只把该主题记为 `failed`（`RANK_FAILED`），不阻塞其他主题，整体状态为 `partial`。排序阶段不调用大模型。
+
+`contents` 阶段把仓库正文（当前为 README）写进 `repository_contents` 缓存，排在 `rank` 之后是因为它只需要"哪些仓库值得预热"这一个排名结果。候选集合 = 启用主题下 `selected_for_agent=true` 的候选链接，按 `(topic_id, rank)` 去重后取前 `limit` 个；`content_sources` 为空时整个阶段跳过、不写运行记录，而 `run_contents_stage` 收到空列表则直接 `ValueError`（"没人能回答这个问题"不该在账本上留一条绿色的行）。抓取结果分五类计数：`fetched`（写了新内容）、`skipped`（`fetched_at >= refresh_after`，`refresh_after` 为 `None` 时不存在此类）、`missing`（源明确答复"没有 README"，如 `404`）、`unsupported`（候选的 provider 没有对应的 content source）、`failed`（源拒绝或超时）。单个仓库失败**不**抛 `PipelineStageError`：`failed` 大于零而其余四类之和为零时该运行记为 `failed`（`CONTENT_FETCH_FAILED`），部分失败记为 `partial`，其余记为 `succeeded`；没有任何候选时也是 `succeeded` 且各项计数为 `0`。这与"源拒绝一个仓库不该终止当天批次"一致，同时让"一个都没抓到"在读账本时与"抓到了几个"区分得开。阶段自身跑不起来（候选查询失败等）才抛 `PipelineStageError`，并带上已经落库的那条运行行 id。
 
 Agent Tool 接口：
 
@@ -298,7 +301,7 @@ ToolRegistry.invoke(name, ctx: ToolContext, session, arguments: Mapping) -> Tool
 
 仓库类工具（`query_repo_metrics`、`get_repository_profile`）要求仓库属于 `authorized_topic_ids` 中的主题；`get_repository_content` 只读取已缓存的 `repository_contents`，不访问任意 URL；`search_prior_reports` 只返回授权主题下 `status=published` 的报告，无权限主题不泄露摘要或计数；`save_report_section` 只写当前 `agent_run` 的草稿，每个运行对应一个 `report_drafts` 行。
 
-`repository_contents` 是 T7 新增的数据契约，字段为 `repository_id`、`content_type`（当前仅 `readme`）、`source_url`、`content`、`content_hash`、`fetched_at`，唯一键 `(repository_id, content_type)`。
+`repository_contents` 是 T7 新增的数据契约，字段为 `repository_id`、`content_type`（当前仅 `readme`）、`source_url`、`content`、`content_hash`、`fetched_at`，唯一键 `(repository_id, content_type)`。它的**唯一生产写入方**是 `pipeline/contents.py`（T23 之前没有任何写入方，只有演练脚本直写，于是 `get_repository_content` 恒失败、报告生成在解析 README 引用时硬失败）。写入前统一经 `clean_untrusted_text` 清洗并按 `MAX_CACHED_CONTENT_CHARS` 截断，`content_hash` 是清洗后文本的 `sha256`；内容未变时不重写该行（保持 `fetched_at` 与 `content_hash`），因此同一份未改动的 README 不会因为每天跑一次而被反复写库。`source_url` 必须是 `https` 链接（报告引用会原样带出去，`reports/citations.py` 只接受 `https`）。
 
 Agent 运行时接口（T8）：
 
@@ -601,7 +604,7 @@ Agent 只能调用以下白名单工具：
 - `push_targets` 是报告出站的唯一允许列表：`name` 唯一，`channel` 取 `email` / `webhook`，并带 `enabled`、`allow_private`、`allow_confidential` 三个开关；投递目标只有落入该表才可送达，两个 `allow_*` 开关默认关闭。
 - `report_pushes` 按 `idempotency_key` 唯一（`report:{report_id}:v{version}:target:{target_id}`），同一 `(报告, 版本, 目标)` 只有一行；`attempt >= 1`（`version >= 1` 同理），`status` 取 `pending` / `sent` / `failed`，重试只推进同一行的 `attempt`。`target_id` 为 `ON DELETE RESTRICT`（删除目标前必须先处理投递记录），`pipeline_run_id` 为 `ON DELETE SET NULL`。
 - `pipeline_runs.run_type` 新增 `push` 取值，与 `agent` / `publish` 一样按 `topic_id` 归属，并同步出现在 ORM 的 `CheckConstraint`、迁移里的 CHECK 与 `pipeline/runs.py:TOPIC_RUN_TYPES` 三处。
-- `pipeline_runs.run_type` 另有 `backfill` 取值，与 `collect` / `snapshot` / `rank` 一样是**全局**运行类型（`topic_id` 为 NULL）。加值需要**四处同步**：ORM 的 `run_type_valid`、ORM 的 `topic_scope_valid`、迁移里对应的两条 CHECK、`pipeline/runs.py:GLOBAL_RUN_TYPES`；少了 `topic_scope_valid` 的表现是运行行插不进去。
+- `pipeline_runs.run_type` 另有 `backfill` 与 `contents` 两个取值，与 `collect` / `snapshot` / `rank` 一样是**全局**运行类型（`topic_id` 为 NULL）。加值需要**四处同步**：ORM 的 `run_type_valid`、ORM 的 `topic_scope_valid`、迁移里对应的两条 CHECK、`pipeline/runs.py:GLOBAL_RUN_TYPES`；少了 `topic_scope_valid` 的表现是运行行插不进去。（加一个**按主题归属**的类型则只需两处：`run_type_valid` 与 `TOPIC_RUN_TYPES` —— `topic_scope_valid` 只列全局类型，非全局的那些天然落进它的 `OR topic_id IS NOT NULL` 分支。`backfill` 与 `contents` 走的是前一条路。）
 - `backfill_jobs` 是走查的检查点，没有外键：`next_page >= 1`、`target_pages` 与 `per_page` 均限 `1..100`、`pages_completed` 与 `items_collected` 非负、`attempt >= 1`。`status` 取 `pending` / `running` / `succeeded` / `failed` / `cancelled`，`heartbeat_at` 在每一页提交时刷新 —— 它**不是** `updated_at`：SQLAlchemy 的 Python 侧 `onupdate` 在 UPDATE 时会覆盖显式赋值，用 `updated_at` 当心跳的守卫永远看不到"过期"。作业行即检查点，所以续传只需要这一行，不需要重放历史；`running` 且心跳未超过 15 分钟的作业不可被第二个走查者认领。每页的仓库与指向下一页的游标在**同一事务**提交（`ingest_items` 不提交、`advance_job` 提交），游标动过就一定有对应的行。
 - `eval_datasets` 按 `(name, version)` 唯一，`eval_cases` 按 `(dataset_id, case_key)` 唯一，`eval_results` 按 `(eval_run_id, eval_case_id)` 唯一：数据集版本与逐样本测量都不可覆写，重跑刷新自身测量。
 - `eval_runs.target_type` 只允许五个变体取值，`status` 只允许 `pending` / `running` / `succeeded` / `failed`，且 `finished_at >= started_at`；五个变体中只有 `baseline_single_prompt` 允许 `agent_config_id IS NULL`。
@@ -701,7 +704,11 @@ UI 与 JSON API 的拒绝**共享同一组审计动作名**（T17）：`auth.csr
 | `BackfillNotResumable`（作业已完成或无剩余页） | 非零 | 异常消息 | 幂等操作重复执行不是错误 |
 | `BackfillWalkFailed`（走查中源失败） | 非零 | `{"status": "failed", "error_code", "message", "job": {...}}` | **最有价值的输出是"游标停在哪"** —— 那是操作员的下一条命令；作业保持可续传，因此打印载荷而不是抛 traceback |
 
-失败分类沿用 `pipeline/runs.py:classify_error`：任何 `CollectorError` → `COLLECTOR_FAILED`（源拒绝），其余 → `PIPELINE_UNEXPECTED_ERROR`（我们自己的写入坏了）。`STAGE_ERROR_CODES` **故意不含** `backfill`，因为加上去只会把这两个最需要区分的信号拍平成一个码。
+失败分类沿用 `pipeline/runs.py:classify_error`：任何 `CollectorError` → `COLLECTOR_FAILED`（源拒绝），其余 → `PIPELINE_UNEXPECTED_ERROR`（我们自己的写入坏了）。`STAGE_ERROR_CODES` **故意不含** `backfill`，因为加上去只会把这两个最需要区分的信号拍平成一个码；它**含** `contents`（`CONTENT_FETCH_FAILED`），因为该阶段唯一的失败来源就是"抓不到仓库正文"。
+
+审计结果只有 `success` / `denied` / `failed` 三个取值，比运行状态少一个 `partial`：写审计行时 `partial` 归入 `failed`（一次有仓库没抓到的刷新，落在严格的一侧）。三档之外的取值会被 `ck_audit_logs_result_valid` 拒绝，是数据库层拦住这类"拿一套词表当另一套用"的地方。
+
+工具失败观察的形状，是模型侧与证据侧共用的契约：`tool` 角色消息的 `content` 在成功时是该工具的载荷本身，失败时是 `{"error": {"code": ..., "message": ...}}`。这两者都是 JSON 对象，所以"按类型判断"无法区分它们 —— 任何从对话里回收证据的代码必须**显式排除失败壳**，否则一次失败的读取会被记成"读到了内容"。`agent/llm/messages.py` 提供这一对定义（`tool_error_payload` / `is_tool_error_payload`），`agent/graph.py` 用它渲染失败观察、`agent/llm/offline.py:_collect_evidence` 用它过滤，两处共用同一判据以免漂移。授权失败（`TOOL_ACCESS_DENIED`）与未命中（`TOOL_NOT_FOUND`）都以失败壳到达模型，模型可以据此改换目标仓库，但不得把失败当证据。
 
 发布策略原因码（T11，出现在 `publish_decision.reason_codes` 与 `report_verifications.reason_codes_json`）：
 

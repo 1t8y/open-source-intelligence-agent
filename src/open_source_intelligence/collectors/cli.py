@@ -9,7 +9,7 @@ from open_source_intelligence.collectors.github import GitHubCollector
 from open_source_intelligence.collectors.http import RetryingHttpClient
 from open_source_intelligence.collectors.huggingface import HuggingFaceCollector
 from open_source_intelligence.collectors.service import collect_repositories
-from open_source_intelligence.collectors.types import RepositoryCollector
+from open_source_intelligence.collectors.types import RepositoryCollector, RepositoryContentSource
 from open_source_intelligence.core.config import get_settings
 from open_source_intelligence.persistence.session import (
     create_database_engine,
@@ -35,6 +35,22 @@ def build_collectors(provider: str, client: httpx.Client) -> list[RepositoryColl
     }
     selected = list(collectors.values()) if provider == "all" else [collectors[provider]]
     return selected
+
+
+def build_content_sources(provider: str, client: httpx.Client) -> list[RepositoryContentSource]:
+    """Build the content sources among the selected providers.
+
+    Filtered from `build_collectors` rather than constructed separately, so that "which providers
+    can serve a README" is answered by the adapters themselves: a provider that does not
+    implement `RepositoryContentSource` simply drops out, and adding the capability to one is one
+    class no longer being skipped. Building a second GitHub client here would also make the
+    collector object and the content source two objects with one configuration between them.
+    """
+    return [
+        collector
+        for collector in build_collectors(provider, client)
+        if isinstance(collector, RepositoryContentSource)
+    ]
 
 
 def parse_args() -> argparse.Namespace:

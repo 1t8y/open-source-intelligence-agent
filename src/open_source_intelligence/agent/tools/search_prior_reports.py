@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from open_source_intelligence.core.text import clean_untrusted_text, truncate_text
 from open_source_intelligence.persistence.models.reporting import Report, ReportSource
 
 from .context import ToolContext
@@ -15,7 +16,6 @@ from .contracts import (
 )
 from .errors import ToolExecutionError
 from .outcome import ToolOutcome
-from .truncation import clean_untrusted_text, truncate_text
 
 SUMMARY_CHARS = 500
 SUMMARY_SECTION_KEY = "summary"

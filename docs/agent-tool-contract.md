@@ -310,7 +310,7 @@ SectionRef {
 | 白名单、ACL、预算、只读强制、调用记录 | `agent/tools/registry.py:ToolRegistry.invoke()` |
 | 运行时上下文 | `agent/tools/context.py:ToolContext` |
 | 主题范围授权 | `agent/tools/access.py` |
-| 文本清理与截断 | `agent/tools/truncation.py` |
+| 文本清理与截断 | `core/text.py`（`clean_untrusted_text` / `truncate_text` / `content_digest`） |
 
 数据来源与读写边界：
 
@@ -325,6 +325,10 @@ SectionRef {
 每次调用写入一行 `tool_calls`，其中 `arguments_json` 与 `result_summary` 在落库前脱敏并截断。`ToolRegistry.invoke()` 对只读工具强制检查会话脏状态：只读工具一旦产生写入即返回 `TOOL_INTERNAL_ERROR`，并**先回滚会话再记录该次调用**。回滚是必需的，因为记录调用本身会 `commit`；若只报错不回滚，处理器暂存的写入会被一并提交，让「只读工具从不写入」从一条可观测规则退化成一句口号。同一保护覆盖「处理器暂存写入后抛异常」的路径。
 
 `agent_configs.tool_policy_json` 提供运行级工具白名单，运行时据此构造 `ToolContext.allowed_tools`；注册表自身的 `WHITELIST` 是上级边界，两者取交集。`repository_contents`、`report_drafts`、`report_sections` 是 T7 为落地本契约新增的表，详见 [data-model.md](data-model.md)。
+
+`repository_contents` 的写入方是每日流水线的 `contents` 阶段（T23），不是 Agent：`get_repository_content` 只读缓存，**缓存为空时它返回 `TOOL_NOT_FOUND` 而不是去抓**。这是刻意的 —— 研究运行不该在一次运行中间发起任意出站请求，读不到就如实报读不到。
+
+失败观察与结果观察的形状由 `agent/llm/messages.py` 的 `tool_error_payload` / `is_tool_error_payload` 一对定义（T23）：失败是 `{"error": {"code", "message"}}`，成功是该工具自己的载荷。两者都是 JSON 对象，所以**任何从对话里回收证据的代码必须显式排除失败壳** —— `agent/llm/offline.py:_collect_evidence` 是唯一这样的地方，它把一次 `TOOL_NOT_FOUND` 记成"读到了内容"的话，草稿就会引用一份从未到达模型的 README，然后 `reports generate` 在解析该引用时硬失败。授权拒绝（`TOOL_ACCESS_DENIED`）与未命中一样是失败壳，模型可以据此改换目标仓库，但两者都不能当证据。
 
 ## 12. 调用方与参数校验通道（T8）
 

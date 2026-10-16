@@ -18,7 +18,7 @@
 
 `beat` 的周期表里只有四项（`workers/celery_app.py:build_beat_schedule`）：每分钟的健康检查、每 `PUBLISH_SWEEP_MINUTES` 一次的到期发布扫描、每 `PUSH_RETRY_INTERVAL_MINUTES` 一次的推送重试、以及每天 `PIPELINE_SCHEDULE_HOUR:PIPELINE_SCHEDULE_MINUTE`（默认 02:00）的**确定性流水线**。
 
-**关键事实：每天的定时任务只做到"排名"。** `run_daily_pipeline` 的三个阶段是 collect → snapshot → rank（`pipeline/daily.py:264`），它**不启动研究 Agent**；`workers.tasks.run_research_agent` 已注册但**不在 beat 表里**（`ARCHITECTURE.md` §9.3 记了这条决定，`tests/workers/test_agent_task.py:57` 用断言钉住它）。所以：
+**关键事实：每天的定时任务只做到"排名 + 预热仓库正文"。** `run_daily_pipeline` 的四个阶段是 collect → snapshot → rank → contents（`pipeline/daily.py`），`contents` 把入选候选的 README 抓进 `repository_contents` 缓存（研究运行读的就是这份缓存，见 §7）；它**不启动研究 Agent**；`workers.tasks.run_research_agent` 已注册但**不在 beat 表里**（`ARCHITECTURE.md` §9.3 记了这条决定，`tests/workers/test_agent_task.py:57` 用断言钉住它）。所以：
 
 > **"界面里没有新报告"的第一嫌疑不是"坏了"，而是"今天还没人跑研究"。** 报告生成、审核、发布、推送这一半都是**人工触发**的。§7 与 §8 是这一半的入口。
 
@@ -175,27 +175,38 @@ PY
 
 **投递本身还有一道开关**：`PUSH_DELIVERY=offline`（默认）走一个确定性、无网络的传输，任何环境都能跑；`live` 才会真的连 SMTP / 发 Webhook，且**缺凭据时在任何投递行落库之前就被拒绝**（所以"配置错了"不会留下半条记录）。
 
-## 6. 触发采集与排名（确定性半段）
+## 6. 触发采集、排名与正文缓存（确定性半段）
 
 ```bash
 # 只跑一次采集（一个源一批）
 docker compose ... exec -T api python -m open_source_intelligence.collectors.cli --provider github --limit 1
 # {"errors": {}, "provider_counts": {"github": 1}}
 
-# 完整确定性流水线：采集 → 快照 → 排名（每个启用主题一次）
+# 完整确定性流水线：采集 → 快照 → 排名 → 仓库正文缓存（每个启用主题一次）
 docker compose ... exec -T api python -m open_source_intelligence.pipeline.cli --action daily --provider github --limit 3
-```
 
-`--action daily` 的实测输出（run 175/176/177，主题 14 的候选数 35、入选 10）：
-
-```json
-{"attempt": 1, "business_date": "2026-10-16", "provider_counts": {"github": 3}, "provider_errors": {},
- "run_ids": [175, 176, 177], "snapshot_count": 40, "status": "succeeded", "topic_candidate_counts": {"14": 35}}
+# 只刷新正文缓存（排名结果已在库里时用这个；--force 忽略当天的幂等窗口）
+docker compose ... exec -T api python -m open_source_intelligence.pipeline.cli --action contents --provider github
+docker compose ... exec -T api python -m open_source_intelligence.pipeline.cli --action contents --provider github --force
 ```
 
 其它动作：`--action snapshot`（只快照）、`--action rank`（只排名）、`--action all`、`--action runs`（看运行账本，见 §12）。
 
-`--date` 是**业务日**（默认按 `APP_TIMEZONE` 推今天）：快照、排名、以及"这个业务日是否已经跑过"的幂等判断都以它为准。补跑昨天用 `--date 2026-10-15`。
+**`contents` 是报告链路的前置条件，不是可选项。** 研究运行读 README 的唯一途径是 `repository_contents` 这张缓存表（工具**不会**在运行中间去抓网络），所以缓存空着时研究运行必然停在 `AGENT_EVIDENCE_INCOMPLETE`、`reports generate` 必然失败于 `readme source not found` —— §11 记的正是这两个症状。它抓给谁由排名决定：**启用主题下 `selected_for_agent=true` 的候选**，按 `(topic_id, rank)` 去重后取前 `PIPELINE_CONTENT_LIMIT`（默认 20）个。抓取结果分五类计数写进运行行：
+
+| 计数 | 含义 |
+|---|---|
+| `fetched` | 写了新正文（内容变了或首次抓到） |
+| `skipped` | 当天已确认过（`fetched_at >= 业务日起点`），没有发起请求 |
+| `missing` | 源明确答复"没有 README"（GitHub `404`），不是失败 |
+| `unsupported` | 该候选的 provider 没有内容能力（当前只有 GitHub 有，见下） |
+| `failed` | 源拒绝或超时，`metrics.failures` 里带仓库 id 与脱敏后的原因 |
+
+`failed` 大于零而其余四类之和为零时该运行记为 `failed`，部分失败记为 `partial`；一个仓库抓不到**不会**终止当天批次。刷新按业务日的**时区起点**做幂等窗口，所以同一天重复跑 `daily` 不会重复请求（`--force` 可越过）。
+
+当前的 provider 覆盖面：**只有 GitHub 实现了 `fetch_readme`**（Hugging Face 的适配器没有实现这个能力）。所以候选里若有 HF 仓库，它们会记 `unsupported`，其 README 缓存会一直为空 —— 研究运行读它们时拿到的是 `TOOL_NOT_FOUND`，这是"未缓存"的诚实结果，不是缺陷。
+
+`--date` 是**业务日**（默认按 `APP_TIMEZONE` 推今天）：快照、排名、正文缓存的幂等窗口、以及"这个业务日是否已经跑过"的判断都以它为准。补跑昨天用 `--date 2026-10-15`。
 
 **采集是可用的**（实测 GitHub `api.github.com` 与 HF 镜像两条都能取到数据，并更新 `data_sources.last_success_at`）。`provider_errors` 非空时才需要看这一源的凭据与限流。
 
@@ -211,34 +222,34 @@ docker compose ... exec -T api python -m open_source_intelligence.agent.cli --ac
 docker compose ... exec -T api python -m open_source_intelligence.agent.cli --action runs --run-id 28
 ```
 
-实测输出（run 28，节选）：
+实测输出（run 30，离线桩，节选）：
 
 ```json
-{"run": {"agent_run_id": 28, "status": "needs_review", "error_code": "AGENT_EVIDENCE_INCOMPLETE",
- "candidate_repo_ids": [100, 99, 101], "evidence_count": 9, "loop_count": 4, "tool_call_count": 15,
- "report_draft_id": 12, "section_count": 6, "guard_triggered": false,
- "verification": {"covered_repo_ids": [99, 100, 101], "missing_repo_ids": [], "content_repo_ids": [],
-                  "has_prior_baseline": true, "sufficient": false,
-                  "reason": "no cached repository content was read", "security_risk": false}}}
+{"run": {"agent_run_id": 30, "status": "completed", "error_code": null, "candidate_repo_ids": [100, 99, 101],
+ "evidence_count": 9, "tool_call_count": 15, "report_draft_id": 14, "section_count": 6, "guard_triggered": false,
+ "verification": {"covered_repo_ids": [99, 100, 101], "missing_repo_ids": [], "content_repo_ids": [99, 100],
+                  "has_prior_baseline": true, "sufficient": true, "reason": "evidence base complete for an internal draft"}}}
 ```
 
 `--window-start` / `--window-end` 覆盖窗口（ISO 8601）；`--max-candidates` 覆盖主题的候选上限，**这是控制这一轮模型预算最直接的一个旋钮**。运行级预算在 `AGENT_MAX_LOOPS` / `AGENT_MAX_MODEL_CALLS` / `AGENT_MAX_TOOL_CALLS` / `AGENT_MAX_TOKENS` / `AGENT_MAX_COST`。
+
+⚠️ **`AGENT_MAX_TOKENS` 的默认值 12000 在"缓存有内容"之后偏小。** README 缓存修好之前（T23），读缓存工具每次都失败，工具载荷很短，同一主题的研究跑下来只有几千 token；缓存一填上，证据真实地变长，实测一次运行 `total_tokens` 18753，于是真实模型那次以 `AGENT_BUDGET_EXCEEDED` 收口（`status=needs_review`，草稿仍写完了 6 个章节）。离线桩因为不计 token 不受影响。要跑通"真实模型 + 真实证据"的完整链路，把 `.env` 的 `AGENT_MAX_TOKENS` 提到 **25000 以上**（`AGENT_MAX_COST` 同样要按真实价格核对）。这不是缺陷，是**真实证据的成本第一次被看见**。
 
 **它是人工触发的，不是忘了接。** 这条决定写在 `ARCHITECTURE.md` §9.3：Agent 消耗真实模型预算，自动编排要等报告与发布阶段就绪后再开。⚠️ 那两阶段（T11–T13）已经完成，**但开关还没人开** —— 当前状态是"必须人工触发"，见 §11 第 4 条。
 
 ## 8. 报告链路（人工触发）
 
-`reports.cli` 是报告侧的全部动作，顺序即状态机顺序。下表的**状态**列说明这一条在当前部署里能不能走通：
+`reports.cli` 是报告侧的全部动作，顺序即状态机顺序。下表的**状态**列说明这一条在当前部署里能不能走通（T23 修好 README 缓存之后，生成→验证→发布这三步已经实跑过）：
 
 | 动作 | 命令（前缀省略 `docker compose ... exec -T api python -m open_source_intelligence.reports.cli`） | 状态 |
 |---|---|---|
-| 生成 | `--action generate --agent-run-id <id>` | ⛔ **本部署当前失败**，见 §11 第 1 条（实测报错 `readme source not found: repository_contents:99:readme`） |
-| 验证 | `--action verify --report-id <id>` | ⏸ 未实跑：生成是它的前置步骤，而生成当前被 §11 第 1 条挡住 |
-| 发布 | `--action publish --report-id <id>` | ⏸ 同上；`publish` 内联调用验证，因此它也会撞同一处 |
-| 审核 | `--action review --report-id <id> --decision {approve\|reject\|request_changes} --reviewer-id <uid> --comment "…"` | ⏸ 同上 |
+| 生成 | `--action generate --agent-run-id <id>` | ✅ 实跑：报告 36（真实模型那次）与 37（离线桩），`{"created": true, "report_id": 37, "source_count": 26, "version": 1}`。**T23 之前这一条硬失败于 `readme source not found: repository_contents:99:readme`** |
+| 验证 | `--action verify --report-id <id>` | ✅ 实跑：`{"verdict": "passed", "citation_coverage": 1.0, "unresolved_refs": [], "structure_ok": true, "numbers_ok": true, "sensitivity_ok": true, "sensitive_markers": 0, "reason_codes": []}` |
+| 发布 | `--action publish --report-id <id>` | ✅ 实跑：`{"status": "scheduled", "mode": "AUTO_WITH_DELAY", "requires_review": false, "reason_codes": [], "publish_at": "…"}` —— 进了延迟窗口，等 `PUBLISH_DELAY_MINUTES` 到期或 `publish-due` 释放 |
+| 审核 | `--action review --report-id <id> --decision {approve\|reject\|request_changes} --reviewer-id <uid> --comment "…"` | ⏸ 未实跑：本部署的主题是 `AUTO_WITH_DELAY`，走不到必须人工 approve 的那条路（`MANUAL` 模式才需要） |
 | 到期释放 | `--action publish-due --limit 20` | ✅ 实跑：`{"released": []}`（当时没有到期报告，空操作） |
-| 推送 | `--action push --report-id <id> --target-id <target_id>` | ⏸ 同上 |
-| 推送重试 | `--action push-retry --limit 20` | ⏸ 同上 |
+| 推送 | `--action push --report-id <id> --target-id <target_id>` | ⏸ 未实跑：报告停在 `scheduled`，推送只在 `published` 之后发生 |
+| 推送重试 | `--action push-retry --limit 20` | ⏸ 未实跑：同上；且 `push_targets` 里只有一行且为测试目标 |
 
 界面 `/ui/reports` 是同一套动作的点击版。`--action push` 的**渠道取自目标行**，命令行传 `--channel` 不会覆盖它（表单同理）。
 
@@ -290,7 +301,12 @@ docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli
 
 ## 11. 当前状态与已知缺口（实测，2026-10-16）
 
-四处**实测**出来的缺口。它们都不是"环境不行"，根因都落在代码里，所以都附了证据行。
+四处**实测**出来的缺口，都不是"环境不行"，根因都落在代码里，所以都附了证据行。**T23 修掉了第 1、2 两处**（同一根因的两面），第 3、4 仍开放：
+
+- **缺口 1（已修）**：新增 `contents` 阶段（`pipeline/contents.py`）作为 `repository_contents` 的**唯一生产写入方**，排在 `rank` 之后按候选排名预热缓存。实测：`--action daily` 的 contents run（183）抓到 10/10 个 README，10 行缓存的 `char_length(content)` 上界正好 20000、`source_url` 全为 `https`；同一天再跑 `--action contents`（run 184）为 `skipped=10`/`fetched=0` —— 幂等窗口起作用，没有发起第二次请求。
+- **缺口 2（已修）**：`agent/llm/messages.py` 提供 `tool_error_payload` / `is_tool_error_payload` 一对定义，`agent/graph.py` 渲染与 `agent/llm/offline.py:_collect_evidence` 过滤共用同一判据 —— 失败观察不再被当成"读到了内容"。实测：研究运行从 `needs_review`+`AGENT_EVIDENCE_INCOMPLETE`+`sufficient=false` 变为 `completed`+`sufficient=true`（`content_repo_ids=[99, 100]`）；`reports generate` 从硬失败 `readme source not found` 变为成功（报告 36/37），`reports verify` 两份 `verdict=passed`、`citation_coverage=1.0`、`unresolved_refs=[]`。
+
+下表保留 T22 当时实测到的**原始现象与根因**（那是修之前的证据，不改写）：
 
 | # | 现象（原始报错） | 根因 | 影响 |
 |---|---|---|---|
@@ -299,9 +315,9 @@ docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli
 | 3 | 评测五个变体全 `failed`、`scored_case_count = 0` | 逐条结果是 `EVAL_TOPIC_NOT_FOUND`：数据集里写的是夹具主题名（`AI Agent`），而这个库里只有 `sweep-llm-agent-topic` | 评测链路本身没坏，是**数据集与部署对不上**；改名或更新数据集即可 |
 | 4 | 每天定时任务跑完只有采集/快照/排名，永远没有新报告 | `run_research_agent` **不在 beat 表**（`ARCHITECTURE.md` §9.3 的决定：等报告与发布阶段就绪后再开），而那条前置条件（T11–T13）**已经满足** | 自动编排停在排名；研究与报告必须人工触发 |
 
-修法建议（**未实施**，属于下一个任务）：
+修法建议（第 1/2 条已在 T23 实施，见 §11 开头；第 3/4 条仍开放）：
 
-- **缺口 1/2 一起修**：先给"读缓存"补一条生产路径 —— 要么在采集/快照阶段抓 README 落进 `repository_contents`（这也让 `get_repository_content` 有可能成功），要么明确"内容缓存由运维预置"并把 `verify` 的 README 条件降级为可选。同时收紧 `_collect_evidence`：`profile` 与 `content` 两处现在都是 `isinstance(payload, dict)` 就收，**必须排除失败载荷**（`query_repo_metrics` 与 `search_prior_reports` 分支收的是 list，不受影响）。两处都要补**能失败的**回归测试。
+- **缺口 1/2（已实施）**：先给"读缓存"补一条生产路径 —— 要么在采集/快照阶段抓 README 落进 `repository_contents`（这也让 `get_repository_content` 有可能成功），要么明确"内容缓存由运维预置"并把 `verify` 的 README 条件降级为可选。同时收紧 `_collect_evidence`：`profile` 与 `content` 两处现在都是 `isinstance(payload, dict)` 就收，**必须排除失败载荷**（`query_repo_metrics` 与 `search_prior_reports` 分支收的是 list，不受影响）。两处都要补**能失败的**回归测试。
 - **缺口 3**：把数据集里的主题名改成本部署真实存在的主题，或在导入时校验。
 - **缺口 4**：这是一个预算决定，不是代码问题 —— 要么把 `run_research_agent` 加进 beat（并接受每天自动消耗一次模型预算），要么把文档里"等就绪后再开"改成"有意保持人工"。
 
@@ -322,7 +338,8 @@ docker compose ... exec -T api python -m open_source_intelligence.pipeline.cli -
 |---|---|
 | 报告/列表是空的 | 有没有 `enabled=True` 的主题？排名 run 的 `candidate_count` 是不是 0？今天跑过 `--action daily` 吗？ |
 | 每天跑完却没有新报告 | 正常 —— 研究不在 beat 里，见 §11 第 4 条 |
-| `AGENT_EVIDENCE_INCOMPLETE` | `repository_contents` 是不是空的（§11 第 1/2 条） |
+| `AGENT_EVIDENCE_INCOMPLETE` | `repository_contents` 是不是空的 —— 跑一次 `--action contents` 再看（§6）。T23 之后这条不该再出现；若仍出现，看 contents 运行行的 `metrics.failures` 里哪些仓库没抓到 |
+| `AGENT_BUDGET_EXCEEDED` | `AGENT_MAX_TOKENS` 不够（§7 的 ⚠️）。证据真实变长之后这是真实模型最常见的"跑不完"原因，草稿通常已写完，所以它落在 `needs_review` 而不是 `failed` |
 | `EVAL_TOPIC_NOT_FOUND` | 数据集里的主题名与本库主题是否一致（§11 第 3 条） |
 | `publish` 后停在 `pending_review` | 看返回里的 `reason_codes`（如 `AGENT_RUN_NOT_CLEAN`）与 `PUBLISH_MIN_CITATION_COVERAGE` |
 | 推送 `failed` + 错误码 | 传输失败**不是异常**：接口仍 `200`，失败落在投递行上；看 `error_code` 与 `PUSH_MAX_ATTEMPTS`，重试会推进同一行的 `attempt` |

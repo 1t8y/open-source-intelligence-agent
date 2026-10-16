@@ -11,8 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.agent.runtime import run_research_agent
-from open_source_intelligence.agent.tools.truncation import content_digest
 from open_source_intelligence.core.config import get_settings
+from open_source_intelligence.core.text import content_digest
 from open_source_intelligence.persistence import models  # noqa: F401
 from open_source_intelligence.persistence.models.reporting import (
     Report,

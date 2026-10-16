@@ -13,7 +13,7 @@ from support import NOW, Workspace, build_settings
 
 from open_source_intelligence.agent.runtime import run_research_agent
 from open_source_intelligence.agent.tools.contracts import REPORT_SECTION_KEYS, CitationRef
-from open_source_intelligence.agent.tools.truncation import content_digest
+from open_source_intelligence.core.text import content_digest
 from open_source_intelligence.persistence.models.intelligence import Topic
 from open_source_intelligence.persistence.models.reporting import (
     Report,

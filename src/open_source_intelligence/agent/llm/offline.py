@@ -34,6 +34,7 @@ from .messages import (
     ModelToolCall,
     ModelTurn,
     ToolSchema,
+    is_tool_error_payload,
 )
 
 DEFAULT_OFFLINE_MODEL = "offline-deterministic-v1"
@@ -172,7 +173,15 @@ def _net_star_delta(points: Sequence[dict[str, Any]]) -> int:
 
 
 def _collect_evidence(messages: Sequence[ChatMessage]) -> _Evidence:
-    """Rebuild the research snapshot from recorded tool observations."""
+    """Rebuild the research snapshot from recorded tool observations.
+
+    A failed observation is skipped before any branch sees it. Both a failure and a result are
+    JSON objects, so without this the two are indistinguishable here, and a call that answered
+    `TOOL_NOT_FOUND` would be filed as "the cached README was read" - the agent would then cite a
+    document it never received, and report generation would fail downstream on a citation whose
+    source row does not exist. Skipping is uniform across branches rather than added to the two
+    that take a dict, so a future observation type cannot reintroduce the bug by omitting it.
+    """
     evidence = _Evidence()
     arguments_by_call = _arguments_by_call_id(messages)
     for message in messages:
@@ -181,6 +190,8 @@ def _collect_evidence(messages: Sequence[ChatMessage]) -> _Evidence:
         try:
             payload: Any = json.loads(message.content)
         except json.JSONDecodeError:
+            continue
+        if is_tool_error_payload(payload):
             continue
         arguments = arguments_by_call.get(message.tool_call_id or "", {})
         repo_id = arguments.get("repo_id")
