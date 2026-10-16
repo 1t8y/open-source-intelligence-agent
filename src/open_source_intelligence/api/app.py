@@ -27,6 +27,7 @@ from .routes.metrics import router as metrics_router
 from .routes.push import router as push_router
 from .routes.reports import router as reports_router
 from .routes.repositories import router as repositories_router
+from .routes.topics import router as topics_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -62,6 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(agent_runs_router)
     app.include_router(repositories_router)
+    app.include_router(topics_router)
     app.include_router(audit_router)
     app.include_router(web_router)
 

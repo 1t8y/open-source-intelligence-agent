@@ -11,6 +11,10 @@ decision *itself*, because two things can break without any endpoint failing:
   this account read reports at all", `can_read_report` answers "may it read *this* one".
   Collapsing the two would silently widen `VIEWER`, so the split is asserted here rather than
   left implicit.
+
+The topic rule repeats the shape with fewer moving parts - an `ADMIN` bypass plus an `enabled`
+flag - and gets the same treatment at the end of the file, for the same reason: it has one Python
+expression and one SQL expression, and the pair is what the topic list's `total` depends on.
 """
 
 from __future__ import annotations
@@ -25,14 +29,18 @@ from support import Workspace
 
 from open_source_intelligence.persistence.models.audit import AuditLog
 from open_source_intelligence.persistence.models.identity import User
+from open_source_intelligence.persistence.models.intelligence import Topic
 from open_source_intelligence.persistence.models.reporting import Report
 from open_source_intelligence.security.authorization import (
     ROLE_ADMIN,
     ROLE_EDITOR,
     ROLE_VIEWER,
     authorize_report_read,
+    authorize_topic_read,
     can_read_report,
+    can_read_topic,
     readable_reports_filter,
+    readable_topics_filter,
     require_report_read,
 )
 
@@ -306,3 +314,148 @@ def test_authorize_report_read_returns_the_row_when_allowed(
         report_id=expected.id,
     )
     assert returned.id == expected.id
+
+
+# --------------------------------------------------------------------------------------
+# The topic rule: the same pair, on a resource with one flag instead of a scope
+# --------------------------------------------------------------------------------------
+
+#: Roles only. `can_read_topic` never consults `data_scope`, which is the point of the rule below.
+TOPIC_PRINCIPALS = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER)
+
+
+@pytest.fixture()
+def topics(session: Session, workspace: Workspace) -> dict[str, Topic]:
+    """One enabled topic and one disabled one: the whole of the topic visibility rule."""
+    enabled = workspace.add_topic(name="authz-topic-enabled", enabled=True)
+    disabled = workspace.add_topic(name="authz-topic-disabled", enabled=False)
+    session.commit()
+    return {"enabled": enabled, "disabled": disabled}
+
+
+@pytest.mark.parametrize("role", TOPIC_PRINCIPALS)
+def test_readable_topics_filter_agrees_with_can_read_topic(
+    session: Session,
+    topics: dict[str, Topic],
+    editor: Actor,
+    role: str,
+) -> None:
+    """The SQL predicate and the Python predicate select the same rows.
+
+    The topic list's `total` is computed with the predicate, and the single read uses the function.
+    If they disagreed, a caller could be told there are two topics and then be refused one of them
+    - or, worse in the other direction, be told there is one while the detail read lets it see two.
+    Set equality alone would pass if both were wrong the same way, so the expected set is asserted
+    alongside it.
+    """
+    user = _detached(editor, "personal")
+    roles = {role}
+    name_of = {topic.id: name for name, topic in topics.items()}
+
+    by_python = {name for name, topic in topics.items() if can_read_topic(user, topic, roles)}
+    by_sql = {
+        name_of[topic_id]
+        for topic_id in session.scalars(
+            select(Topic.id).where(readable_topics_filter(user, roles))
+        ).all()
+    }
+
+    assert by_sql == by_python
+    assert by_sql == (set(topics) if role == ROLE_ADMIN else {"enabled"})
+
+
+def test_the_topic_rule_never_consults_the_data_scope(
+    topics: dict[str, Topic],
+    editor: Actor,
+) -> None:
+    """A disabled topic is unpublished configuration, not somebody else's private data.
+
+    The gate is a role check rather than an ownership check, so widening an account's scope changes
+    nothing here. Asserting it stops a later edit from "fixing" the topic rule by making it look
+    like the report one.
+    """
+    for scope in ("personal", "team"):
+        user = _detached(editor, scope)
+        assert can_read_topic(user, topics["enabled"], {ROLE_EDITOR}) is True
+        assert can_read_topic(user, topics["disabled"], {ROLE_EDITOR}) is False
+        assert can_read_topic(user, topics["disabled"], {ROLE_ADMIN}) is True
+
+
+def test_authorize_topic_read_records_the_topic_it_refused(
+    session: Session,
+    topics: dict[str, Topic],
+    editor: Actor,
+) -> None:
+    """An invisible topic is a `403` whose body is silent and whose audit row is not."""
+    with pytest.raises(HTTPException) as raised:
+        authorize_topic_read(
+            session,
+            _request("/api/v1/topics/1"),
+            _stored(session, editor),
+            topic_id=topics["disabled"].id,
+            action="topic.read",
+        )
+
+    assert raised.value.status_code == 403
+    assert str(topics["disabled"].id) not in str(raised.value.detail)
+    denial = session.scalar(select(AuditLog).where(AuditLog.action == "topic.read"))
+    assert denial is not None
+    assert denial.result == "denied"
+    assert denial.resource_type == "topic"
+    assert denial.resource_id == str(topics["disabled"].id)
+    assert denial.actor_id == editor.user_id
+
+
+def test_authorize_topic_read_keeps_the_catalog_action_by_default(
+    session: Session,
+    topics: dict[str, Topic],
+    editor: Actor,
+) -> None:
+    """The repository catalog filters by topic and still records `repository.read`.
+
+    `action` defaults to the older caller's name on purpose: a surface that inherits a name
+    describing a different request produces a trail that cannot be read back.
+    """
+    with pytest.raises(HTTPException):
+        authorize_topic_read(
+            session,
+            _request("/api/v1/repositories"),
+            _stored(session, editor),
+            topic_id=topics["disabled"].id,
+        )
+
+    assert session.scalar(select(AuditLog).where(AuditLog.action == "repository.read")) is not None
+    assert session.scalar(select(AuditLog).where(AuditLog.action == "topic.read")) is None
+
+
+def test_authorize_topic_read_maps_a_miss_to_404_without_auditing(
+    session: Session,
+    editor: Actor,
+) -> None:
+    """A topic that never existed was not refused, so nothing is recorded."""
+    with pytest.raises(HTTPException) as raised:
+        authorize_topic_read(
+            session,
+            _request("/api/v1/topics/987654321"),
+            _stored(session, editor),
+            topic_id=987654321,
+        )
+
+    assert raised.value.status_code == 404
+    assert session.scalars(select(AuditLog)).all() == []
+
+
+def test_authorize_topic_read_returns_the_row_when_allowed(
+    session: Session,
+    topics: dict[str, Topic],
+    editor: Actor,
+) -> None:
+    """A permitted read hands back the row itself, which is what the route serialises."""
+    returned = authorize_topic_read(
+        session,
+        _request("/api/v1/topics/1"),
+        _stored(session, editor),
+        topic_id=topics["enabled"].id,
+        action="topic.read",
+    )
+    assert returned.id == topics["enabled"].id

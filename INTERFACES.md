@@ -1,8 +1,8 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T18 已对齐）
-> 文档版本：v0.12
-> 最后更新：2026-10-15
+> 文档状态：实施基线（T1-T19 已对齐）
+> 文档版本：v0.13
+> 最后更新：2026-10-16
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
 ## 1. 契约范围
@@ -34,7 +34,7 @@
 | 系统 | `GET /health` | 公开 | 进程存活状态、服务名和版本 |
 | 认证 | `POST /auth/login`、`GET /auth/me` | 登录用户 | JWT/Cookie、角色和数据范围 |
 | 数据源 | **无 HTTP 端点** | 部署/运维 | 行由采集器按 `(source_type)` 幂等自供给（`collectors/service.py:ensure_data_source`）；`base_url` / `credential_ref` / 限流预算属**部署配置**，改它们走环境变量与迁移，不走请求处理器 —— 一个能改限流预算的端点等于把公共 API 的用量控制交给任意已登录客户端 |
-| 主题 | **无 HTTP 端点** | 部署/运维 | 主题增删改属运维配置（当前由种子/脚本写入）；**触发研究也不在 API 上**，与 Agent 运行同一条理由：一次运行消耗模型预算，触发权属于调度器与操作员 CLI，不属于任意已登录客户端 |
+| 主题 | `/topics`、`/topics/{id}` | 读：任何已登录用户（`enabled` 全角色、禁用主题仅 ADMIN）；写：ADMIN | 增删改此前无 HTTP 面，T18 记为"设计未做"，T19 先补本节契约再实现。可见性规则与仓库目录的 `topic_id` 过滤是**同一个** `can_read_topic`，没有第二套；列表过滤在数据库查询里完成，`total` 与 `items` 同条件。写只给 ADMIN：主题决定盯什么，也就决定下一次每日运行消耗多少模型预算与公共 API 配额，与数据源拒绝 `POST /sources` 同一条理由；`EDITOR` 的写权限仍只覆盖报告。**触发研究仍不在 API 上**（T15 的 `POST /agent/runs` 同一条理由，一次运行消耗模型预算，触发权属调度器与操作员 CLI） |
 | 仓库 | `/repositories`、`/repositories/{id}/snapshots` | ADMIN/EDITOR/VIEWER | 仓库元数据为公开级（`security-and-privacy.md` §2），不做逐行 ACL；`topic_id` 过滤要求主题可见（`enabled` 对全角色、禁用主题仅 ADMIN），越权 `403` + `repository.read` 审计。快照窗口是**闭区间**，与 `get_snapshot_series` 一致 |
 | Agent | `GET /agent/runs`、`/agent/runs/{id}`、`/agent/runs/{id}/steps` | ADMIN/EDITOR | **只读**（运行由 pipeline/worker 创建，不经 API）；列表按 `status`/`topic_id` 过滤并分页，轨迹含未挂到步骤的工具调用 |
 | 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |

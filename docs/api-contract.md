@@ -1,8 +1,8 @@
 # API 接口契约
 
-> 版本：v1.4
+> 版本：v1.5
 > 前缀：`/api/v1`  
-> 最后更新：2026-10-14
+> 最后更新：2026-10-16
 
 ## 1. 通用约定
 
@@ -12,7 +12,7 @@
 - 列表使用 `page`、`page_size`，`page_size` 范围为 1-100，默认 20。
 - 创建和更新使用 `Idempotency-Key` 可选请求头；相同 Key 的重复请求不得重复创建资源。
 - 错误响应使用 RFC 7807 Problem Details，成员固定为 `type`、`title`、`status`、`detail`、`instance`、`code`、`request_id`。
-- 已实现的错误码：`AUTH_REQUIRED`、`FORBIDDEN`、`NOT_FOUND`、`VALIDATION_ERROR`、`CONFLICT`、`METHOD_NOT_ALLOWED`、`RATE_LIMITED`、`INTERNAL_ERROR`、`SERVICE_UNAVAILABLE`、`AGENT_BUDGET_EXCEEDED`、`PUBLISH_POLICY_BLOCKED`、`REPORT_STATE_INVALID`。客户端应按 `code` 分支，不要解析 `detail` 文案。
+- 已实现的错误码：`AUTH_REQUIRED`、`FORBIDDEN`、`NOT_FOUND`、`VALIDATION_ERROR`、`CONFLICT`、`METHOD_NOT_ALLOWED`、`RATE_LIMITED`、`INTERNAL_ERROR`、`SERVICE_UNAVAILABLE`、`AGENT_BUDGET_EXCEEDED`、`PUBLISH_POLICY_BLOCKED`、`REPORT_STATE_INVALID`、`TOPIC_NAME_CONFLICT`、`TOPIC_IN_USE`。客户端应按 `code` 分支，不要解析 `detail` 文案。
 
 ### `GET /health`
 
@@ -83,14 +83,163 @@
 
 ## 3. 数据源与主题
 
-**本节没有 HTTP 端点。** 早期设计在这里声明过 `GET /sources`、`POST /sources`、`GET /topics` 与 `POST /topics/{topic_id}/run`，实现从未存在；T18 把它们从契约中移除，而不是留着一份文档去承诺一个没人打算做的接口。
+### 3.1 数据源
 
-移除的理由分两类，都不是"没来得及做"：
+**没有 HTTP 端点。** 早期设计在这里声明过 `GET /sources` 与 `POST /sources`，实现从未存在；T18 把它们从契约中移除，而不是留着一份文档去承诺一个没人打算做的接口。
 
-- **数据源自供给。** `data_sources` 的行由采集器在首次采集时按 `(source_type)` 幂等建立（`collectors/service.py:ensure_data_source`），它的可变字段就是部署配置：`base_url` 取自 `GITHUB_API_BASE` / `HUGGINGFACE_API_BASE`，`credential_ref` 指向环境变量里的 Token，`rate_limit_per_minute` 既是默认限流预算也是回填的默认预算。这些值属于**部署**，改它们应该走环境变量与迁移，而不是走一个会写 `data_sources` 的请求处理器 —— 一个能改限流预算的 HTTP 端点等于把公共 API 的用量控制交给任意一个已登录客户端。
-- **主题的触发权不在 API 上。** `POST /topics/{id}/run` 与 §5 拒绝 `POST /agent/runs` 是同一条理由：一次研究运行会消耗模型预算，触发权属于受调度控制的管道（Celery beat 的每日任务）与操作员 CLI（`python -m open_source_intelligence.pipeline.cli --action daily`），而不是任意一个已登录客户端。T15 已经为 Agent 运行确立过这条决策，主题触发的接口会把它绕开。
+移除的理由不是"没来得及做"：**数据源自供给。** `data_sources` 的行由采集器在首次采集时按 `(source_type)` 幂等建立（`collectors/service.py:ensure_data_source`），它的可变字段就是部署配置：`base_url` 取自 `GITHUB_API_BASE` / `HUGGINGFACE_API_BASE`，`credential_ref` 指向环境变量里的 Token，`rate_limit_per_minute` 既是默认限流预算也是回填的默认预算。这些值属于**部署**，改它们应该走环境变量与迁移，而不是走一个会写 `data_sources` 的请求处理器 —— 一个能改限流预算的 HTTP 端点等于把公共 API 的用量控制交给任意一个已登录客户端。
 
-主题本身的增删改同样没有 HTTP 面：它属于运维配置，当前由种子/脚本写入，`docs/requirements.md` 未把主题管理列为首期交付。这条不构成"设计已定"，而是"设计未做"——将来要加，应当先回到 `INTERFACES.md` §3 补一行契约，再实现。
+### 3.2 主题
+
+本节在 T18 时是空的，理由写在那时的正文里：「主题本身的增删改同样没有 HTTP 面：它属于运维配置，当前由种子/脚本写入，`docs/requirements.md` 未把主题管理列为首期交付。这条不构成"设计已定"，而是"设计未做"——**将来要加，应当先回到 `INTERFACES.md` §3 补一行契约，再实现**。」T19 照这句话办了：先补 `INTERFACES.md` §3 的契约，再实现。
+
+**读与写分开授权。**
+
+- **读**沿用仓库目录 `topic_id` 过滤那一套可见性规则，一字不改：`enabled` 主题对任何已登录用户可见，禁用主题仅 `ADMIN` 可见（`security/authorization.py:can_read_topic`）。列表的权限过滤在数据库查询里完成，`total` 与 `items` 受同一条件约束 —— 否则 `total` 会泄露调用者无权看到的主题数目。
+- **写**只给 `ADMIN`。主题决定"盯哪些仓库"，也就决定了下一次每日运行要消耗多少模型预算与公共 API 配额，这与 3.1 拒绝 `POST /sources` 是同一条理由：一个能改它的接口等于把用量控制交给任意一个已登录客户端。`EDITOR` 的写权限仍然只覆盖报告。
+
+**触发研究仍然不在 API 上。** 早期设计在这里声明过 `POST /topics/{id}/run`，它不在 T19 的范围内，理由是 T15 为 `POST /agent/runs` 确立过的那条：一次研究运行消耗模型预算，触发权属于受调度控制的管道（Celery beat 的每日任务）与操作员 CLI（`python -m open_source_intelligence.pipeline.cli --action daily`），而不是任意一个已登录客户端。
+
+### `GET /topics`
+
+权限：任何已登录用户（`ADMIN` / `EDITOR` / `VIEWER`）。匿名 `401 AUTH_REQUIRED`。
+
+查询参数：
+
+| 参数 | 类型 | 默认 | 约束 |
+|---|---|---|---|
+| `enabled` | bool | 无（不额外过滤） | 与可见性规则**取交集**，不替换它 |
+| `q` | string | 无 | 对 `name` 与 `description` 的大小写不敏感子串匹配；与仓库目录同一条：这是**子串搜索，不是全文检索**，因此 `%` 与 `_` 是普通字符 |
+| `page` | int | `1` | `>= 1` |
+| `page_size` | int | `20` | `1..100`，越界 `422` |
+
+`enabled` 与可见性取交集的结果有一条值得写明：非 `ADMIN` 传 `enabled=false` 得到的是**空列表**，不是 `403`。「没有你能看见的禁用主题」是一次真实回答，不是一次被拒绝的请求。`ADMIN` 传 `false` 得到的才是那些被停用的主题。
+
+按 `id` 升序返回，与每日管道读取启用主题的顺序（`pipeline/daily.py:list_enabled_topics` 的 `order_by(Topic.id)`）一致 —— 于是"看清单的顺序"和"跑管道的顺序"是同一个，而不是两套各自合理的排序。
+
+```json
+{
+  "items": [{
+    "id": 14,
+    "name": "AI Agent",
+    "description": "关注工具调用与运行时",
+    "languages": ["Python"],
+    "keywords": ["agent", "llm"],
+    "min_stars": 100,
+    "window_days": 7,
+    "max_candidates": 30,
+    "publish_mode": "AUTO_WITH_DELAY",
+    "enabled": true,
+    "created_by": 1,
+    "created_at": "2026-10-16T02:00:00+00:00",
+    "updated_at": "2026-10-16T02:00:00+00:00"
+  }],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
+}
+```
+
+`languages` / `keywords` 的列名是 `languages_json` / `keywords_json`：出站名去掉 `_json` 后缀，与仓库目录把 `topics_json` 出站为 `topics` 是同一条约定 —— `_json` 是存储细节，不是字段语义的一部分。列表为 `null` 表示**没有这一类限制**（不限语言 / 不限关键词）；提交空数组与 `null` 是同一个意思，存下来也一模一样，否则一次"清空筛选条件"的 PATCH 会在之后每次请求里都看起来像一次改动。
+
+### `GET /topics/{topic_id}`
+
+权限同上一节。响应体是列表里的单个元素，形状与字段完全一致。
+
+失败沿用仓库目录 `topic_id` 过滤的两段式：主题不存在 `404 NOT_FOUND`；主题存在但调用者不可见（被停用的主题，非 `ADMIN`）`403 FORBIDDEN`，响应体不含主题元数据，并写一条 `topic.read` / `denied` 审计（带被拒主题的 id）。
+
+### `POST /topics`
+
+权限：`ADMIN`。`EDITOR` 与 `VIEWER` 得 `403 FORBIDDEN`（`auth.rbac` 审计），匿名 `401 AUTH_REQUIRED`。
+
+请求体：`name` 与 `publish_mode` 必填，其余字段取列默认值。
+
+```json
+{
+  "name": "向量数据库",
+  "description": "关注 ANN 索引与检索质量",
+  "languages": ["Rust", "C++"],
+  "keywords": ["vector", "ann", "hnsw"],
+  "min_stars": 200,
+  "window_days": 14,
+  "max_candidates": 20,
+  "publish_mode": "MANUAL",
+  "enabled": true
+}
+```
+
+| 条件 | 状态码 | `code` |
+|---|---|---|
+| `name` 去空白后为空 / 超过 128 字符 / `publish_mode` 不在枚举内 / `min_stars < 0` / `window_days < 1` / `max_candidates < 1` / 列表字段超长 | `422` | `VALIDATION_ERROR` |
+| `name` 已被占用 | `409` | `TOPIC_NAME_CONFLICT` |
+| 角色不足 | `403` | `FORBIDDEN` |
+
+成功 `201`，响应体是上面列表里的单个元素（含新 `id`）。写一条 `topic.create` / `success` 审计。
+
+`name` 先做两端去空白再判唯一。唯一约束在数据库上，接口不能把 `" 向量数据库 "` 与 `"向量数据库"` 当成两个主题放行 —— 那样库里会有两行说的是同一件事，而唯一的检查面看见的是一行。
+
+### `PATCH /topics/{topic_id}`
+
+权限：`ADMIN`。请求体字段全部可选，只提交要改的字段，语义与 `POST` 同（含改名冲突的 `409 TOPIC_NAME_CONFLICT`）。主题不存在 `404 NOT_FOUND`。
+
+```json
+{ "enabled": false, "min_stars": 500 }
+```
+
+成功 `200`，响应体是更新后的单个元素。写一条 `topic.update` / `success` 审计，`metadata_json.changed_fields` 列出实际改动的字段名。
+
+`changed_fields` 用的是**接口字段名**（`languages`），不是列名（`languages_json`）：它描述的是调用方发来的那份请求，而说"你改了 `languages_json`"描述的是一处调用方从没提过的存储细节。
+
+**没有改动时也返回 `200`**，`changed_fields` 是空数组：一次"提交的字段都已经是这个值"的请求是一次成功请求，不是冲突。把它报成 `409` 会让"幂等地重发同一个 PATCH"变成一件需要读错误再决定的事。
+
+`{"enabled": false}` 是停用主题的常规做法：主题仍在库里，历史报告与运行仍引用它，只是每日管道不再读它（`list_enabled_topics` 只取 `enabled=True`）。
+
+### `DELETE /topics/{topic_id}`
+
+权限：`ADMIN`。主题不存在 `404 NOT_FOUND`。
+
+**被引用时拒绝，而不是级联。** `agent_runs`、`pipeline_runs`、`reports`、`report_drafts` 到 `topics.id` 的外键都是 `ON DELETE RESTRICT`：这四张表记的是"这个主题曾经产出了什么"，删掉主题会让那些行指向一个不再存在的监控范围。只要有一处引用它，本端点返回 `409 TOPIC_IN_USE`，并在 `detail` 里**点名是哪几张表**：
+
+```json
+{
+  "type": "https://example.local/problems/topic-in-use",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "topic 14 is referenced by reports, pipeline_runs",
+  "instance": "/api/v1/topics/14",
+  "code": "TOPIC_IN_USE",
+  "request_id": "req_01J..."
+}
+```
+
+表的顺序固定（`agent_runs`、`pipeline_runs`、`reports`、`report_drafts`），只列非空的那些，这样同一份拒绝在不同部署上长得一样。被拒时写 `topic.delete` / `failed` 审计并带 `resource_id`；**拒绝也要留痕**，否则事后只看得见删成功的，看不见"有人想删一个产出过报告的主题"。
+
+没有被引用时成功 `200`，并连带删除该主题的候选链接（`topic_repositories` 是 `ON DELETE CASCADE`）：
+
+```json
+{ "topic_id": 14, "deleted": true, "unlinked_candidate_count": 37 }
+```
+
+`unlinked_candidate_count` 是本次连带删掉的 `topic_repositories` 行数。它出现在响应里是因为"一次排名的产物"和"主题本身"是两件事，调用方应当知道这次删掉了多少条排序结果。
+
+**没有批量删除端点。** 一次误操作把一整类资源删掉的风险，大于"清理更省事"的收益。
+
+### 主题的写操作与审计动作名
+
+| 动作名 | 何时写 | `result` |
+|---|---|---|
+| `topic.create` | 创建成功 | `success` |
+| `topic.update` | 更新成功（含未改动） | `success` |
+| `topic.delete` | 删除成功 / 被引用拒绝 | `success` / `failed` |
+| `topic.read` | 单个主题对调用者不可见而被拒 | `denied` |
+| `auth.rbac` | 角色不足以写（缺 `ADMIN`） | `denied` |
+| `auth.token` | 未认证或令牌无效 | `failed` |
+
+`topic.read` / `topic.delete` 一律带被拒主题的 `resource_id`；`auth.rbac` / `auth.token` 是请求域拒绝，本来就没有资源可命名 —— 与报告那套「对外沉默、对内留痕」是同一对规则。
+
+**被拒的 `topic.create` 没有资源可命名**：主题还不存在，所以 `resource_id` 为空，被试图使用的名字落在 `metadata_json.name` 里。给一个不存在的资源编一个 id 会让留痕说谎，与请求域拒绝不带 id 是同一条理由。
+
+**每条主题审计行都带请求关联 id。** `X-Request-ID` 中间件把它放进 `request.state.request_id`，路由再显式传给服务层入参 —— 服务层自己不查请求，因为脚本调用它时根本没有请求，此时该列为空才是如实的取值。这一条不是可有可无的装饰：没有它，留痕能回答「谁做的」，却答不了「他这一次到底发了什么」，而后者才是排查一次配置事故真正要看的。项目里其余路由的写入点（`api/routes/auth.py`、`web/router.py`、`security/dependencies.py:deny_request`）都带这个 id，主题端点在 T19 实跑中正是因为没有它而被抓出来。
 
 ## 4. 仓库与趋势
 

@@ -55,6 +55,19 @@ REPOSITORY_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR, ROLE_V
 #: every refused request, every configuration change and every publish on the platform.
 AUDIT_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN,)
 
+#: Roles allowed to see the topic list at all. This is only the gate that keeps anonymous callers
+#: out; *which* topics a caller sees is decided by `can_read_topic`, because a disabled topic is
+#: unpublished configuration rather than someone else's private data. The set matches the report
+#: and catalog read sets: reading a topic is no more privileged than reading a report.
+TOPIC_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER)
+
+#: Roles allowed to change a topic. `EDITOR`'s write permission covers reports and nothing else,
+#: and a topic is not a report: it decides which repositories get collected, which fixes the model
+#: budget and the public-API quota the next daily run will spend. That is the same reason
+#: `docs/api-contract.md` §3.1 refuses a `POST /sources` - an endpoint that can move a rate-limit
+#: budget hands usage control to any authenticated client.
+TOPIC_WRITE_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN,)
+
 TEAM_DATA_SCOPE: Final[str] = "team"
 
 VISIBILITY_PRIVATE: Final[str] = "PRIVATE"
@@ -147,18 +160,40 @@ def can_read_topic(user: User, topic: Topic, roles: set[str]) -> bool:
     return topic.enabled
 
 
+def readable_topics_filter(user: User, roles: set[str]) -> ColumnElement[bool]:
+    """Return the topic visibility rule as a SQL predicate for topic list queries.
+
+    The predicate form of `can_read_topic`, and it has to remain the predicate form of it. The
+    contract states two different-looking requirements that are the same requirement: the rule
+    must not be reimplemented per surface, and the list's `total` must be computed under it - a
+    query that fetched every topic and dropped the invisible ones afterwards would still report a
+    count of topics the caller may not see. `tests/security/test_authorization.py` compares this
+    predicate against `can_read_topic` row by row rather than trusting the pair to be edited
+    together.
+    """
+    if ROLE_ADMIN in roles:
+        return true()
+    return Topic.enabled.is_(True)
+
+
 def authorize_topic_read(
     session: Session,
     request: Request,
     user: User,
     *,
     topic_id: int,
+    action: str = "repository.read",
 ) -> Topic:
     """Load one topic for catalog filtering, or refuse the request.
 
     The failure split follows the report resource: a topic that does not exist is `404`, and a
     topic that exists but is not visible is `403`. The `403` body carries no topic metadata and
     the audit row names the topic — the same mirror the report ACL uses, for the same reason.
+
+    `action` is a parameter because one rule has two surfaces: the repository catalog filters by
+    topic and records `repository.read`, while the topic endpoint itself records `topic.read`. The
+    default keeps the older caller's behaviour, so a second surface names its own action instead of
+    inheriting a name that describes a different request.
     """
     topic = session.get(Topic, topic_id)
     if topic is None:
@@ -171,7 +206,7 @@ def authorize_topic_read(
     deny_request(
         session,
         request,
-        action="repository.read",
+        action=action,
         resource_type="topic",
         resource_id=str(topic.id),
         status_code=status.HTTP_403_FORBIDDEN,

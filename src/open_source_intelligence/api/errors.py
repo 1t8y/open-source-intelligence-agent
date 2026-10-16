@@ -22,6 +22,7 @@ from open_source_intelligence.reports.errors import (
     ReportNotFoundError,
     ReportStateError,
 )
+from open_source_intelligence.topics.errors import TopicError
 
 PROBLEM_BASE = "https://example.local/problems"
 
@@ -65,6 +66,17 @@ DOMAIN_PROBLEM_STATUS: dict[str, int] = {
     "UNKNOWN_TARGET": status.HTTP_400_BAD_REQUEST,
     "DATASET_VERSION_CONFLICT": status.HTTP_409_CONFLICT,
     "EVALUATION_DISABLED": status.HTTP_503_SERVICE_UNAVAILABLE,
+    # Topic configuration. A name another topic already carries is a conflict the caller resolves by
+    # choosing a different one; a topic that recorded history references cannot be deleted at all,
+    # and that is also a conflict rather than a bad request - the request was well formed and the
+    # answer is "not this one". A missing topic is the shared `NOT_FOUND` entry above.
+    "TOPIC_NAME_CONFLICT": status.HTTP_409_CONFLICT,
+    "TOPIC_IN_USE": status.HTTP_409_CONFLICT,
+    # A blank name is a caller mistake, not a conflict. The HTTP boundary refuses it with a `422`
+    # through Pydantic's `AfterValidator` before this table is consulted, but the same code can
+    # still arrive from a non-HTTP caller of `topics.service`, and a `409` for "your name is empty"
+    # would send that caller looking for a topic that already has it.
+    "TOPIC_NAME_BLANK": UNPROCESSABLE_CONTENT,
 }
 
 
@@ -241,6 +253,24 @@ def add_problem_handlers(app: FastAPI) -> None:
 
         The base handler covers the hierarchy: asking for a run that is not there is the
         `NOT_FOUND` entry of the mapping table above, so it lands on `404` with no special case.
+        """
+        return problem_response(
+            request,
+            status_code=_domain_status(exc.code, status.HTTP_409_CONFLICT),
+            code=exc.code,
+            detail=str(exc),
+        )
+
+    @app.exception_handler(TopicError)
+    async def topic_error_handler(
+        request: Request,
+        exc: TopicError,
+    ) -> JSONResponse:
+        """Render a refused topic change with its own stable code.
+
+        The base handler covers the hierarchy, so a topic that is not there lands on `404` through
+        the shared `NOT_FOUND` entry and the two conflicts land on `409`, with no per-class
+        branches to keep in step.
         """
         return problem_response(
             request,
