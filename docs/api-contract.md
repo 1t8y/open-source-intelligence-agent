@@ -303,7 +303,9 @@
 
 ## 5. Agent 运行与轨迹
 
-**创建路径不在 API 上。** Agent 运行由管道侧创建：`pipeline` 的每日任务完成候选筛选后，以 `run_research_agent(...)` 在 worker 进程内启动一次运行，并把结果连同行级证据写入 `agent_runs` / `agent_steps` / `tool_calls`。HTTP 接口对运行**只读**——这是有意的：运行会消耗模型预算，触发权属于受调度控制的管道，而不是任意一个已登录的客户端。
+**创建路径不在 API 上。** Agent 运行由管道侧创建，并把结果连同行级证据写入 `agent_runs` / `agent_steps` / `tool_calls`。HTTP 接口对运行**只读**——这是有意的：运行会消耗模型预算，触发权属于操作员与调度器，而不是任意一个已登录的客户端。
+
+**当前由谁创建（T22 校正）**：`workers.tasks.run_research_agent` 已注册但**不在 beat 表里**（`ARCHITECTURE.md` §9.3：Agent 消耗真实模型预算，自动编排要等报告与发布阶段就绪后再开），而每日确定性任务 `run_daily_pipeline` 的三个阶段是 collect → snapshot → rank，**不派发研究运行**（`pipeline/daily.py:264`）。所以今天运行只可能由**操作员 CLI**（`agent/cli.py --action run`）或评测的目标函数创建；本节原文写的"每日任务完成候选筛选后启动一次运行"与实现不符，已按实测更正。开不开 beat 自动编排是一个**预算决定**，尚未做出。
 
 因此本节的三个端点全部是读侧，权限统一为 `ADMIN`、`EDITOR`（`METRICS_ROLES`）。`VIEWER` 得到 `403`，匿名得到 `401`；两类失败都不透露目标运行是否存在。
 

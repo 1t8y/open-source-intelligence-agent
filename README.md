@@ -1,6 +1,6 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：T1-T21 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
+> 项目状态：T1-T22 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
 > 文档版本：v0.12
 > 最后更新：2026-10-15
 
@@ -40,6 +40,7 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 | [docs/evaluation.md](docs/evaluation.md) | Agent、报告质量和成本评测方案 |
 | [docs/observability.md](docs/observability.md) | 监控指标口径、窗口语义、运行账本与看板 |
 | [docs/backfill.md](docs/backfill.md) | 历史回填：分页语义、限流语义、断点续传与并发守卫 |
+| [docs/operations.md](docs/operations.md) | **运维手册**：启动、建号、主题与白名单、采集/研究/报告/回填/评测的触发命令、排查与危险动作 |
 | [docs/development-process.md](docs/development-process.md) | 企业流程的个人开发精简执行版本 |
 | [docs/technology-learning-checklist.md](docs/technology-learning-checklist.md) | 按实施任务排列的技术学习清单 |
 | [docs/readiness-and-startup-roadmap.md](docs/readiness-and-startup-roadmap.md) | 准备度检查和正式开工路线图 |
@@ -47,7 +48,16 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-当前 T18 已完成：文档同步与发布检查已跑通，`ARCHITECTURE.md` §14 的实施任务清单至此**全部完成**。
+**T1–T22 全部完成**，`ARCHITECTURE.md` §14 的实施任务清单至此全部 `[x]`。最近四步：
+
+- **T19 主题配置的 HTTP 面**：主题是流水线的第一环（`list_enabled_topics` 只读 `enabled=True` 的主题，没有主题就没有任何数据产出），而它此前没有任何入口。契约先行补 `INTERFACES.md` §3 与 `docs/api-contract.md` §3.2，再落 `topics/` 领域模块与五条端点；**触发研究仍不在 API 上**（消耗模型预算，与 T15 拒绝 `POST /agent/runs` 同理）。探针与实跑查出四处产品缺陷（`created_by` 从不写入导致建主题必然失败、过宽的 `except IntegrityError` 把坏插入说成重名、空名能存进表、审计行不带请求 id），全部修复并补回归。
+- **T20 设计稿上屏**：导航从顶栏 2 项铺成左侧分组侧栏 8 项 4 组，补出推送记录、主题管理、仓库目录、采集与运行、评测、审计日志六个页面；`app.css` 173 → 433 行而**原有九个 token 取值一个未改**。两条结构判断值得记：所谓"割裂感"的成因是**内容区居中**（`max-width: 1180px; margin: 0 auto` 在 1920 宽下留出约 250px 死水带），不是侧栏太窄；侧栏条目与路由准入**共用一个常量**（`web/router.py:NAV_GROUPS`），因此"菜单里出现而打开被拒"与"能打开却不在菜单里"同时不可能发生。
+- **T21 运维配置面的归属**：推送目标白名单与用户账号**不做界面**，由后端拥有（账号只有 `bootstrap` CLI，目标直接写 `push_targets`）；界面上不可避免要提到它的两处只对 `ADMIN` 渲染，且该页**只在管理员时加载**这份 allowlist。顺手修掉一个同级缺陷：「释放到期报告」按钮按读角色渲染、路由却按写角色准入 —— 只读角色看得见、点了才 403。
+- **T22 运维手册**：新增 [docs/operations.md](docs/operations.md) —— 启动、建号、主题、白名单、采集与日报、研究、报告链路、回填、评测、排查、危险动作，每条命令都在运行中的栈上实跑过。写它的过程实测出四类缺口（README 内容缓存没有写入方、离线模型把失败的工具载荷当证据、评测数据集引用了不存在的主题名、研究不在 beat 里），逐条记在该文档 §11。
+
+要**操作这个系统**（起服务、建第一个管理员、加推送目标、触发采集与研究）直接看 [docs/operations.md](docs/operations.md)；要改代码先看 `ARCHITECTURE.md` §14 与 `AGENTS.md`。
+
+### 上一阶段：T18 文档同步与发布检查
 
 T18 的交付物是一条命令 —— `scripts/check_docs_drift.py`，十项比较，任何一项不通过就退出非零：
 
