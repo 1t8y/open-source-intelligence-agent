@@ -1,0 +1,55 @@
+{#
+  主题表单的字段集合，被「新建」与「编辑」两处共用。
+  共用而不是各写一份：九个字段里加一个、改一个上下界，只应该改一个地方 ——
+  两份表单的漂移表现为"新建能填的字段编辑里没有"，而且只有用户会发现。
+
+  `form` 由 `web/router.py:_topic_form_fields` 算好，永远是九个字符串键，所以这里不需要
+  再写一遍默认值：留空到底是 0 还是 7 这类判断只该有一处。
+#}
+<div class="form-grid">
+  <label>
+    <span>名称</span>
+    <input type="text" name="name" maxlength="128" required value="{{ form.get('name', '') }}"
+           placeholder="例如 向量数据库">
+  </label>
+  <label>
+    <span>发布模式</span>
+    <select name="publish_mode">
+      {% for mode in publish_modes %}
+      <option value="{{ mode }}" {% if form.get('publish_mode', 'MANUAL') == mode %}selected{% endif %}>{{ mode | label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    <span>状态</span>
+    <select name="enabled">
+      <option value="true" {% if form.get('enabled', 'true') == 'true' %}selected{% endif %}>启用</option>
+      <option value="false" {% if form.get('enabled') == 'false' %}selected{% endif %}>停用</option>
+    </select>
+  </label>
+  <label>
+    <span>最小星标</span>
+    <input type="number" name="min_stars" min="0" value="{{ form.get('min_stars', 0) }}">
+  </label>
+  <label>
+    <span>观察窗口（天）</span>
+    <input type="number" name="window_days" min="1" max="365" value="{{ form.get('window_days', 7) }}">
+  </label>
+  <label>
+    <span>候选上限</span>
+    <input type="number" name="max_candidates" min="1" max="200" value="{{ form.get('max_candidates', 30) }}">
+  </label>
+  <label>
+    <span>语言（逗号分隔，留空不限）</span>
+    <input type="text" name="languages" value="{{ form.get('languages', '') }}" placeholder="python, typescript">
+  </label>
+  <label>
+    <span>关键词（逗号分隔，留空不限）</span>
+    <input type="text" name="keywords" value="{{ form.get('keywords', '') }}" placeholder="llm, agent">
+  </label>
+</div>
+<label>
+  <span>说明</span>
+  <input type="text" name="description" maxlength="2000" value="{{ form.get('description', '') }}"
+         placeholder="这个主题关注什么，出报告时给谁看">
+</label>

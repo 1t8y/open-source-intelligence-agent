@@ -9,23 +9,57 @@
   <script src="/ui/static/htmx.min.js" defer></script>
 </head>
 <body>
-<header class="topbar">
-  <a class="brand" href="/ui/reports">开源情报周报平台</a>
+{# 外壳只有两种：登录态是「侧栏 + 内容」，未登录态（登录页 / 403 / 404）是一块居中的窄卡。
+   两个分支共用同一个 content 块 —— Jinja 不允许同名块出现两次，所以不是复制模板，
+   而是换外层 class，由 `.guest-shell` 那几条规则把布局改成居中。 #}
+<div class="{{ 'app' if current_user else 'guest-shell' }}" id="app">
+
   {% if current_user %}
-  <nav class="topnav">
-    <a href="/ui/reports">报告中心</a>
-    {% if can_view_dashboard %}<a href="/ui/dashboard">运维看板</a>{% endif %}
-    <span class="who">{{ current_user.username }} · {{ current_user.roles | join(' / ') }}</span>
-    <form method="post" action="/ui/logout" hx-post="/ui/logout" hx-target="body">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="link-button">退出</button>
-    </form>
-  </nav>
+  {# 侧栏把全部主要功能按「报告 / 数据 / 质量 / 运维」四组归类。
+     `navigation` 由服务端按角色算好（web/router.py:_navigation），
+     模板只负责画 —— 这样"哪个角色看得到哪一项"只有一个判定处，跟路由自己的准入用同一组角色常量。 #}
+  <aside class="sidebar">
+    <a class="brand" href="/ui/reports">
+      <span class="brand-name">开源情报周报平台</span>
+      <span class="brand-sub">采集 → 研究 → 发布</span>
+    </a>
+
+    <nav class="nav" aria-label="主导航">
+      {% for group in navigation %}
+      <div class="nav-group">
+        {# 显式下标而不是 `group.title` / `group.entries`：Jinja 对 `foo.bar` 先试属性再试键，
+           `group.items` 会命中字典内置方法而不是那个键。下标没有这层歧义。 #}
+        <div class="nav-group-title">{{ group["title"] }}</div>
+        {% for item in group["entries"] %}
+        <a class="nav-item" href="{{ item['href'] }}"{% if item['key'] == active %} aria-current="page"{% endif %}>
+          <span class="nav-label">{{ item["label"] }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </nav>
+
+    <div class="sidebar-foot">
+      <span class="who">{{ current_user.username }}<small>{{ current_user.roles | join(' / ') }}</small></span>
+      <form method="post" action="/ui/logout" hx-post="/ui/logout" hx-target="body">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="link-button">退出</button>
+      </form>
+    </div>
+  </aside>
+
+  {# 侧栏与内容之间的边界拖柄。role="separator" + tabindex 是 WAI-ARIA 可调分隔条的写法：
+     鼠标用户拖，键盘用户用左右方向键，双击复位。事件处理在页面末尾的内联脚本里。 #}
+  <div class="splitter" id="splitter" role="separator" aria-orientation="vertical"
+       aria-label="调整侧栏宽度" aria-controls="app" tabindex="0"
+       title="拖动调整侧栏宽度 · 双击复位"></div>
   {% endif %}
-</header>
-<main class="page">
-  {% block content %}{% endblock %}
-</main>
+
+  <main class="main">
+    <div class="page">{% block content %}{% endblock %}</div>
+  </main>
+</div>
+
 <script>
   // Swap HTML error responses into the page instead of discarding them, so a rejected
   // action shows the server-rendered explanation with its real status code.
@@ -37,6 +71,121 @@
       event.detail.isError = false;
     }
   });
+</script>
+
+<script>
+  // 侧栏宽度：可拖、可键盘调、可复位、记得住。
+  // 放在模板里而不是 app.css 旁边的一个 .js 文件里，是因为它只服务这一个元素，
+  // 而页面本来就已有内联脚本（上面那段 htmx 钩子）；多引一个静态文件不会让任何人更好读。
+  (function () {
+    var splitter = document.getElementById('splitter');
+    if (!splitter) return;
+
+    var root = document.documentElement;
+    var STORE_KEY = 'oi-console:sidebar';
+    var STEP = 16;
+
+    // 边界与默认值一律从 CSS 变量读：改 :root 一处，钳位与复位目标同时变。
+    // 读不到（旧引擎对自定义属性支持不全）才退回字面量 —— 退回值必须与 :root 一致。
+    function cssNumber(name, fallback) {
+      var value = parseFloat((getComputedStyle(root).getPropertyValue(name) || '').trim());
+      return isNaN(value) ? fallback : value;
+    }
+
+    var DEFAULT = cssNumber('--sidebar', 236);
+    var MIN = cssNumber('--sidebar-min', 180);
+    var MAX = cssNumber('--sidebar-max', 420);
+    var width = DEFAULT;
+
+    function clamp(value) {
+      return Math.min(MAX, Math.max(MIN, Math.round(value)));
+    }
+
+    function apply(value) {
+      width = clamp(value);
+      root.style.setProperty('--sidebar', width + 'px');
+      splitter.setAttribute('aria-valuemin', String(MIN));
+      splitter.setAttribute('aria-valuemax', String(MAX));
+      splitter.setAttribute('aria-valuenow', String(width));
+      splitter.setAttribute('aria-valuetext', width + ' 像素');
+    }
+
+    function remember() {
+      try {
+        window.localStorage.setItem(STORE_KEY, String(width));
+      } catch (error) {
+        // 无痕模式下 localStorage 可能直接抛错。记不住是本页的降级，不是失败。
+      }
+    }
+
+    function recall() {
+      try {
+        var saved = parseFloat(window.localStorage.getItem(STORE_KEY) || '');
+        return isNaN(saved) ? null : saved;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    var saved = recall();
+    apply(saved === null ? DEFAULT : saved);
+
+    // 指针拖动。位移取自按下那一刻的宽度，而不是每帧累加 —— 后者会把钳位的截断越积越多，
+    // 表现为"往回拖了却没回来"。
+    var originX = 0;
+    var originWidth = 0;
+
+    function endDrag() {
+      if (!splitter.classList.contains('is-dragging')) return;
+      splitter.classList.remove('is-dragging');
+      document.body.classList.remove('is-resizing');
+      remember();
+    }
+
+    splitter.addEventListener('pointerdown', function (event) {
+      if (typeof event.button === 'number' && event.button !== 0) return;
+      originX = event.clientX;
+      originWidth = width;
+      splitter.classList.add('is-dragging');
+      document.body.classList.add('is-resizing');
+      try {
+        if (splitter.setPointerCapture && typeof event.pointerId === 'number') {
+          splitter.setPointerCapture(event.pointerId);
+        }
+      } catch (error) {
+        // 捕获失败只是让指针滑出抓取带后收不到 move，拖动本身仍然可用。
+      }
+      event.preventDefault();
+    });
+
+    splitter.addEventListener('pointermove', function (event) {
+      if (!splitter.classList.contains('is-dragging')) return;
+      apply(originWidth + (event.clientX - originX));
+    });
+
+    splitter.addEventListener('pointerup', endDrag);
+    splitter.addEventListener('pointercancel', endDrag);
+
+    // 键盘路径：ARIA 可调分隔条的标准键位。没有它，这条边界只对鼠标用户存在。
+    splitter.addEventListener('keydown', function (event) {
+      var target = null;
+      if (event.key === 'ArrowLeft') target = width - STEP;
+      else if (event.key === 'ArrowRight') target = width + STEP;
+      else if (event.key === 'Home') target = MIN;
+      else if (event.key === 'End') target = MAX;
+      else if (event.key === 'Enter' || event.key === ' ') target = DEFAULT;
+      if (target === null) return;
+      event.preventDefault();
+      apply(target);
+      remember();
+    });
+
+    // 双击复位：回到 CSS 里的默认值，不是"上次拖到哪"。
+    splitter.addEventListener('dblclick', function () {
+      apply(DEFAULT);
+      remember();
+    });
+  })();
 </script>
 </body>
 </html>

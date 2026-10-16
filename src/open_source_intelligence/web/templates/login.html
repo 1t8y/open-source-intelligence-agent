@@ -1,8 +1,11 @@
 {% extends "base.html" %}
 {% block title %}登录 · 开源情报周报平台{% endblock %}
 {% block content %}
-<section class="card narrow">
-  <h1>登录</h1>
+<section class="card">
+  <a class="brand" href="/ui/login">
+    <span class="brand-name">开源情报周报平台</span>
+    <span class="brand-sub">采集 → 研究 → 发布</span>
+  </a>
   {% if error %}<p class="alert error">{{ error }}</p>{% endif %}
   <form method="post" action="/ui/login">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

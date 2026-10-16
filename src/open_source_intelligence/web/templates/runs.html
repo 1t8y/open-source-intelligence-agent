@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}采集与运行 · 开源情报周报平台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>采集与运行</h1>
+    <p class="sub">
+      这条流水线的两半：<b>回填任务</b>按页遍历仓库历史，把一个主题的候选池填起来；
+      <b>Agent 运行</b>在候选池上做研究并产出报告。点开一条运行可以追到它每一步的工具调用。
+    </p>
+  </div>
+</header>
+
+<section class="card">
+  <div class="row space-between">
+    <h2 style="margin:0">Agent 运行</h2>
+    <form class="filters" method="get" action="/ui/runs" style="margin:0">
+      <label>
+        <span>状态</span>
+        <select name="status">
+          <option value="" {% if not status_filter %}selected{% endif %}>全部</option>
+          {% for value in status_options %}
+          <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ value | label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">筛选</button>
+    </form>
+  </div>
+
+  {% if page.items %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>主题</th>
+        <th>状态</th>
+        <th>窗口</th>
+        <th class="num">循环</th>
+        <th class="num">模型调用</th>
+        <th class="num">工具调用</th>
+        <th class="num">Token</th>
+        <th class="num">成本</th>
+        <th>开始</th>
+        <th>错误码</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in page.items %}
+      <tr>
+        <td class="mono"><a href="/ui/dashboard/runs/{{ run.id }}">{{ run.id }}</a></td>
+        <td>{{ topic_names.get(run.topic_id, "—") }}</td>
+        <td><span class="badge status-{{ run.status }}">{{ run.status | label }}</span></td>
+        <td class="mono">
+          {{ run.window_start.strftime("%m-%d") }} → {{ run.window_end.strftime("%m-%d") }}
+        </td>
+        <td class="num">{{ run.loop_count }}</td>
+        <td class="num">{{ run.model_call_count }}</td>
+        <td class="num">{{ run.tool_call_count }}</td>
+        <td class="num">{{ run.prompt_tokens + run.completion_tokens }}</td>
+        <td class="num">{{ "%.4f" | format(run.estimated_cost | float) }}</td>
+        <td class="mono">{{ run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
+        <td class="mono">{{ run.error_code or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="row space-between pager">
+    <span>共 {{ page.total }} 条，第 {{ page.page }} 页，每页 {{ page.page_size }} 条</span>
+    <span>
+      {% if page.page > 1 %}
+      <a href="/ui/runs?page={{ page.page - 1 }}&status={{ status_filter }}">上一页</a>
+      {% endif %}
+      {% if page.page * page.page_size < page.total %}
+      <a href="/ui/runs?page={{ page.page + 1 }}&status={{ status_filter }}">下一页</a>
+      {% endif %}
+    </span>
+  </div>
+  {% else %}
+  <p class="empty">还没有 Agent 运行。每日采集会在有启用主题时创建它们。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>回填任务</h2>
+  <p class="hint" style="margin-top:0">
+    回填是可续的：游标和两个计数落在行上并逐页提交，进程没了下次从没走完的那一页接着走，
+    而不是从头重爬。<b>心跳</b>是独立的一列而不是复用更新时间 ——
+    后者会被任何一次写入刷新，让一个早已停摆的任务看起来还活着。
+  </p>
+  {% if jobs %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>来源</th>
+        <th>状态</th>
+        <th class="num">进度</th>
+        <th class="num">已收</th>
+        <th class="num">尝试</th>
+        <th>开始</th>
+        <th>心跳</th>
+        <th>错误码</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td class="mono">{{ job.job_id }}</td>
+        <td><span class="badge">{{ job.provider }}</span></td>
+        <td><span class="badge status-{{ job.status }}">{{ job.status | label }}</span></td>
+        <td class="num">{{ job.pages_completed }} / {{ job.target_pages }} 页</td>
+        <td class="num">{{ job.items_collected }}</td>
+        <td class="num">{{ job.attempt }}</td>
+        <td class="mono">{{ job.started_at[:16].replace("T", " ") if job.started_at else "—" }}</td>
+        <td class="mono">{{ job.heartbeat_at[:16].replace("T", " ") if job.heartbeat_at else "—" }}</td>
+        <td class="mono">{{ job.error_code or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">最多显示最近 {{ limit }} 条。目标页数是操作员给的预算而不是承诺 —— 结果先跑完时，任务以 <b>成功</b> 收尾而页数低于目标。</p>
+  {% else %}
+  <p class="empty">还没有回填任务。它由操作员 CLI 启动：<code>python -m open_source_intelligence.backfill.cli</code>。</p>
+  {% endif %}
+</section>
+{% endblock %}

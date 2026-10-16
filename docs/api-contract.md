@@ -631,20 +631,38 @@
 
 ### 管理界面（`/ui`）
 
-同一套服务层的服务端渲染界面（Jinja2 + HTMX，`include_in_schema=False`）：
+前端设计稿（`D:\job-workspace\.frontend-design\intelligence-console-v0.html`，仓库外）在 T20 上屏，落成下面这组页面。同一套服务层的服务端渲染界面（Jinja2 + HTMX，`include_in_schema=False`）。
 
-| 路由 | 说明 |
-|---|---|
-| `GET /ui/login`、`POST /ui/login`、`POST /ui/logout` | 登录表单与退出；会话存 `HttpOnly` Cookie |
-| `GET /ui/reports` | 报告列表，支持 `status`、`visibility`、`page`、`page_size`，权限过滤同 API |
-| `GET /ui/reports/{report_id}` | 报告详情：验证结论、引用与证据、版本历史、审核记录、编辑表单、推送卡片与投递记录 |
-| `POST /ui/reports/{report_id}/{verify,review,publish,rollback,edit}` | 动作，返回刷新后的报告片段 |
-| `POST /ui/reports/{report_id}/push` | 推送到一个允许列表目标，返回刷新后的报告片段；渠道取自目标行，表单传 `channel` 无效 |
-| `POST /ui/reports/publish-due` | 到期释放驱动，返回释放结果片段 |
+**外壳**：登录态下是「左侧分组侧栏 + 右侧内容」。侧栏按「报告 / 数据 / 质量 / 运维」四组列出全部页面，条目按角色过滤 —— 某个角色看不到的页面**既不出现**，直接访问也会被拒。边界是一条可调的拖柄（`role="separator"` + `tabindex="0"`）：鼠标拖动、左右方向键微调、`Home`/`End` 到两端、双击复位，宽度记在 `localStorage`，钳位区间由 CSS 的 `--sidebar-min` / `--sidebar-max` 给出。未登录态（登录页 / 403 / 404）渲染居中的窄卡，没有侧栏。
 
-写操作必须携带与 Cookie 一致的 `csrf_token` 表单字段（双提交校验）：缺失或不匹配返回 `403`。只读角色（`VIEWER`）的写操作返回 `403`。未登录访问任意 `/ui` 页面返回 `303` 重定向到 `/ui/login?next=<原路径>`。
+| 路由 | 准入角色 | 说明 |
+|---|---|---|
+| `GET /ui/login`、`POST /ui/login`、`POST /ui/logout` | 公开 / 已登录 | 登录表单与退出；会话存 `HttpOnly` Cookie |
+| `GET /ui/reports` | 读角色 | 报告列表，支持 `status`、`visibility`、`page`，权限过滤同 API |
+| `GET /ui/reports/{report_id}` | 读角色 | 报告详情：验证结论、引用与证据、版本历史、审核记录、编辑表单、推送卡片与投递记录 |
+| `POST /ui/reports/{report_id}/{verify,review,publish,rollback,edit}` | 写角色 | 动作，返回刷新后的报告片段 |
+| `POST /ui/reports/{report_id}/push` | 写角色 | 推送到一个允许列表目标，返回刷新后的报告片段；渠道取自目标行，表单传 `channel` 无效 |
+| `POST /ui/reports/publish-due` | 写角色 | 到期释放驱动，返回释放结果片段 |
+| `GET /ui/pushes` | 写角色 | 投递记录与推送目标白名单；`list_pushes` 是限量查询而非分页，页面如实印出上限 |
+| `GET /ui/topics` | 读角色 | 主题列表，支持 `q`（字面子串）与 `enabled`；`total` 受可见性约束 |
+| `GET /ui/topics/{topic_id}` | 读角色 | 单个主题的编辑表单与采集参数 |
+| `POST /ui/topics` | **仅管理员** | 新建主题；失败时**原地重渲染**（见下） |
+| `POST /ui/topics/{topic_id}/update` | **仅管理员** | 保存编辑表单；表单携带全部字段，因此是全量替换 |
+| `POST /ui/topics/{topic_id}/toggle` | **仅管理员** | 启用 / 停用，不打开编辑表单 |
+| `POST /ui/topics/{topic_id}/delete` | **仅管理员** | 删除；有历史引用时 `409` 并点名引用它的表 |
+| `GET /ui/repositories` | 读角色 | 仓库目录，支持 `q`、`topic_id`、`language`、`sort`；按主题筛选时附候选排名、得分与是否入选 |
+| `GET /ui/runs` | 运行角色 | Agent 运行台账（分页、可按状态筛选）与回填任务列表 |
+| `GET /ui/evaluations` | 写角色 | 数据集与评测运行记录；**只读**，运行触发仍在操作员 CLI |
+| `GET /ui/dashboard`、`GET /ui/dashboard/runs/{run_id}` | 运行角色 | 看板与运行轨迹，等价于 `GET /metrics/overview` 与 `GET /agent/runs/{run_id}/steps` |
+| `GET /ui/audit` | **仅管理员** | 审计台账，支持 `action`、`resource_type`、`result`、`actor_id` 与分页；按主键倒序 |
 
-UI 与 JSON API 的拒绝**共享同一组审计动作名**（T17）：`auth.csrf`（CSRF 双提交不符）、`auth.rbac`（角色不足以写）、`report.read`（角色够但报告不可见）。两个传输面都落 `result="denied"` 的 `audit_logs` 行，因此「谁在什么时候想读写哪一份报告」是一次查询就能回答的问题，而不是只有 API 面答得上来。审计写在**写操作**上而非传输层：只读页面渲染被拒不留痕。
+写操作必须携带与 Cookie 一致的 `csrf_token` 表单字段（双提交校验）：缺失或不匹配返回 `403`。未登录访问任意 `/ui` 页面返回 `303` 重定向到 `/ui/login?next=<原路径>`。
+
+**UI 的角色集合与 API 同源**：上表每一行的准入角色就是该资源在 API 侧的同一个常量（`REPORT_READ_ROLES` / `REPORT_WRITE_ROLES` / `TOPIC_READ_ROLES` / `TOPIC_WRITE_ROLES` / `REPOSITORY_READ_ROLES` / `METRICS_ROLES` / `AUDIT_READ_ROLES`），侧栏条目也由同一组常量生成 —— 菜单里出现而打开被拒，和能打开却不在菜单里，都是缺陷。
+
+**失败原地重渲染，而不是带消息重定向**：写操作成功走 `303`（POST-重定向-GET，避免刷新重提交），消息码放在 URL 里（`?ok=created`）由服务端查表成句；失败则**用 `400`/`409` 直接渲染同一页**并回填用户填过的值。理由有两条：提示语出自我们自己的异常而不是链接作者（URL 里的自由文本等于让任何人替系统发言），以及九个字段的表单不该因为一个字段出错就让操作者重打一遍。
+
+UI 与 JSON API 的拒绝**共享同一组审计动作名**（T17）：`auth.csrf`（CSRF 双提交不符）、`auth.rbac`（角色不足以写）、`report.read`（角色够但报告不可见）、`topic.read`（角色够但主题不可见）。两个传输面都落 `result="denied"` 的 `audit_logs` 行，因此「谁在什么时候想读写哪一份资源」是一次查询就能回答的问题，而不是只有 API 面答得上来。审计写在**写操作**上而非传输层：只读页面渲染被拒不留痕。
 
 ## 7. 评测
 

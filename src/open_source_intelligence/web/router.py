@@ -8,7 +8,7 @@ same service layer as the JSON API; the UI never touches SQL itself.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -21,8 +21,11 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from open_source_intelligence.backfill.jobs import JOB_STATUSES, list_jobs, summarize_jobs
 from open_source_intelligence.core.config import Settings
 from open_source_intelligence.core.logging import redact_text
+from open_source_intelligence.evaluation.dataset import list_datasets
+from open_source_intelligence.evaluation.runner import list_runs as list_eval_runs
 from open_source_intelligence.notifications.errors import PushError
 from open_source_intelligence.notifications.service import (
     PUSHABLE_STATUSES,
@@ -41,10 +44,21 @@ from open_source_intelligence.observability.queries import (
     list_agent_runs,
 )
 from open_source_intelligence.persistence.base import utc_now
+from open_source_intelligence.persistence.models.agent import AGENT_RUN_STATUSES
+from open_source_intelligence.persistence.models.audit import AUDIT_RESULTS
 from open_source_intelligence.persistence.models.identity import User
-from open_source_intelligence.persistence.models.intelligence import Topic
-from open_source_intelligence.persistence.models.notifications import PushTarget
-from open_source_intelligence.persistence.models.reporting import Report
+from open_source_intelligence.persistence.models.intelligence import TOPIC_PUBLISH_MODES, Topic
+from open_source_intelligence.persistence.models.notifications import (
+    PUSH_STATUSES,
+    PushTarget,
+)
+from open_source_intelligence.persistence.models.reporting import (
+    REPORT_STATUSES,
+    REPORT_VISIBILITIES,
+    Report,
+)
+from open_source_intelligence.pipeline.queries import SORT_OPTIONS as REPOSITORY_SORT_OPTIONS
+from open_source_intelligence.pipeline.queries import list_repositories
 from open_source_intelligence.reports import queries
 from open_source_intelligence.reports.errors import ReportGenerationError, ReportPublishError
 from open_source_intelligence.reports.publishing import (
@@ -60,11 +74,17 @@ from open_source_intelligence.reports.revisions import (
     rollback_report,
 )
 from open_source_intelligence.reports.verification import verify_report
-from open_source_intelligence.security.audit import record_audit_event
+from open_source_intelligence.security.audit import format_ip_address, record_audit_event
 from open_source_intelligence.security.authorization import (
+    AUDIT_READ_ROLES,
     METRICS_ROLES,
+    REPORT_READ_ROLES,
     REPORT_WRITE_ROLES,
+    REPOSITORY_READ_ROLES,
+    TOPIC_READ_ROLES,
+    TOPIC_WRITE_ROLES,
     can_read_report,
+    can_read_topic,
     readable_reports_filter,
 )
 from open_source_intelligence.security.dependencies import (
@@ -72,10 +92,22 @@ from open_source_intelligence.security.dependencies import (
     get_db_session,
     request_id,
 )
+from open_source_intelligence.security.queries import list_audit_logs
 from open_source_intelligence.security.service import authenticate_user, get_role_codes
 from open_source_intelligence.security.tokens import (
     ACCESS_TOKEN_EXPIRES_SECONDS,
     create_access_token,
+)
+from open_source_intelligence.topics import (
+    MAX_PAGE_SIZE as TOPIC_MAX_PAGE_SIZE,
+)
+from open_source_intelligence.topics import (
+    TopicError,
+    create_topic,
+    delete_topic,
+    list_topics,
+    reference_counts,
+    update_topic,
 )
 
 from .security import (
@@ -101,6 +133,46 @@ STATIC_DIR = MODULE_DIR / "static"
 WINDOW_OPTIONS = (1, 7, 30)
 #: How many recent runs the dashboard lists before pointing at the full ledger.
 DASHBOARD_RUN_PAGE_SIZE = 10
+#: How many rows the list pages inside the sidebar shell show per page. The page size is fixed
+#: rather than a query parameter: these are browse pages, and a caller who wants a different page
+#: size wants the JSON API.
+LIST_PAGE_SIZE = 20
+#: How many delivery records and ledger rows the "one screenful" pages show. `list_pushes`,
+#: `list_jobs` and `list_eval_runs` take a limit rather than a page, so the page states the cap
+#: instead of pretending to paginate.
+RECENT_LIMIT = 50
+
+#: The sidebar, in the order it is shown: `(group title, ((key, label, path, roles), ...))`.
+#: Declared next to the routes on purpose — the `roles` of an entry are the same roles its route
+#: enforces, so a page cannot be listed for an identity that would then be refused when it opens.
+NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]], ...] = (
+    (
+        "报告",
+        (
+            ("reports", "报告中心", "/ui/reports", REPORT_READ_ROLES),
+            ("pushes", "推送记录", "/ui/pushes", REPORT_WRITE_ROLES),
+        ),
+    ),
+    (
+        "数据",
+        (
+            ("topics", "主题管理", "/ui/topics", TOPIC_READ_ROLES),
+            ("repositories", "仓库目录", "/ui/repositories", REPOSITORY_READ_ROLES),
+            ("runs", "采集与运行", "/ui/runs", METRICS_ROLES),
+        ),
+    ),
+    (
+        "质量",
+        (("evaluations", "评测", "/ui/evaluations", REPORT_WRITE_ROLES),),
+    ),
+    (
+        "运维",
+        (
+            ("dashboard", "运维看板", "/ui/dashboard", METRICS_ROLES),
+            ("audit", "审计日志", "/ui/audit", AUDIT_READ_ROLES),
+        ),
+    ),
+)
 
 router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -123,6 +195,66 @@ def _redacted_json(value: object) -> str:
 
 templates.env.filters["redact"] = _redact
 templates.env.filters["redacted_json"] = _redacted_json
+
+
+#: Display labels for the enum codes the platform stores. **Only the label is translated — the
+#: value stays the contract code.** A select submits its `value`, so an option whose value became
+#: 待审核 would send a state the server does not have; the same split applies to the code shown in
+#: a badge versus the code sent in a form.
+#:
+#: Identifiers are deliberately absent and pass through untranslated: error codes
+#: (`AGENT_EVIDENCE_INCOMPLETE`), audit action names (`topic.create`), evaluation target names
+#: (`agent_full`) and role codes (`ADMIN`) are things an operator greps for in the contract, and a
+#: translated copy would only be harder to match.
+ENUM_LABELS: dict[str, str] = {
+    # Report lifecycle.
+    "draft": "草稿",
+    "pending_review": "待审核",
+    "changes_requested": "退回修改",
+    "approved": "已批准",
+    "scheduled": "待发布",
+    "published": "已发布",
+    # Run and job lifecycle. `pending`/`failed` are shared by several of these state machines.
+    "pending": "待处理",
+    "queued": "排队中",
+    "running": "运行中",
+    "succeeded": "成功",
+    "success": "成功",
+    "failed": "失败",
+    "partial": "部分成功",
+    "completed": "已完成",
+    "cancelled": "已取消",
+    "needs_review": "待人工确认",
+    "denied": "被拒",
+    "sent": "已送达",
+    "passed": "通过",
+    # Visibility, sensitivity, and the two publish modes (report and topic share the vocabulary).
+    "PRIVATE": "私有",
+    "TEAM": "团队",
+    "INTERNAL": "内部",
+    "PUBLIC": "公开",
+    "CONFIDENTIAL": "机密",
+    "AUTO": "自动",
+    "AUTO_WITH_DELAY": "延迟自动",
+    "MANUAL": "手动",
+    # Delivery channels.
+    "email": "邮件",
+    "webhook": "Webhook",
+}
+
+
+def _label(value: object) -> str:
+    """Translate one enum code for display, falling back to the code itself.
+
+    The fallback matters: an unmapped value shows as `agent_full` rather than as nothing, so a new
+    state added to a model appears on the page as its own code and is immediately visible as
+    "not yet labelled" instead of as a blank cell.
+    """
+    text = "" if value is None else str(value)
+    return ENUM_LABELS.get(text, text)
+
+
+templates.env.filters["label"] = _label
 
 DbSession = Annotated[Session, Depends(get_db_session)]
 #: The alias matters: the templates post the token as `csrf_token`, and FastAPI binds a form
@@ -179,6 +311,36 @@ def _identity(user: User) -> dict[str, Any]:
     return {"username": user.username, "roles": sorted(get_role_codes(user))}
 
 
+def _navigation(context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build the sidebar for the identity a page already carries.
+
+    Derived from `context["current_user"]` for the same reason `_can_view_dashboard` is: every
+    template renders the nav, and none of them should have to compute who may see what. An
+    identity lacking a group's roles drops the whole entry, and a group left with no entries drops
+    the heading too — an empty group title is a promise of a page that is not there.
+    """
+    identity = context.get("current_user")
+    roles: set[str] = set()
+    if isinstance(identity, dict):
+        declared = identity.get("roles")
+        if isinstance(declared, (list, tuple, set)):
+            roles = {str(role) for role in declared}
+    navigation: list[dict[str, Any]] = []
+    for title, entries in NAV_GROUPS:
+        items = [
+            {"key": key, "label": label, "href": path}
+            for key, label, path, allowed in entries
+            if not roles.isdisjoint(allowed)
+        ]
+        if items:
+            # The list is keyed `entries`, not `items`: Jinja resolves `group.items` on a dict to
+            # the built-in bound method before it ever looks at the key, so `{% for x in
+            # group.items %}` raises "not iterable". Renaming is cheaper than a rule nobody
+            # remembers at the next template.
+            navigation.append({"title": title, "entries": items})
+    return navigation
+
+
 def render(
     request: Request,
     name: str,
@@ -197,6 +359,9 @@ def render(
         # Decided once here so every template renders the dashboard link under the same role rule
         # the dashboard route itself enforces.
         "can_view_dashboard": _can_view_dashboard(context),
+        # The sidebar and its current entry, for the same reason: one decision point per rule.
+        "navigation": _navigation(context),
+        "active": context.get("active"),
     }
     payload.update(context)
     response = templates.TemplateResponse(
@@ -259,15 +424,40 @@ def _require_write_role(session: WebSession) -> None:
         raise WebForbidden("只读角色不能执行该操作")
 
 
+def _require_roles(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    allowed: tuple[str, ...],
+    *,
+    resource_type: str,
+    message: str,
+) -> None:
+    """Reject an identity the page's roles do not cover, recording the refusal.
+
+    One helper for every page that is not open to everyone: the audit action, the resource type
+    and the refusal path are the same on each of them, and a page that spelled its own version
+    would be a page whose refusals are filed under a different name than the rest.
+    """
+    with _audited_action(request, session, web, resource_type=resource_type):
+        if get_role_codes(web.user).isdisjoint(allowed):
+            raise WebForbidden(message)
+
+
 def _require_metrics_role(request: Request, session: Session, web: WebSession) -> None:
     """Reject a viewer from the operations dashboard.
 
     The dashboard exposes cross-topic cost, failure reasons and evaluation verdicts rather than
     the contents of one report, so it follows `METRICS_ROLES` instead of the report read roles.
     """
-    with _audited_action(request, session, web, resource_type="metrics"):
-        if get_role_codes(web.user).isdisjoint(METRICS_ROLES):
-            raise WebForbidden("该页面仅对管理员和编辑者开放")
+    _require_roles(
+        request,
+        session,
+        web,
+        METRICS_ROLES,
+        resource_type="metrics",
+        message="该页面仅对管理员和编辑者开放",
+    )
 
 
 def _can_view_dashboard(context: dict[str, Any]) -> bool:
@@ -320,6 +510,28 @@ def _load_visible_report(session: Session, web: WebSession, report_id: int) -> R
 def _topic_name(session: Session, topic_id: int) -> str | None:
     """Return one topic name."""
     return session.scalar(select(Topic.name).where(Topic.id == topic_id))
+
+
+def _topic_names(session: Session, topic_ids: set[int]) -> dict[int, str]:
+    """Map topic ids to names for the list pages.
+
+    A presentation-only name lookup, not a read model: the list queries return rows that carry a
+    `topic_id`, and the page has to print something a human recognises. Same shape as the lookup
+    `reports_page` does inline — pulled out here so the repository page and the topic page use the
+    one copy instead of each inventing their own.
+    """
+    if not topic_ids:
+        return {}
+    rows = session.execute(select(Topic.id, Topic.name).where(Topic.id.in_(topic_ids))).all()
+    return {int(row[0]): str(row[1]) for row in rows}
+
+
+def _report_titles(session: Session, report_ids: set[int]) -> dict[int, str]:
+    """Map report ids to titles for the list pages. See `_topic_names`."""
+    if not report_ids:
+        return {}
+    rows = session.execute(select(Report.id, Report.title).where(Report.id.in_(report_ids))).all()
+    return {int(row[0]): str(row[1]) for row in rows}
 
 
 def _push_context(session: Session, report_id: int) -> dict[str, Any]:
@@ -451,6 +663,7 @@ def dashboard_page(
             "recent_runs": recent_runs,
             "window_days": overview.window.days,
             "window_options": WINDOW_OPTIONS,
+            "active": "dashboard",
         },
     )
 
@@ -479,6 +692,7 @@ def dashboard_run_page(
             "current_user": _identity(web.user),
             "trace": trace,
             "unfinished": trace.run.started_at is None or trace.run.finished_at is None,
+            "active": "dashboard",
         },
     )
 
@@ -507,14 +721,7 @@ def reports_page(
         page=page,
         page_size=page_size,
     )
-    topic_names: dict[int, str] = {}
-    if page_result.items:
-        rows = session.execute(
-            select(Topic.id, Topic.name).where(
-                Topic.id.in_({item.topic_id for item in page_result.items})
-            )
-        ).all()
-        topic_names = {int(row[0]): str(row[1]) for row in rows}
+    topic_names = _topic_names(session, {item.topic_id for item in page_result.items})
     return render(
         request,
         "reports.html",
@@ -524,6 +731,12 @@ def reports_page(
             "topic_names": topic_names,
             "status_filter": status_filter or "",
             "visibility_filter": visibility or "",
+            # Offered from the model's own tuples rather than retyped in the template: a filter
+            # that lists a state the state machine does not have returns an empty page and looks
+            # like a bug in the data.
+            "status_options": REPORT_STATUSES,
+            "visibility_options": REPORT_VISIBILITIES,
+            "active": "reports",
         },
         csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
     )
@@ -583,6 +796,7 @@ def report_page(
             "error": None,
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
             **_push_context(session, report.id),
+            "active": "reports",
         },
         csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
     )
@@ -836,4 +1050,813 @@ def edit_action(
         web,
         report_id,
         flash=f"内容已更新为第 {outcome.version} 版，报告回到草稿待重新验证",
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Push deliveries
+# --------------------------------------------------------------------------------------
+
+
+@router.get("/pushes", response_class=HTMLResponse)
+def pushes_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+) -> HTMLResponse:
+    """Render the delivery ledger: which report version went to which destination.
+
+    `list_pushes` caps rather than paginates, so the page prints its cap instead of offering
+    paging controls the query could not honour.
+    """
+    _require_roles(
+        request,
+        session,
+        web,
+        REPORT_WRITE_ROLES,
+        resource_type="push",
+        message="推送记录仅对管理员和编辑者开放",
+    )
+    pushes = list_pushes(session, status=status_filter, limit=RECENT_LIMIT)
+    return render(
+        request,
+        "pushes.html",
+        {
+            "current_user": _identity(web.user),
+            "pushes": pushes,
+            "targets": list_targets(session, enabled_only=False),
+            "report_titles": _report_titles(session, {push.report_id for push in pushes}),
+            "status_filter": status_filter or "",
+            "status_options": PUSH_STATUSES,
+            "limit": RECENT_LIMIT,
+            "active": "pushes",
+        },
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Repository catalog
+# --------------------------------------------------------------------------------------
+
+
+@router.get("/repositories", response_class=HTMLResponse)
+def repositories_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    q: Annotated[str | None, Query()] = None,
+    language: Annotated[str | None, Query()] = None,
+    sort: Annotated[str | None, Query()] = None,
+    topic_id: Annotated[int | None, Query(ge=1)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+) -> HTMLResponse:
+    """Render the repository catalog: what the collectors found, and under which topic."""
+    with _audited_action(
+        request,
+        session,
+        web,
+        resource_type="topic",
+        resource_id=str(topic_id) if topic_id is not None else None,
+    ):
+        if get_role_codes(web.user).isdisjoint(REPOSITORY_READ_ROLES):
+            raise WebForbidden("当前角色不能查看仓库目录")
+        # `list_repositories` documents that the caller settles topic visibility *before* calling
+        # it: the catalog itself has no per-row access predicate, so narrowing to a topic the
+        # caller may not read would otherwise be a way to read it one row at a time.
+        if topic_id is not None:
+            topic = session.get(Topic, topic_id)
+            if topic is None:
+                raise WebNotFound(f"主题 {topic_id} 不存在")
+            if not can_read_topic(web.user, topic, get_role_codes(web.user)):
+                raise WebForbidden("当前用户无权查看该主题的候选列表", action="topic.read")
+    page_result = list_repositories(
+        session,
+        topic_id=topic_id,
+        language=language or None,
+        query=q or None,
+        sort=sort or REPOSITORY_SORT_OPTIONS[0],
+        page=page,
+        page_size=LIST_PAGE_SIZE,
+    )
+    return render(
+        request,
+        "repositories.html",
+        {
+            "current_user": _identity(web.user),
+            "page": page_result,
+            # The filter offers the topics this identity can read, capped at the documented page
+            # size: beyond that the list is not a filter any more, it is a second catalog.
+            "topics": list_topics(session, user=web.user, page_size=TOPIC_MAX_PAGE_SIZE).items,
+            "query": q or "",
+            "language_filter": language or "",
+            "sort_filter": sort or REPOSITORY_SORT_OPTIONS[0],
+            "sort_options": REPOSITORY_SORT_OPTIONS,
+            "topic_filter": topic_id,
+            "active": "repositories",
+        },
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Collection and research runs
+# --------------------------------------------------------------------------------------
+
+
+@router.get("/runs", response_class=HTMLResponse)
+def runs_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+) -> HTMLResponse:
+    """Render the run ledger: Agent runs over their candidate pool, and the backfill walks.
+
+    The two live on one page because they are the two halves of 采集与运行: a backfill job is the
+    history walk that fills a topic's candidate pool, and an Agent run is the research pass over it.
+    Both are `METRICS_ROLES` — they expose cross-topic cost and failure reasons, not one report.
+    """
+    _require_roles(
+        request,
+        session,
+        web,
+        METRICS_ROLES,
+        resource_type="metrics",
+        message="采集与运行仅对管理员和编辑者开放",
+    )
+    agent_runs = list_agent_runs(session, status=status_filter, page=page, page_size=LIST_PAGE_SIZE)
+    return render(
+        request,
+        "runs.html",
+        {
+            "current_user": _identity(web.user),
+            "page": agent_runs,
+            "topic_names": _topic_names(session, {run.topic_id for run in agent_runs.items}),
+            "jobs": summarize_jobs(list_jobs(session, limit=RECENT_LIMIT)),
+            "status_filter": status_filter or "",
+            "status_options": AGENT_RUN_STATUSES,
+            "job_statuses": JOB_STATUSES,
+            "limit": RECENT_LIMIT,
+            "active": "runs",
+        },
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Evaluation
+# --------------------------------------------------------------------------------------
+
+
+@router.get("/evaluations", response_class=HTMLResponse)
+def evaluations_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    dataset_id: Annotated[int | None, Query(ge=1)] = None,
+) -> HTMLResponse:
+    """Render the evaluation surface: the imported datasets and the runs over them.
+
+    Read-only on purpose. Running an evaluation spends model budget, and the same reasoning that
+    keeps `POST /agent/runs` and `POST /topics/{id}/run` off the API keeps the run trigger on the
+    operator CLI (`python -m open_source_intelligence.evaluation.cli`).
+    """
+    _require_roles(
+        request,
+        session,
+        web,
+        REPORT_WRITE_ROLES,
+        resource_type="evaluation",
+        message="评测页仅对管理员和编辑者开放",
+    )
+    datasets = list_datasets(session, limit=RECENT_LIMIT)
+    return render(
+        request,
+        "evaluations.html",
+        {
+            "current_user": _identity(web.user),
+            "datasets": datasets,
+            "runs": list_eval_runs(session, dataset_id=dataset_id, limit=RECENT_LIMIT),
+            "dataset_names": {
+                int(dataset.id): f"{dataset.name}@{dataset.version}" for dataset in datasets
+            },
+            "dataset_filter": dataset_id,
+            "limit": RECENT_LIMIT,
+            "active": "evaluations",
+        },
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Audit log
+# --------------------------------------------------------------------------------------
+
+
+@router.get("/audit", response_class=HTMLResponse)
+def audit_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    actor_id: Annotated[int | None, Query(ge=1)] = None,
+    action: Annotated[str | None, Query()] = None,
+    resource_type: Annotated[str | None, Query()] = None,
+    result: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+) -> HTMLResponse:
+    """Render the audit ledger — every refusal, configuration change and publish, newest first."""
+    _require_roles(
+        request,
+        session,
+        web,
+        AUDIT_READ_ROLES,
+        resource_type="audit",
+        message="审计日志仅对管理员开放",
+    )
+    page_result = list_audit_logs(
+        session,
+        actor_id=actor_id,
+        action=action or None,
+        resource_type=resource_type or None,
+        result=result or None,
+        page=page,
+        page_size=LIST_PAGE_SIZE,
+    )
+    return render(
+        request,
+        "audit.html",
+        {
+            "current_user": _identity(web.user),
+            "page": page_result,
+            # The column is binary; the API has one function that turns it into the usual dotted
+            # form, and the page uses the same one rather than formatting `b'...'` by accident.
+            "ip_addresses": {
+                int(entry.id): format_ip_address(entry.ip_address) for entry in page_result.items
+            },
+            "actor_filter": actor_id,
+            "action_filter": action or "",
+            "resource_filter": resource_type or "",
+            "result_filter": result or "",
+            "result_options": AUDIT_RESULTS,
+            "active": "audit",
+        },
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Topic configuration
+# --------------------------------------------------------------------------------------
+#
+# This is the one settings surface the platform had none of. `pipeline/daily.py` runs the enabled
+# topics and nothing else, so with no way to add one the whole pipeline produces nothing and a UI
+# on top of it shows an empty shell however good the UI is. `docs/api-contract.md` §3 recorded the
+# missing API as "designed but not done"; T19 built that API, and this is its UI face.
+#
+# What stays off this page is the same thing that stays off the API: triggering a research run.
+# A run spends model budget, and that trigger belongs to the scheduler and the operator CLI.
+
+#: Post-redirect-get notices: the action name travels in the URL and the sentence is looked up
+#: here. Echoing a free-text message through a query parameter would let anyone craft a link that
+#: puts words in the application's mouth.
+TOPIC_NOTICES: dict[str, str] = {
+    "created": "已创建主题。",
+    "updated": "已保存主题。",
+    "deleted": "已删除主题，并解除了它的候选关联。",
+    "enabled": "已启用该主题，下一次采集会带上它。",
+    "disabled": "已停用该主题，下一次采集不会运行它。",
+}
+
+#: Which HTTP status a refusal is answered with. The same split the JSON API makes, so a client
+#: reading the status sees the same meaning on both surfaces.
+TOPIC_ERROR_STATUS: dict[str, int] = {
+    "TOPIC_NAME_CONFLICT": status.HTTP_409_CONFLICT,
+    "TOPIC_IN_USE": status.HTTP_409_CONFLICT,
+    "TOPIC_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+    "TOPIC_NAME_BLANK": status.HTTP_400_BAD_REQUEST,
+}
+
+#: The refusal, said in the language of the page. The service layer's own messages are English and
+#: written for a log line or an API client — right for `str(exc)` in a traceback, wrong as the only
+#: sentence an operator sees. Unmapped codes fall through to `str(exc)` rather than to a generic
+#: "操作失败": a new refusal should appear as itself, obviously unlabelled, and not as a placard
+#: that hides what went wrong.
+TOPIC_ERROR_MESSAGES: dict[str, str] = {
+    "TOPIC_NAME_BLANK": "主题名不能为空。",
+    "TOPIC_NAME_CONFLICT": "这个主题名已经被占用，换一个再试。",
+    "TOPIC_NOT_FOUND": "主题不存在，可能已经被删掉了。",
+    "TOPIC_IN_USE": "这个主题还有历史记录引用它，不能删除",
+}
+
+
+def _topic_refusal(exc: TopicError, *, session: Session, topic_id: int | None) -> str:
+    """Render a domain refusal as the sentence the page shows.
+
+    `TOPIC_IN_USE` is the one that keeps its detail, and the dates come from
+    `reference_counts` rather than being parsed out of the English message: "which table is
+    holding it" is the actionable half of that refusal, and reading it back out of a sentence
+    would break the moment somebody rewords the sentence.
+    """
+    lead = TOPIC_ERROR_MESSAGES.get(exc.code)
+    if lead is None:
+        return str(exc)
+    if exc.code != "TOPIC_IN_USE" or topic_id is None:
+        return lead
+    counts = reference_counts(session, topic_id)
+    blocking = "、".join(f"{name} {count} 条" for name, count in counts.items() if count)
+    return f"{lead}：{blocking}。可以改为停用它。" if blocking else lead
+
+
+class _FormInvalid(Exception):
+    """A submitted value the service layer would reject, caught before the call.
+
+    The form sends everything as text, so "eight" in a numeric field has to be turned into a
+    message a person can act on rather than a 422 with a JSON pointer in it.
+    """
+
+
+def _split_terms(raw: str) -> list[str] | None:
+    """Turn a comma-separated form field into the list the service expects.
+
+    An empty field means "no restriction", which is stored as SQL NULL — so this returns `None`,
+    not `[]`. An empty list would mean "restrict to nothing" and select no repositories at all,
+    which is the opposite of what a blank field is asking for.
+    """
+    terms = [part.strip() for part in raw.split(",") if part.strip()]
+    return terms or None
+
+
+#: The fields the topic form carries, in the order they are shown.
+TOPIC_FORM_FIELDS: tuple[str, ...] = (
+    "name",
+    "description",
+    "publish_mode",
+    "languages",
+    "keywords",
+    "min_stars",
+    "window_days",
+    "max_candidates",
+    "enabled",
+)
+
+#: What a brand-new topic's form starts from. These are the column defaults, so a topic created
+#: without touching them is the row the pipeline would have produced on its own — not a second
+#: definition of "a new topic".
+TOPIC_FORM_DEFAULTS: dict[str, str] = {
+    "name": "",
+    "description": "",
+    "publish_mode": "MANUAL",
+    "languages": "",
+    "keywords": "",
+    "min_stars": "0",
+    "window_days": "7",
+    "max_candidates": "30",
+    "enabled": "true",
+}
+
+
+def _topic_form_fields(topic: Topic | None, form: Mapping[str, str] | None) -> dict[str, str]:
+    """Return the values the topic form shows, as text.
+
+    Three sources, in that order, on purpose. After a refusal the operator's own input has to
+    survive, or they retype nine fields to fix one; on a first open the row is the truth; and for
+    a new topic there is no row, so the column defaults above stand in.
+    """
+    if form:
+        return {field: str(form.get(field, "")) for field in TOPIC_FORM_FIELDS}
+    if topic is None:
+        return dict(TOPIC_FORM_DEFAULTS)
+    return {
+        "name": topic.name,
+        "description": topic.description or "",
+        "publish_mode": topic.publish_mode,
+        "languages": ", ".join(topic.languages_json or []),
+        "keywords": ", ".join(topic.keywords_json or []),
+        "min_stars": str(topic.min_stars),
+        "window_days": str(topic.window_days),
+        "max_candidates": str(topic.max_candidates),
+        "enabled": "true" if topic.enabled else "false",
+    }
+
+
+def _topic_values(raw: Mapping[str, str]) -> dict[str, Any]:
+    """Translate the create/update form into the service's field values."""
+    values: dict[str, Any] = {
+        "publish_mode": (raw.get("publish_mode") or "").strip(),
+        "description": (raw.get("description") or "").strip() or None,
+        "languages": _split_terms(raw.get("languages") or ""),
+        "keywords": _split_terms(raw.get("keywords") or ""),
+        "enabled": (raw.get("enabled") or "true").strip().lower() in {"true", "1", "on", "yes"},
+    }
+    for field, label in (
+        ("min_stars", "最小星标数"),
+        ("window_days", "观察窗口天数"),
+        ("max_candidates", "候选上限"),
+    ):
+        text = (raw.get(field) or "").strip()
+        if text == "":
+            raise _FormInvalid(f"{label}不能为空")
+        try:
+            values[field] = int(text)
+        except ValueError:
+            raise _FormInvalid(f"{label}必须是整数") from None
+    return values
+
+
+def _topics_context(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    *,
+    query: str | None,
+    enabled: str | None,
+    page: int,
+    notice: str | None = None,
+    error: str | None = None,
+    form: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the topic page context, shared by the list route and the write actions' failures.
+
+    A failed write re-renders this page instead of redirecting with the message in the URL: the
+    sentence then comes from our own exception rather than from whoever wrote the link, and the
+    operator keeps what they typed.
+    """
+    enabled_filter = {"true": True, "false": False}.get((enabled or "").lower())
+    return {
+        "current_user": _identity(web.user),
+        "page": list_topics(
+            session,
+            user=web.user,
+            enabled=enabled_filter,
+            query=query or None,
+            page=page,
+            page_size=LIST_PAGE_SIZE,
+        ),
+        "query": query or "",
+        "enabled_filter": enabled or "",
+        "can_write": not get_role_codes(web.user).isdisjoint(TOPIC_WRITE_ROLES),
+        "publish_modes": TOPIC_PUBLISH_MODES,
+        "notice": notice,
+        "error": error,
+        "form": _topic_form_fields(None, form),
+        "active": "topics",
+    }
+
+
+def _topics_page_response(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    context: dict[str, Any],
+    *,
+    status_code: int = 200,
+) -> HTMLResponse:
+    """Render the topic page with a fresh CSRF token available to its forms."""
+    return render(
+        request,
+        "topics.html",
+        context,
+        status_code=status_code,
+        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
+    )
+
+
+def _authorize_topic_write(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    csrf: str | None,
+) -> None:
+    """Guard a topic write: CSRF first, then the admin-only role.
+
+    There is no per-row read check the way the report actions have one: visibility for a topic is
+    by role, and only `ADMIN` reaches this line — the one role `can_read_topic` lets see everything.
+    """
+    with _audited_action(request, session, web, resource_type="topic"):
+        verify_csrf(request, csrf)
+        if get_role_codes(web.user).isdisjoint(TOPIC_WRITE_ROLES):
+            raise WebForbidden("主题配置仅对管理员开放")
+
+
+@router.get("/topics", response_class=HTMLResponse)
+def topics_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    q: Annotated[str | None, Query()] = None,
+    enabled: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    ok: Annotated[str | None, Query()] = None,
+) -> HTMLResponse:
+    """Render the topic list — the configuration that decides what the platform collects."""
+    _require_roles(
+        request,
+        session,
+        web,
+        TOPIC_READ_ROLES,
+        resource_type="topic",
+        message="当前角色不能查看主题配置",
+    )
+    context = _topics_context(
+        request,
+        session,
+        web,
+        query=q,
+        enabled=enabled,
+        page=page,
+        notice=TOPIC_NOTICES.get((ok or "").strip()),
+    )
+    return _topics_page_response(request, session, web, context)
+
+
+@router.get("/topics/{topic_id}", response_class=HTMLResponse)
+def topic_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    topic_id: int,
+    ok: Annotated[str | None, Query()] = None,
+) -> HTMLResponse:
+    """Render one topic's edit form.
+
+    Its own page rather than a form folded into the list row: a topic carries nine editable
+    fields, and a nine-field form inside a table cell makes the table unreadable and the form
+    unusable. The list links here, and this page is where the fields are edited.
+    """
+    _require_roles(
+        request,
+        session,
+        web,
+        TOPIC_READ_ROLES,
+        resource_type="topic",
+        message="当前角色不能查看主题配置",
+    )
+    topic = session.get(Topic, topic_id)
+    if topic is None:
+        raise WebNotFound(f"主题 {topic_id} 不存在")
+    if not can_read_topic(web.user, topic, get_role_codes(web.user)):
+        raise WebForbidden(f"当前用户无权查看主题 {topic_id}", action="topic.read")
+    return render(
+        request,
+        "topic_detail.html",
+        {
+            "current_user": _identity(web.user),
+            "topic": topic,
+            "can_write": not get_role_codes(web.user).isdisjoint(TOPIC_WRITE_ROLES),
+            "publish_modes": TOPIC_PUBLISH_MODES,
+            "notice": TOPIC_NOTICES.get((ok or "").strip()),
+            "error": None,
+            "form": _topic_form_fields(topic, None),
+            "active": "topics",
+        },
+        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
+    )
+
+
+@router.post("/topics", response_class=HTMLResponse)
+def create_topic_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    name: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+    publish_mode: Annotated[str, Form()] = "",
+    languages: Annotated[str, Form()] = "",
+    keywords: Annotated[str, Form()] = "",
+    min_stars: Annotated[str, Form()] = "",
+    window_days: Annotated[str, Form()] = "",
+    max_candidates: Annotated[str, Form()] = "",
+    enabled: Annotated[str, Form()] = "",
+    csrf: CsrfField = "",
+) -> Response:
+    """Create one topic from the configuration page."""
+    _authorize_topic_write(request, session, web, csrf)
+    raw = {
+        "name": name,
+        "description": description,
+        "publish_mode": publish_mode,
+        "languages": languages,
+        "keywords": keywords,
+        "min_stars": min_stars,
+        "window_days": window_days,
+        "max_candidates": max_candidates,
+        "enabled": enabled,
+    }
+    try:
+        values = _topic_values(raw)
+        # `publish_mode` is a keyword of its own on `create_topic`, and the table requires it.
+        # Leaving it in `values` would set the same attribute twice.
+        mode = str(values.pop("publish_mode"))
+        create_topic(
+            session,
+            actor_id=web.user.id,
+            name=name,
+            publish_mode=mode,
+            values=values,
+            request_id=request_id(request),
+        )
+    except _FormInvalid as exc:
+        return _topics_write_failure(
+            request, session, web, str(exc), raw, status.HTTP_400_BAD_REQUEST
+        )
+    except TopicError as exc:
+        return _topics_write_failure(
+            request,
+            session,
+            web,
+            _topic_refusal(exc, session=session, topic_id=None),
+            raw,
+            _topic_error_status(exc),
+        )
+    return RedirectResponse("/ui/topics?ok=created", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/topics/{topic_id}/update", response_class=HTMLResponse)
+def update_topic_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    topic_id: int,
+    name: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+    publish_mode: Annotated[str, Form()] = "",
+    languages: Annotated[str, Form()] = "",
+    keywords: Annotated[str, Form()] = "",
+    min_stars: Annotated[str, Form()] = "",
+    window_days: Annotated[str, Form()] = "",
+    max_candidates: Annotated[str, Form()] = "",
+    enabled: Annotated[str, Form()] = "",
+    csrf: CsrfField = "",
+) -> Response:
+    """Save the edit form for one topic.
+
+    The form carries every field, so this is a full replace rather than a patch — which is what
+    `update_topic` reports back in `changed`: the fields whose value actually moved.
+    """
+    _authorize_topic_write(request, session, web, csrf)
+    raw = {
+        "name": name,
+        "description": description,
+        "publish_mode": publish_mode,
+        "languages": languages,
+        "keywords": keywords,
+        "min_stars": min_stars,
+        "window_days": window_days,
+        "max_candidates": max_candidates,
+        "enabled": enabled,
+    }
+    try:
+        values = _topic_values(raw)
+        values["name"] = name
+        update_topic(
+            session,
+            actor_id=web.user.id,
+            topic_id=topic_id,
+            values=values,
+            request_id=request_id(request),
+        )
+    except _FormInvalid as exc:
+        return _topic_detail_failure(
+            request, session, web, topic_id, str(exc), raw, status.HTTP_400_BAD_REQUEST
+        )
+    except TopicError as exc:
+        return _topic_detail_failure(
+            request,
+            session,
+            web,
+            topic_id,
+            _topic_refusal(exc, session=session, topic_id=topic_id),
+            raw,
+            _topic_error_status(exc),
+        )
+    return RedirectResponse(
+        f"/ui/topics/{topic_id}?ok=updated",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/topics/{topic_id}/toggle", response_class=HTMLResponse)
+def toggle_topic_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    topic_id: int,
+    enabled: Annotated[str, Form()] = "",
+    csrf: CsrfField = "",
+) -> Response:
+    """Enable or disable one topic without opening the edit form."""
+    _authorize_topic_write(request, session, web, csrf)
+    turn_on = (enabled or "").strip().lower() in {"true", "1", "on", "yes"}
+    try:
+        update_topic(
+            session,
+            actor_id=web.user.id,
+            topic_id=topic_id,
+            values={"enabled": turn_on},
+            request_id=request_id(request),
+        )
+    except TopicError as exc:
+        return _topics_write_failure(
+            request,
+            session,
+            web,
+            _topic_refusal(exc, session=session, topic_id=topic_id),
+            {},
+            _topic_error_status(exc),
+        )
+    return RedirectResponse(
+        f"/ui/topics?ok={'enabled' if turn_on else 'disabled'}"
+        f"#{'disabled' if turn_on else 'enabled'}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/topics/{topic_id}/delete", response_class=HTMLResponse)
+def delete_topic_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    topic_id: int,
+    csrf: CsrfField = "",
+) -> Response:
+    """Delete one topic, or explain which tables still reference it.
+
+    A topic with recorded history cannot be deleted: the foreign keys from reports, runs and
+    pipeline rows are `RESTRICT`, and `delete_topic` turns that into a refusal naming the tables
+    instead of letting an `IntegrityError` surface as a 500. The message is rendered verbatim
+    because it is ours, and "which table" is the one thing the operator needs to act on.
+    """
+    _authorize_topic_write(request, session, web, csrf)
+    try:
+        delete_topic(
+            session,
+            actor_id=web.user.id,
+            topic_id=topic_id,
+            request_id=request_id(request),
+        )
+    except TopicError as exc:
+        return _topics_write_failure(
+            request,
+            session,
+            web,
+            _topic_refusal(exc, session=session, topic_id=topic_id),
+            {},
+            _topic_error_status(exc),
+        )
+    return RedirectResponse("/ui/topics?ok=deleted", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _topic_error_status(exc: TopicError) -> int:
+    """Map a domain refusal onto its HTTP status."""
+    return TOPIC_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
+
+
+def _topics_write_failure(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    message: str,
+    form: Mapping[str, str],
+    status_code: int,
+) -> HTMLResponse:
+    """Re-render the topic list with a refusal and whatever the operator had typed."""
+    context = _topics_context(
+        request,
+        session,
+        web,
+        query=None,
+        enabled=None,
+        page=1,
+        error=message,
+        form=form,
+    )
+    return _topics_page_response(request, session, web, context, status_code=status_code)
+
+
+def _topic_detail_failure(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    topic_id: int,
+    message: str,
+    form: Mapping[str, str],
+    status_code: int,
+) -> HTMLResponse:
+    """Re-render one topic's edit form with a refusal and whatever the operator had typed."""
+    topic = session.get(Topic, topic_id)
+    if topic is None:
+        raise WebNotFound(f"主题 {topic_id} 不存在")
+    return render(
+        request,
+        "topic_detail.html",
+        {
+            "current_user": _identity(web.user),
+            "topic": topic,
+            "can_write": not get_role_codes(web.user).isdisjoint(TOPIC_WRITE_ROLES),
+            "publish_modes": TOPIC_PUBLISH_MODES,
+            "notice": None,
+            "error": message,
+            "form": _topic_form_fields(topic, form),
+            "active": "topics",
+        },
+        status_code=status_code,
+        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
     )

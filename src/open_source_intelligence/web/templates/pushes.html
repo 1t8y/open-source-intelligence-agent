@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}推送记录 · 开源情报周报平台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>推送记录</h1>
+    <p class="sub">
+      已发布报告投递到各个目标的结果。传输失败不是异常：适配器返回失败时这一行落为
+      <b>失败</b> 并带上错误码，接口本身仍是成功的 —— 所以这张表要按状态读，不能按有没有报错读。
+    </p>
+  </div>
+</header>
+
+<section class="card">
+  <div class="row space-between">
+    <h2 style="margin:0">投递记录</h2>
+    <form class="filters" method="get" action="/ui/pushes" style="margin:0">
+      <label>
+        <span>状态</span>
+        <select name="status">
+          <option value="" {% if not status_filter %}selected{% endif %}>全部</option>
+          {% for value in status_options %}
+          <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ value | label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">筛选</button>
+    </form>
+  </div>
+
+  {% if pushes %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>报告</th>
+        <th class="num">版本</th>
+        <th>目标</th>
+        <th>渠道</th>
+        <th>状态</th>
+        <th class="num">尝试</th>
+        <th>时间</th>
+        <th>错误</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for push in pushes %}
+      <tr>
+        <td class="mono">{{ push.id }}</td>
+        <td>
+          <a href="/ui/reports/{{ push.report_id }}">
+            {{ report_titles.get(push.report_id, "#" ~ push.report_id) }}
+          </a>
+        </td>
+        <td class="num">v{{ push.version }}</td>
+        {# 目标名与目的地都取自这一行自己的冗余列，不是联表读 allowlist：
+           审计行必须在 allowlist 条目被改名或删除之后仍然可读，这正是它们被冗余下来的原因。 #}
+        <td>
+          {% set target = targets | selectattr("id", "equalto", push.target_id) | first %}
+          {{ target.name if target else "（目标 #" ~ push.target_id ~ " 已不存在）" }}
+        </td>
+        <td class="mono">{{ push.destination | redact }}</td>
+        <td><span class="badge status-{{ push.status }}">{{ push.status | label }}</span></td>
+        <td class="num">{{ push.attempt }}</td>
+        <td class="mono">
+          {{ (push.sent_at or push.updated_at).strftime("%Y-%m-%d %H:%M") }}
+        </td>
+        <td class="mono">
+          {% if push.error_code %}{{ push.error_code }}{% else %}—{% endif %}
+          {% if push.error_message %}
+          <div class="truncate" style="color:var(--muted)">{{ push.error_message | redact }}</div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">
+    最多显示最近 {{ limit }} 条。同一份报告的同一个版本推给同一个目标只会产生<b>一行</b>：
+    幂等键是 `(报告, 版本, 目标)`，重试推进这一行的尝试次数，而不是新增一行。
+  </p>
+  {% else %}
+  <p class="empty">还没有投递记录。报告发布后若开启了自动推送，这里会出现对应的行。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>推送目标白名单</h2>
+  <p class="hint" style="margin-top:0">
+    只有白名单里的目标才收得到报告 —— 没有它，推送接口就等于可以往任何地址发。
+    两个允许开关默认都是关的：新建的目标在有人明确放开之前，不会收到私有或机密报告。
+  </p>
+  {% if targets %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>#</th><th>名称</th><th>渠道</th><th>目的地</th><th>状态</th>
+        <th>允许私有</th><th>允许机密</th><th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for target in targets %}
+      <tr>
+        <td class="mono">{{ target.id }}</td>
+        <td>{{ target.name }}</td>
+        <td><span class="badge">{{ target.channel | label }}</span></td>
+        <td class="mono">{{ target.destination | redact }}</td>
+        <td>
+          <span class="badge status-{{ 'published' if target.enabled else 'cancelled' }}">
+            {{ "启用中" if target.enabled else "已停用" }}
+          </span>
+        </td>
+        <td>{{ "是" if target.allow_private else "否" }}</td>
+        <td>{{ "是" if target.allow_confidential else "否" }}</td>
+        <td class="truncate">{{ target.description or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">
+    还没有推送目标。<code>push_targets</code> 目前没有创建入口，需要由运维直接写入 ——
+    这是本版已知的缺口，不是操作失误。
+  </p>
+  {% endif %}
+</section>
+{% endblock %}

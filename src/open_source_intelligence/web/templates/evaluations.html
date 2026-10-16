@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}评测 · 开源情报周报平台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>评测</h1>
+    <p class="sub">
+      数据集与在它们上面跑过的运行。<b>只有完整 Agent 的通过与否算数</b>；
+      消融变体是拿来做对照的 —— 它们失败不代表系统不合格，只说明那个部件在起作用。
+    </p>
+  </div>
+</header>
+
+<section class="card">
+  <h2>数据集</h2>
+  {% if datasets %}
+  <table class="grid">
+    <thead>
+      <tr><th class="num">#</th><th>名称</th><th>版本</th><th>说明</th><th>导入时间</th></tr>
+    </thead>
+    <tbody>
+      {% for dataset in datasets %}
+      <tr>
+        <td class="mono">{{ dataset.id }}</td>
+        <td>
+          <a href="/ui/evaluations?dataset_id={{ dataset.id }}">{{ dataset.name }}</a>
+        </td>
+        <td class="mono">{{ dataset.version }}</td>
+        <td class="truncate">{{ dataset.description or "—" }}</td>
+        <td class="mono">{{ dataset.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">
+    还没有数据集。导入走操作员 CLI：<code>python -m open_source_intelligence.evaluation.cli --action import</code>。
+  </p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="row space-between">
+    <h2 style="margin:0">运行记录{% if dataset_filter %}（数据集 #{{ dataset_filter }}）{% endif %}</h2>
+    {% if dataset_filter %}<a href="/ui/evaluations">看全部</a>{% endif %}
+  </div>
+
+  {% if runs %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>数据集</th>
+        <th>变体</th>
+        <th>状态</th>
+        <th>开始</th>
+        <th>结束</th>
+        <th>错误</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td class="mono">{{ run.id }}</td>
+        <td>{{ dataset_names.get(run.dataset_id, "#" ~ run.dataset_id) }}</td>
+        {# 评测变体名是标识符不是显示枚举：它是 grep 契约时用的键，译成中文反而对不上。 #}
+        <td class="mono">{{ run.target_type }}</td>
+        <td><span class="badge status-{{ run.status }}">{{ run.status | label }}</span></td>
+        <td class="mono">{{ run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
+        <td class="mono">{{ run.finished_at.strftime("%Y-%m-%d %H:%M") if run.finished_at else "—" }}</td>
+        <td class="mono">{{ run.error_message | redact if run.error_message else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">
+    最多显示最近 {{ limit }} 条。运行由操作员 CLI 触发（<code>--action run</code>）：
+    它会消耗模型预算，和 Agent 运行是同一条理由，触发权不在 HTTP 面上。
+  </p>
+  {% else %}
+  <p class="empty">这个范围内还没有评测运行。</p>
+  {% endif %}
+</section>
+{% endblock %}

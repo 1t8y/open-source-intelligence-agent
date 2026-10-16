@@ -1,4 +1,18 @@
+/* ==========================================================================
+   开源情报周报平台 · 界面样式
+   --------------------------------------------------------------------------
+   设计取向：institutional data-first。浅灰底、白面板、1px 细线、单一强调色。
+   信息密度优先于留白，扫描优先于动效 —— 这是一个每天开着用的运维台，不是展示页。
+
+   两条硬约定：
+   1. 下面 `--bg` 到 `--error` 九个令牌的取值一个都没改：界面重排不该顺手调色。
+      新增的颜色一律从它们派生（同一个中性轴或同一个强调色相），不引入新色相。
+   2. `.content` 这个名字已经被报告正文占用（`<pre class="content">`），
+      所以页面内容容器叫 `.page`，对应宽度的令牌叫 `--content-max`，两者不冲突。
+   ========================================================================== */
+
 :root {
+  /* —— 原有九个令牌，取值保持不变 —— */
   --bg: #f5f6f8;
   --panel: #ffffff;
   --ink: #1c1f24;
@@ -8,82 +22,266 @@
   --ok: #167c4a;
   --warn: #8a5a00;
   --error: #b3261e;
+
+  /* —— 侧栏与层次，全部派生自上面 —— */
+  /* 侧栏是一条比页面底浅一档的中性色轨道，不是一个更亮的面板。这样内容区的白卡片才是
+     最亮的一层，注意力自然落在数据上；与 `--bg` 只差 12 个最大通道，加一条发丝线收边，
+     够分辨而不跳。悬停与选中都往白走 —— 轨道是灰的，白就是"抬起"，三步分明。 */
+  --nav: #e9edf3;
+  --nav-hover: #f6f8fb;
+  --nav-active: #ffffff;
+  --ink-soft: #3d444f;
+  --line-soft: #eaeef4;
+  --surface-sunken: #fafbfc;
+
+  /* 增减方向独立命名：中国市场约定「涨红跌绿」，与「红=错误」是两回事。
+     取值与 --error / --ok 相同（不新造色相），但语义分开，
+     否则读到绿色会被误当成「出错」而不是「下降」。 */
+  --delta-up: #b3261e;
+  --delta-down: #167c4a;
+
+  /* —— 圆角：沿用 10 / 8 / 999 三档 —— */
+  --r-lg: 10px;
+  --r-sm: 8px;
+  --r-pill: 999px;
+
+  /* —— 间距：六档，取代散落的字面量 —— */
+  --sp1: 4px; --sp2: 8px; --sp3: 12px; --sp4: 16px; --sp5: 24px; --sp6: 32px;
+
+  /* 侧栏宽度运行时可调，三个值要一起读：--sidebar 是默认值也是 JS 写回的那个，
+     另两个是拖拽的钳位边界（JS 从这里读，改一处即生效）。 */
+  --sidebar: 236px;
+  --sidebar-min: 180px;
+  --sidebar-max: 420px;
+  --content-max: 1180px;
+
+  /* 中文站不引 webfont：PingFang SC / 微软雅黑 是本机最清晰的中文无衬线，
+     数 MB 的字库对内部工具是错误取舍。等宽栈用于数字、ID、版本号、时间。 */
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", monospace;
 }
 
-* { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { height: 100%; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font: 15px/1.6 var(--font);
+  -webkit-font-smoothing: antialiased;
 }
 
 a { color: var(--accent); }
+h1, h2, h3 { text-wrap: balance; }
+/* 卡片内的标题（登录卡、面板）保持原字号；页面级标题由 `.page-head h1` 放大到 22px。 */
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 0 0 12px; }
 
-.topbar {
+/* ==========================================================================
+   1. 骨架：左侧分组导航 + 右侧单列内容
+   ========================================================================== */
+
+.app { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); min-height: 100vh; position: relative; }
+
+.sidebar {
+  background: var(--nav);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+/* 文字标：无品牌资产可依，不画假 logo，用字重与字距造识别度。 */
+.brand { display: block; padding: var(--sp5) var(--sp5) var(--sp4); text-decoration: none; }
+.brand-name {
+  display: block;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  line-height: 1.35;
+}
+.brand-sub { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+
+.nav { flex: 1; padding: 0 var(--sp3) var(--sp4); }
+.nav-group + .nav-group { margin-top: var(--sp5); }
+.nav-group-title {
+  padding: 0 var(--sp3) var(--sp2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp3);
+  padding: 7px var(--sp3);
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  font-size: 14px;
+  text-decoration: none;
+  transition: background 120ms ease;
+}
+.nav-item:hover { background: var(--nav-hover); text-decoration: none; }
+/* 选中态是一枚白色胶囊：灰轨道上最亮的一块，配 accent 文字与半粗字重。
+   不用「灰底 + 蓝色左竖线」的写法 —— 深色轨道上不够醒目，那个形状也会与
+   页面里表示层级的色条撞脸。结论不变，只是靠底色反转表达而不是靠多加一条线。 */
+.nav-item[aria-current="page"] {
+  background: var(--nav-active);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(28 31 36 / 0.06);
+}
+.nav-item[aria-current="page"] .nav-count { color: var(--accent); }
+.nav-label { flex: 1; }
+.nav-count { font-size: 12px; color: var(--muted); font-family: var(--mono); font-feature-settings: "tnum" 1; }
+
+.sidebar-foot {
+  border-top: 1px solid var(--line);
+  padding: var(--sp3) var(--sp5) var(--sp4);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 12px 24px;
-  background: var(--panel);
+  gap: var(--sp3);
+}
+.who { font-size: 13px; color: var(--ink-soft); line-height: 1.3; }
+.who small { display: block; color: var(--muted); font-size: 12px; }
+.sidebar-foot form { display: inline; margin: 0; }
+
+/* 边界拖柄：贴在侧栏右边界上，向内容一侧展开 12px 的抓取带。
+   为什么不跨界各占一半：侧栏是 overflow-y: auto，滚动条落在其右缘，跨界的抓取带会盖住
+   滚动条；往内容一侧放则完全落在 `.page` 的 32px 左内边距里，既不挡滚动条也不挡可点内容。
+   真正的分隔线仍是侧栏那条 border-right，拖柄只负责命中区与悬停反馈，所以视觉上一根线都没多。 */
+.splitter {
+  position: absolute;
+  left: var(--sidebar);
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none;
+}
+.splitter::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.splitter:hover::before,
+.splitter:focus-visible::before,
+.splitter.is-dragging::before { background: var(--accent); }
+.splitter:focus-visible { outline: none; }
+/* 拖动期间整页锁光标：指针滑出 12px 抓取带后仍要保持 col-resize，否则用户会觉得"拖丢了"。
+   文字选中也要一并关掉，不然拖到一半会把旁边的文字刷蓝。 */
+body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-select: none; }
+
+.main { min-width: 0; }
+
+/* 内容左对齐，不居中：居中会在侧栏与内容之间留出一条死水带（1920 宽下约 250px），
+   两块各占一岛、中间一条河，那正是"割裂感"的来源。左对齐后两侧共用一个边界。 */
+.page { max-width: var(--content-max); margin: 0; padding: var(--sp6) var(--sp6) 96px; }
+
+/* 未登录 / 403 / 404：没有侧栏可依附，居中一块窄卡。
+   外壳里仍是同一套 `.main > .page` 结构（模板只有一个 content 块，不能按登录态复制它），
+   这里只把这两层改成"居中、限宽"，不动模板结构。 */
+.guest-shell { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: var(--sp5); }
+.guest-shell .main { width: 100%; display: flex; justify-content: center; }
+.guest-shell .page { max-width: 380px; width: 100%; padding: 0; }
+.guest-shell .card { margin: 0; }
+.guest-shell .brand { padding: 0 0 var(--sp4); }
+
+/* ==========================================================================
+   2. 页头
+   ========================================================================== */
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp5);
+  flex-wrap: wrap;
+  padding-bottom: var(--sp4);
+  margin-bottom: var(--sp5);
   border-bottom: 1px solid var(--line);
 }
+.page-head h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.25; }
+.page-head .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; max-width: 78ch; }
+.head-actions { display: flex; gap: var(--sp2); align-items: center; flex-wrap: wrap; }
 
-.brand { font-weight: 600; text-decoration: none; color: var(--ink); }
-
-.topnav { display: flex; align-items: center; gap: 16px; }
-.topnav form { display: inline; }
-.who { color: var(--muted); font-size: 13px; }
-
-.page { max-width: 1100px; margin: 24px auto 64px; padding: 0 24px; }
+/* ==========================================================================
+   3. 面板与表格
+   ========================================================================== */
 
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   padding: 20px 24px;
   margin-bottom: 20px;
 }
 
-.card.narrow { max-width: 420px; margin: 48px auto; }
-
-h1 { font-size: 20px; margin: 0 0 4px; }
-h2 { font-size: 16px; margin: 0 0 12px; }
-
 .meta, .hint { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
+.hint { margin: 8px 0 0; }
 
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .row.start { align-items: flex-start; }
 .space-between { justify-content: space-between; }
+/* 表单控件在独立表单里是整行的（`width: 100%`），但放进横向排列的工具条时要按内容收缩，
+   否则每个控件都占满一行、工具条变成竖排。 */
 .inline-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.inline-form input, .inline-form select { width: auto; }
 
 .badges { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .badge {
   display: inline-block;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   border: 1px solid var(--line);
   background: #f0f2f6;
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
 }
 
-.status-published { background: #e3f5ea; color: var(--ok); border-color: #b6e0c8; }
-.status-scheduled, .status-approved { background: #e8f0fe; color: var(--accent); border-color: #c3d6fb; }
-.status-pending_review, .status-changes_requested { background: #fdf3e2; color: var(--warn); border-color: #f0dcb4; }
-.status-failed { background: #fdeceb; color: var(--error); border-color: #f4c7c3; }
+/* 状态着色：成功→绿、进行中→蓝、待人工→黄、失败→红、未开始→默认灰。 */
+.status-published,
+.status-succeeded, .status-success, .status-sent, .status-completed, .status-passed {
+  background: #e3f5ea; color: var(--ok); border-color: #b6e0c8;
+}
+.status-scheduled, .status-approved {
+  background: #e8f0fe; color: var(--accent); border-color: #c3d6fb;
+}
+.status-pending_review, .status-changes_requested, .status-needs_review,
+.status-partial, .status-pending, .status-running, .status-queued {
+  background: #fdf3e2; color: var(--warn); border-color: #f0dcb4;
+}
+.status-failed, .status-denied, .status-cancelled {
+  background: #fdeceb; color: var(--error); border-color: #f4c7c3;
+}
 
-.alert { padding: 8px 12px; border-radius: 8px; font-size: 14px; }
+.alert { padding: 8px 12px; border-radius: var(--r-sm); font-size: 14px; margin: 0 0 var(--sp4); }
 .alert.ok { background: #e6f6ec; color: var(--ok); }
 .alert.error { background: #fdeceb; color: var(--error); }
+.alert.warn { background: #fdf3e2; color: var(--warn); }
 
 .ok-text { color: var(--ok); }
 .error-text { color: var(--error); }
 
-.facts { display: flex; flex-wrap: wrap; gap: 24px; margin: 12px 0; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(176px, 1fr)); gap: var(--sp3) var(--sp5); margin: 12px 0; }
 .facts div { margin: 0; }
 .facts dt { color: var(--muted); font-size: 12px; }
 .facts dd { margin: 0; font-size: 14px; }
@@ -97,72 +295,109 @@ h2 { font-size: 16px; margin: 0 0 12px; }
   vertical-align: top;
 }
 .grid th { color: var(--muted); font-weight: 600; }
-.grid code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.grid code { font-family: var(--mono); font-size: 12px; }
+/* 数字列右对齐并用等宽数字，位数才排得成一条线 —— 这是本界面唯一的字体性格。 */
+.grid .num, .grid td.num { text-align: right; font-family: var(--mono); font-feature-settings: "tnum" 1; }
+.grid td.mono, .grid .mono { font-family: var(--mono); font-size: 12px; }
+.grid .truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pager { margin-top: 12px; font-size: 13px; color: var(--muted); }
+.pager a { margin-left: var(--sp3); }
+
+/* 空状态：表格没有数据时的替代物，说明为什么空而不是丢一个 0 行表。 */
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--sp5);
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  background: var(--surface-sunken);
+}
+
+/* ==========================================================================
+   4. 表单与控件
+   ========================================================================== */
 
 form label { display: block; margin-bottom: 12px; }
 form label > span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 
-input[type="text"], input[type="password"], select, textarea {
+input[type="text"], input[type="password"], input[type="number"], input[type="datetime-local"],
+select, textarea {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: #fff;
   color: var(--ink);
   font: inherit;
 }
 
-textarea { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+textarea { font-family: var(--mono); font-size: 13px; }
 
 button {
   padding: 8px 14px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: #fff;
   color: var(--ink);
   font: inherit;
   cursor: pointer;
 }
+button:hover { background: var(--nav-hover); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: #1a5fd0; }
+button.danger { color: var(--error); border-color: #f4c7c3; }
+button.danger:hover { background: #fdeceb; }
 button.link-button { border: none; background: none; color: var(--accent); padding: 0; }
+button.link-button:hover { background: none; text-decoration: underline; }
+button[disabled] { opacity: 0.5; cursor: not-allowed; }
 
 .actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+
+.filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 12px 0; }
+.filters label { margin: 0; }
+/* 同上：筛选条里的控件按内容收缩，只保一个下界，避免每个控件独占一行。 */
+.filters input, .filters select { width: auto; min-width: 160px; }
+.filters input[type="text"] { min-width: 220px; }
+.filters .narrow-field input { min-width: 96px; }
 
 .content {
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 13px;
-  background: #fafbfc;
+  background: var(--surface-sunken);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 12px;
   margin: 0;
   max-height: 640px;
   overflow: auto;
 }
 
-.filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin: 12px 0; }
-.filters label { margin: 0; }
+/* ==========================================================================
+   5. 运维看板：指标块、窗口切换与运行轨迹
+   ========================================================================== */
 
-/* Dashboard: metric tiles, the window switcher, and the run trace. */
-.metric-value { font-size: 17px; font-weight: 600; }
+.metric-value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .metric-label { color: var(--muted); font-size: 12px; }
-/* A metric that was never exercised. Dashed and muted so it reads as "not measured" rather
-   than as a small real number sitting in the same column. */
+/* 从未行使过的指标：斜体加浅底，读作"没测过"而不是"一个很小的真实数字"。 */
 .metric-missing { color: var(--muted); font-style: italic; }
-.metric-note { color: var(--muted); font-size: 12px; background: #fafbfc; }
+.metric-note { color: var(--muted); font-size: 12px; background: var(--surface-sunken); }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.tiles > * { background: var(--panel); padding: var(--sp4); }
 
 .window-nav { display: flex; gap: 6px; }
 .window-nav a {
   padding: 4px 12px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--panel);
   text-decoration: none;
   font-size: 13px;
+  color: var(--ink-soft);
 }
 .window-nav a.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
@@ -171,3 +406,33 @@ button.link-button { border: none; background: none; color: var(--accent); paddi
 .trace-step:last-child { padding-bottom: 0; }
 .trace-summary { margin: 4px 0 8px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
 .trace-payload { display: inline-block; max-width: 380px; word-break: break-all; color: var(--muted); }
+
+/* ==========================================================================
+   6. 分栏：详情页左主体右侧栏
+   ========================================================================== */
+
+.split { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: var(--sp4); align-items: start; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--sp4); }
+
+/* ==========================================================================
+   7. 响应式
+   ========================================================================== */
+@media (max-width: 1080px) {
+  .split { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  /* 单列布局下侧栏横在顶部，没有可调的边界，拖柄一并收起来。 */
+  .splitter { display: none; }
+  .sidebar { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+  .nav { display: flex; gap: var(--sp4); overflow-x: auto; padding-bottom: var(--sp3); }
+  .nav-group { flex: none; }
+  .nav-group + .nav-group { margin-top: 0; }
+  .nav-item { white-space: nowrap; }
+  .sidebar-foot { padding-inline: var(--sp4); }
+  .page { padding: var(--sp5) var(--sp4) 96px; }
+  .page-head h1 { font-size: 20px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

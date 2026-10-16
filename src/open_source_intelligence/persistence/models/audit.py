@@ -12,13 +12,21 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from ..base import Base, UTCDateTime, uint64_pk, unsigned_bigint, utc_now
 from .identity import User
 
+#: The values `audit_logs.result` accepts, mirroring the `result_valid` check below. Named so the
+#: audit page's filter offers exactly the values the table can hold: a filter listing a value that
+#: cannot exist returns an empty page and reads as a broken query rather than as an empty result.
+AUDIT_RESULTS: tuple[str, ...] = ("success", "denied", "failed")
+
 
 class AuditLog(Base):
     """Security and operational audit event."""
 
     __tablename__ = "audit_logs"
     __table_args__ = (
-        CheckConstraint("result IN ('success', 'denied', 'failed')", name="result_valid"),
+        CheckConstraint(
+            f"result IN ({', '.join(repr(value) for value in AUDIT_RESULTS)})",
+            name="result_valid",
+        ),
         Index("ix_audit_logs_actor_created", "actor_id", "created_at"),
         Index("ix_audit_logs_resource", "resource_type", "resource_id"),
         Index("ix_audit_logs_action_created", "action", "created_at"),

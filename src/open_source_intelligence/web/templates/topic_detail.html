@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ topic.name }} · 主题管理{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>{{ topic.name }}</h1>
+    <p class="sub">
+      #{{ topic.id }} · 由 {{ topic.created_by }} 创建 · 最后更新
+      {{ topic.updated_at.strftime("%Y-%m-%d %H:%M") }}
+    </p>
+  </div>
+  <div class="head-actions">
+    <span class="badge status-{{ 'published' if topic.enabled else 'cancelled' }}">
+      {{ "启用中" if topic.enabled else "已停用" }}
+    </span>
+    <a href="/ui/topics">返回主题列表</a>
+  </div>
+</header>
+
+{% if notice %}<p class="alert ok">{{ notice }}</p>{% endif %}
+{% if error %}<p class="alert error">{{ error }}</p>{% endif %}
+
+{% if can_write %}
+<section class="card">
+  <form method="post" action="/ui/topics/{{ topic.id }}/update">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% include "partials/topic_form.html" %}
+    <div class="actions">
+      <button type="submit" class="primary">保存</button>
+      <a href="/ui/topics" class="btn" style="align-self:center">取消</a>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>删除主题</h2>
+  {#
+    删除是不可逆的，所以它单独一块、带一句解释，而不是缩进在保存按钮旁边。
+    有历史记录（报告、Agent 运行、流水线行）引用它时会被拒绝并点名引用表 ——
+    那些外键是 RESTRICT，不是 CASCADE：级联删掉报告正是这里最不该发生的事。
+  #}
+  <p class="hint" style="margin-top:0">
+    如果这个主题已经产出过报告或运行记录，删除会被拒绝并列出引用它的表；
+    那种情况下应该<b>停用</b>它 —— 停用后每日采集不再跑它，历史记录仍然可查。
+  </p>
+  <form method="post" action="/ui/topics/{{ topic.id }}/delete"
+        onsubmit="return confirm('确定删除主题「{{ topic.name | e }}」？此操作不可撤销。');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger">删除这个主题</button>
+  </form>
+</section>
+{% else %}
+<section class="card">
+  <p class="hint" style="margin:0">当前角色只读；修改主题配置需要管理员。</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>这个主题在流程里的位置</h2>
+  <dl class="facts">
+    <div>
+      <dt>采集窗口</dt>
+      <dd>最近 {{ topic.window_days }} 天</dd>
+    </div>
+    <div>
+      <dt>最小星标</dt>
+      <dd>{{ topic.min_stars }}</dd>
+    </div>
+    <div>
+      <dt>候选上限</dt>
+      <dd>{{ topic.max_candidates }} 个</dd>
+    </div>
+    <div>
+      <dt>发布模式</dt>
+      <dd>{{ topic.publish_mode | label }}<code class="mono" style="margin-left:8px">{{ topic.publish_mode }}</code></dd>
+    </div>
+  </dl>
+  <p class="hint">
+    每日采集按这三个参数从仓库目录里挑候选（<a href="/ui/repositories?topic_id={{ topic.id }}">看这个主题的候选</a>），
+    再交给 Agent 研究并产出报告。改这些参数只在<b>下一次</b>采集生效，不会回改已经生成的报告。
+  </p>
+</section>
+{% endblock %}

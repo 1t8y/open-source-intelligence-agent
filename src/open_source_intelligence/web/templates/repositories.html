@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}仓库目录 · 开源情报周报平台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>仓库目录</h1>
+    <p class="sub">
+      采集器见过的全部仓库。按主题筛选时，多出来的两列来自主题的候选排名 ——
+      那是「这个主题把哪些仓库列进了候选」，不是仓库本身的属性。
+    </p>
+  </div>
+</header>
+
+<section class="card">
+  <form class="filters" method="get" action="/ui/repositories">
+    <label>
+      <span>搜索</span>
+      <input type="text" name="q" value="{{ query }}" placeholder="名称或描述">
+    </label>
+    <label>
+      <span>主题</span>
+      <select name="topic_id">
+        <option value="" {% if not topic_filter %}selected{% endif %}>全部</option>
+        {% for topic in topics %}
+        <option value="{{ topic.id }}" {% if topic_filter == topic.id %}selected{% endif %}>{{ topic.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      <span>语言</span>
+      <input type="text" name="language" value="{{ language_filter }}" placeholder="python">
+    </label>
+    <label>
+      <span>排序</span>
+      <select name="sort">
+        {% for option in sort_options %}
+        <option value="{{ option }}" {% if sort_filter == option %}selected{% endif %}>
+          {{ { "stars": "星标数", "forks": "派生数", "last_seen": "最近见到" }.get(option, option) }}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">筛选</button>
+  </form>
+
+  {% if page.items %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>仓库</th>
+        <th>语言</th>
+        <th class="num">星标</th>
+        <th class="num">派生</th>
+        <th>来源</th>
+        <th>许可</th>
+        <th>最近见到</th>
+        {% if topic_filter %}
+        <th class="num">候选排名</th>
+        <th class="num">得分</th>
+        <th>入选</th>
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in page.items %}
+      <tr>
+        <td class="num">{{ entry.repository.id }}</td>
+        <td>
+          <a href="{{ entry.repository.html_url }}" rel="noreferrer noopener" target="_blank">{{ entry.repository.full_name }}</a>
+          {% if entry.repository.description %}
+          <div class="truncate" style="color:var(--muted)">{{ entry.repository.description }}</div>
+          {% endif %}
+        </td>
+        <td>{{ entry.repository.language or "—" }}</td>
+        <td class="num">{{ entry.repository.stars }}</td>
+        <td class="num">{{ entry.repository.forks }}</td>
+        <td><span class="badge">{{ entry.provider }}</span></td>
+        <td>{{ entry.repository.license or "—" }}</td>
+        <td class="mono">{{ entry.repository.last_seen_at.strftime("%Y-%m-%d") }}</td>
+        {% if topic_filter %}
+        <td class="num">{{ entry.rank if entry.rank is not none else "—" }}</td>
+        <td class="num">{{ entry.score if entry.score is not none else "—" }}</td>
+        <td>
+          {% if entry.selected_for_agent is none %}—
+          {% elif entry.selected_for_agent %}<span class="badge status-published">已入选</span>
+          {% else %}<span class="badge">未入选</span>{% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="row space-between pager">
+    <span>共 {{ page.total }} 条，第 {{ page.page }} 页，每页 {{ page.page_size }} 条</span>
+    <span>
+      {% if page.page > 1 %}
+      <a href="/ui/repositories?page={{ page.page - 1 }}&q={{ query }}&language={{ language_filter }}&sort={{ sort_filter }}&topic_id={{ topic_filter or '' }}">上一页</a>
+      {% endif %}
+      {% if page.page * page.page_size < page.total %}
+      <a href="/ui/repositories?page={{ page.page + 1 }}&q={{ query }}&language={{ language_filter }}&sort={{ sort_filter }}&topic_id={{ topic_filter or '' }}">下一页</a>
+      {% endif %}
+    </span>
+  </div>
+  {% else %}
+  <p class="empty">
+    没有匹配的仓库。目录由采集器写入 —— 服务器出不了网时（例如离线环境），这里就会一直是空的。
+  </p>
+  {% endif %}
+</section>
+{% endblock %}

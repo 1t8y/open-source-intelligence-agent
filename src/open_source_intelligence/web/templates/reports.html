@@ -1,24 +1,35 @@
 {% extends "base.html" %}
 {% block title %}报告中心 · 开源情报周报平台{% endblock %}
 {% block content %}
-<section class="card">
-  <div class="row space-between">
+<header class="page-head">
+  <div>
     <h1>报告中心</h1>
+    <p class="sub">
+      平台生成的全部周报。打开一份报告后可以验证、审核、发布、推送、回滚与编辑正文。
+      列表已经按你的可见范围过滤，<b>总数也一并过滤</b> —— 数不到你无权看的行。
+    </p>
+  </div>
+  <div class="head-actions">
     <form method="post" action="/ui/reports/publish-due" hx-post="/ui/reports/publish-due"
           hx-target="#sweep-result" hx-swap="innerHTML">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit">释放到期报告</button>
     </form>
   </div>
-  <div id="sweep-result"></div>
+</header>
 
+<div id="sweep-result"></div>
+
+<section class="card">
   <form class="filters" method="get" action="/ui/reports">
     <label>
       <span>状态</span>
       <select name="status">
         <option value="" {% if not status_filter %}selected{% endif %}>全部</option>
-        {% for value in ["draft", "pending_review", "approved", "scheduled", "published", "failed", "changes_requested"] %}
-        <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ value }}</option>
+        {# 选项来自模型自己的元组，而不是模板里另写一份：筛一个状态机里没有的状态会返回空页，
+           看起来像数据出了问题。 #}
+        {% for value in status_options %}
+        <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ value | label }}</option>
         {% endfor %}
       </select>
     </label>
@@ -26,8 +37,8 @@
       <span>可见范围</span>
       <select name="visibility">
         <option value="" {% if not visibility_filter %}selected{% endif %}>全部</option>
-        {% for value in ["PRIVATE", "TEAM", "INTERNAL"] %}
-        <option value="{{ value }}" {% if visibility_filter == value %}selected{% endif %}>{{ value }}</option>
+        {% for value in visibility_options %}
+        <option value="{{ value }}" {% if visibility_filter == value %}selected{% endif %}>{{ value | label }}</option>
         {% endfor %}
       </select>
     </label>
@@ -38,21 +49,27 @@
   <table class="grid">
     <thead>
       <tr>
-        <th>ID</th><th>标题</th><th>主题</th><th>状态</th><th>可见范围</th>
-        <th>模式</th><th>版本</th><th>生成时间</th>
+        <th class="num">#</th>
+        <th>标题</th>
+        <th>主题</th>
+        <th>状态</th>
+        <th>可见范围</th>
+        <th>发布模式</th>
+        <th class="num">版本</th>
+        <th>生成时间</th>
       </tr>
     </thead>
     <tbody>
       {% for item in page.items %}
       <tr>
-        <td>{{ item.id }}</td>
+        <td class="num">{{ item.id }}</td>
         <td><a href="/ui/reports/{{ item.id }}">{{ item.title }}</a></td>
         <td>{{ topic_names.get(item.topic_id, "—") }}</td>
-        <td><span class="badge status-{{ item.status }}">{{ item.status }}</span></td>
-        <td><span class="badge">{{ item.visibility }}</span></td>
-        <td>{{ item.publish_mode }}</td>
-        <td>v{{ item.current_version }}</td>
-        <td>{{ item.generated_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td><span class="badge status-{{ item.status }}">{{ item.status | label }}</span></td>
+        <td><span class="badge">{{ item.visibility | label }}</span></td>
+        <td>{{ item.publish_mode | label }}</td>
+        <td class="num">v{{ item.current_version }}</td>
+        <td class="mono">{{ item.generated_at.strftime("%Y-%m-%d %H:%M") }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -60,7 +77,7 @@
 
   <div class="row space-between pager">
     <span>共 {{ page.total }} 条，第 {{ page.page }} 页，每页 {{ page.page_size }} 条</span>
-    <span class="row">
+    <span>
       {% if page.page > 1 %}
       <a href="/ui/reports?page={{ page.page - 1 }}&status={{ status_filter }}&visibility={{ visibility_filter }}">上一页</a>
       {% endif %}
@@ -70,7 +87,11 @@
     </span>
   </div>
   {% else %}
-  <p class="hint">当前权限范围内没有匹配的报告。</p>
+  <p class="empty">
+    当前权限范围内没有匹配的报告。
+    报告由每日采集运行产出 —— 若还没有启用中的主题，流水线不会开始，
+    可以先到<a href="/ui/topics">主题管理</a>建一个。
+  </p>
   {% endif %}
 </section>
 {% endblock %}

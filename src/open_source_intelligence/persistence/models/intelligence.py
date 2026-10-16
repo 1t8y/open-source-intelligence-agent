@@ -55,6 +55,12 @@ class DataSource(Base, TimestampMixin):
     repositories: Mapped[list[Repository]] = relationship(back_populates="source")
 
 
+#: The values `topics.publish_mode` accepts, mirroring the `publish_mode_valid` check below.
+#: Named for the same reason `REPORT_PUBLISH_MODES` is: the UI has to offer exactly the values the
+#: database will take, and a list retyped in the template is a list that drifts.
+TOPIC_PUBLISH_MODES: tuple[str, ...] = ("AUTO", "AUTO_WITH_DELAY", "MANUAL")
+
+
 class Topic(Base, TimestampMixin):
     """Monitoring topic and candidate-selection policy."""
 
@@ -64,7 +70,7 @@ class Topic(Base, TimestampMixin):
         CheckConstraint("window_days > 0", name="window_days_positive"),
         CheckConstraint("max_candidates > 0", name="max_candidates_positive"),
         CheckConstraint(
-            "publish_mode IN ('AUTO', 'AUTO_WITH_DELAY', 'MANUAL')",
+            f"publish_mode IN ({', '.join(repr(mode) for mode in TOPIC_PUBLISH_MODES)})",
             name="publish_mode_valid",
         ),
     )

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}审计日志 · 开源情报周报平台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>审计日志</h1>
+    <p class="sub">
+      每一次拒绝、每一次配置变更、每一次发布。写入是追加的，只增不改 ——
+      所以这里的顺序按主键倒序，而不是按时间戳：同一秒内的多行按时间戳排不稳定，
+      翻页时会出现某一行同时出现在两页或一页都不出现。
+    </p>
+  </div>
+</header>
+
+<section class="card">
+  <form class="filters" method="get" action="/ui/audit">
+    <label>
+      <span>动作</span>
+      <input type="text" name="action" value="{{ action_filter }}" placeholder="report.read">
+    </label>
+    <label>
+      <span>资源类型</span>
+      <input type="text" name="resource_type" value="{{ resource_filter }}" placeholder="topic">
+    </label>
+    <label>
+      <span>结果</span>
+      <select name="result">
+        <option value="" {% if not result_filter %}selected{% endif %}>全部</option>
+        {% for value in result_options %}
+        <option value="{{ value }}" {% if result_filter == value %}selected{% endif %}>{{ value | label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="narrow-field">
+      <span>操作者 ID</span>
+      <input type="number" name="actor_id" min="1" value="{{ actor_filter or '' }}">
+    </label>
+    <button type="submit">筛选</button>
+  </form>
+
+  {% if page.items %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>时间</th>
+        <th class="num">操作者</th>
+        <th>动作</th>
+        <th>资源</th>
+        <th>结果</th>
+        <th>请求 ID</th>
+        <th>来源 IP</th>
+        <th>附加信息</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in page.items %}
+      <tr>
+        <td class="mono">{{ entry.id }}</td>
+        <td class="mono">{{ entry.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+        <td class="num">{{ entry.actor_id if entry.actor_id is not none else "匿名" }}</td>
+        {# 动作名与错误码一样是标识符：它是查契约时用的键，译成中文就对不上了。 #}
+        <td class="mono">{{ entry.action }}</td>
+        <td class="mono">
+          {{ entry.resource_type }}{% if entry.resource_id %}#{{ entry.resource_id }}{% endif %}
+        </td>
+        <td><span class="badge status-{{ entry.result }}">{{ entry.result | label }}</span></td>
+        <td class="mono">{{ entry.request_id or "—" }}</td>
+        <td class="mono">{{ ip_addresses.get(entry.id) or "—" }}</td>
+        <td class="mono truncate">
+          {% if entry.metadata_json %}{{ entry.metadata_json | redacted_json }}{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="row space-between pager">
+    <span>共 {{ page.total }} 条，第 {{ page.page }} 页，每页 {{ page.page_size }} 条</span>
+    <span>
+      {% if page.page > 1 %}
+      <a href="/ui/audit?page={{ page.page - 1 }}&action={{ action_filter }}&resource_type={{ resource_filter }}&result={{ result_filter }}&actor_id={{ actor_filter or '' }}">上一页</a>
+      {% endif %}
+      {% if page.page * page.page_size < page.total %}
+      <a href="/ui/audit?page={{ page.page + 1 }}&action={{ action_filter }}&resource_type={{ resource_filter }}&result={{ result_filter }}&actor_id={{ actor_filter or '' }}">下一页</a>
+      {% endif %}
+    </span>
+  </div>
+  {% else %}
+  <p class="empty">这个筛选条件下没有审计事件。</p>
+  {% endif %}
+
+  <p class="hint">
+    「被拒」的行会带上被拒绝资源的 ID，而响应体里没有 —— 对外沉默、对内留痕，两边是有意不对称的。
+    请求域拒绝（缺令牌、缺角色）本来就没有资源可命名，所以那些行的资源是空的，这是正确语义而不是漏写。
+  </p>
+</section>
+{% endblock %}

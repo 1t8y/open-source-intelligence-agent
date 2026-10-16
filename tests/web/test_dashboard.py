@@ -27,7 +27,10 @@ from open_source_intelligence.observability.queries import collect_metrics
 from open_source_intelligence.persistence.base import utc_now
 
 DASHBOARD = "/ui/dashboard"
-NAV_ENTRY = '<a href="/ui/dashboard">运维看板</a>'
+#: The sidebar's entry for the dashboard. Matched by href rather than by the whole anchor: the
+#: label now sits in its own element and the `aria-current` marker comes and goes with the page,
+#: so pinning the full markup would make this a test of the template's whitespace.
+NAV_ENTRY = 'href="/ui/dashboard"'
 
 
 @pytest.fixture()
