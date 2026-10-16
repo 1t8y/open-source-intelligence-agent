@@ -84,6 +84,10 @@
   {% endif %}
 </section>
 
+{# 白名单是运维配置，不是这一页的日常内容：管理它不在界面上做，因此这里只在管理员账户下
+   显示。编辑者能看见投递记录 —— 那回答的是「我推的报告到了没有」；白名单回答的是「平台能往
+   哪儿发」，那是另一件事。 #}
+{% if can_manage_ops %}
 <section class="card">
   <h2>推送目标白名单</h2>
   <p class="hint" style="margin-top:0">
@@ -119,9 +123,10 @@
   </table>
   {% else %}
   <p class="empty">
-    还没有推送目标。<code>push_targets</code> 目前没有创建入口，需要由运维直接写入 ——
-    这是本版已知的缺口，不是操作失误。
+    还没有推送目标。推送目标是<b>运维配置</b>，只从后端写入（<code>push_targets</code>），
+    界面不提供创建入口 —— 这是有意的取舍，不是操作失误。
   </p>
   {% endif %}
 </section>
+{% endif %}
 {% endblock %}

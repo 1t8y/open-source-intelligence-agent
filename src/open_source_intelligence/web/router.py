@@ -12,7 +12,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -81,6 +81,7 @@ from open_source_intelligence.security.authorization import (
     REPORT_READ_ROLES,
     REPORT_WRITE_ROLES,
     REPOSITORY_READ_ROLES,
+    ROLE_ADMIN,
     TOPIC_READ_ROLES,
     TOPIC_WRITE_ROLES,
     can_read_report,
@@ -141,6 +142,18 @@ LIST_PAGE_SIZE = 20
 #: `list_jobs` and `list_eval_runs` take a limit rather than a page, so the page states the cap
 #: instead of pretending to paginate.
 RECENT_LIMIT = 50
+
+#: Roles that may see an **operations-configuration** surface in the interface. Today that is the
+#: push-target allowlist and the empty-state sentences that tell a reader to go write one.
+#:
+#: Managing those is deliberately not something the console does. A push target decides which
+#: destinations a published report may leave through, and an account is created by the bootstrap
+#: CLI; both are deployment-adjacent configuration, so the backend owns them and the interface shows
+#: the state. Where the state is unavoidable — "you cannot push yet" needs to say why — the
+#: explanation is rendered for an admin, who is the person who can act on it. `AUDIT_READ_ROLES` and
+#: `TOPIC_WRITE_ROLES` are the same single role for the same reason: these are the controls that
+#: change what the platform does, not what one report says.
+OPS_CONFIG_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN,)
 
 #: The sidebar, in the order it is shown: `(group title, ((key, label, path, roles), ...))`.
 #: Declared next to the routes on purpose — the `roles` of an entry are the same roles its route
@@ -311,20 +324,52 @@ def _identity(user: User) -> dict[str, Any]:
     return {"username": user.username, "roles": sorted(get_role_codes(user))}
 
 
+def _roles_of(context: dict[str, Any]) -> frozenset[str]:
+    """Return the role codes carried by the identity a page already holds.
+
+    One reader for `context["current_user"]`, because three callers ask the same question of it:
+    which sidebar entries to draw, whether to draw the dashboard entry, and which operations
+    surfaces this identity may see. A rule that read the dict for itself would be a fourth opinion
+    on what "signed in with a role" means, and the four would drift.
+    """
+    identity = context.get("current_user")
+    if not isinstance(identity, dict):
+        return frozenset()
+    declared = identity.get("roles")
+    if not isinstance(declared, (list, tuple, set)):
+        return frozenset()
+    return frozenset(str(role) for role in declared)
+
+
+def _has_role(context: dict[str, Any], allowed: tuple[str, ...]) -> bool:
+    """Return whether the page's identity intersects `allowed`.
+
+    Written as an intersection rather than `in`: a rule gated on one role today would silently keep
+    working if the tuple grows, while `role in allowed` would not.
+    """
+    return not _roles_of(context).isdisjoint(allowed)
+
+
+def _sees_ops_config(web: WebSession) -> bool:
+    """Return whether this session may see an operations-configuration surface.
+
+    The entity-level twin of the `can_manage_ops` the renderer derives from an identity. A route
+    sometimes has to decide *before* a template exists — whether to load the push-target allowlist
+    at all — and it cannot ask the renderer. Both read `OPS_CONFIG_ROLES`, so the data a page
+    carries and the card that shows it cannot disagree.
+    """
+    return not get_role_codes(web.user).isdisjoint(OPS_CONFIG_ROLES)
+
+
 def _navigation(context: dict[str, Any]) -> list[dict[str, Any]]:
     """Build the sidebar for the identity a page already carries.
 
-    Derived from `context["current_user"]` for the same reason `_can_view_dashboard` is: every
-    template renders the nav, and none of them should have to compute who may see what. An
-    identity lacking a group's roles drops the whole entry, and a group left with no entries drops
-    the heading too — an empty group title is a promise of a page that is not there.
+    Derived from `context["current_user"]` for the same reason `can_manage_ops` is: every template
+    renders the nav, and none of them should have to compute who may see what. An identity lacking a
+    group's roles drops the whole entry, and a group left with no entries drops the heading too — an
+    empty group title is a promise of a page that is not there.
     """
-    identity = context.get("current_user")
-    roles: set[str] = set()
-    if isinstance(identity, dict):
-        declared = identity.get("roles")
-        if isinstance(declared, (list, tuple, set)):
-            roles = {str(role) for role in declared}
+    roles = _roles_of(context)
     navigation: list[dict[str, Any]] = []
     for title, entries in NAV_GROUPS:
         items = [
@@ -356,11 +401,13 @@ def render(
         # the buttons a page offers and the states the services accept cannot drift apart.
         "editable_statuses": sorted(EDITABLE_STATUSES),
         "rollbackable_statuses": sorted(ROLLBACKABLE_STATUSES),
-        # Decided once here so every template renders the dashboard link under the same role rule
-        # the dashboard route itself enforces.
-        "can_view_dashboard": _can_view_dashboard(context),
-        # The sidebar and its current entry, for the same reason: one decision point per rule.
+        # The sidebar and its current entry: one decision point per rule, computed here so no
+        # template has to know which role sees which page.
         "navigation": _navigation(context),
+        # Which operations surfaces this identity may see. Same reasoning as the sidebar, and the
+        # same shape, so a page that renders an operations detail cannot be wider than the route
+        # that serves it.
+        "can_manage_ops": _has_role(context, OPS_CONFIG_ROLES),
         "active": context.get("active"),
     }
     payload.update(context)
@@ -458,21 +505,6 @@ def _require_metrics_role(request: Request, session: Session, web: WebSession) -
         resource_type="metrics",
         message="该页面仅对管理员和编辑者开放",
     )
-
-
-def _can_view_dashboard(context: dict[str, Any]) -> bool:
-    """Return whether the page's signed-in identity may open the operations dashboard.
-
-    Derived from the identity the page already carries, so every template can render the nav
-    entry correctly without each route having to compute it separately.
-    """
-    identity = context.get("current_user")
-    if not isinstance(identity, dict):
-        return False
-    roles = identity.get("roles")
-    if not isinstance(roles, (list, tuple, set)):
-        return False
-    return not set(roles).isdisjoint(METRICS_ROLES)
 
 
 def _authorize_action(
@@ -736,6 +768,11 @@ def reports_page(
             # like a bug in the data.
             "status_options": REPORT_STATUSES,
             "visibility_options": REPORT_VISIBILITIES,
+            # The release driver on this page is a write: the route behind it enforces
+            # `REPORT_WRITE_ROLES`, so the button is rendered under the same rule. A read-only
+            # identity used to be offered the button and refused by the route, which is the same
+            # defect as a sidebar entry that opens to a 403.
+            "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
             "active": "reports",
         },
         csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
@@ -1079,13 +1116,18 @@ def pushes_page(
         message="推送记录仅对管理员和编辑者开放",
     )
     pushes = list_pushes(session, status=status_filter, limit=RECENT_LIMIT)
+    # The allowlist is loaded only when its card will be drawn. The rendering rule and this one read
+    # the same constant, so a viewer who is not shown the card does not have its contents in the
+    # payload either — a display rule that leaves the data in place is a leak waiting for the next
+    # debug block.
+    targets = list_targets(session, enabled_only=False) if _sees_ops_config(web) else []
     return render(
         request,
         "pushes.html",
         {
             "current_user": _identity(web.user),
             "pushes": pushes,
-            "targets": list_targets(session, enabled_only=False),
+            "targets": targets,
             "report_titles": _report_titles(session, {push.report_id for push in pushes}),
             "status_filter": status_filter or "",
             "status_options": PUSH_STATUSES,

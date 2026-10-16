@@ -9,6 +9,9 @@
       列表已经按你的可见范围过滤，<b>总数也一并过滤</b> —— 数不到你无权看的行。
     </p>
   </div>
+  {# 到期释放驱动是写操作（路由侧 `REPORT_WRITE_ROLES`），所以按钮只对写角色渲染。
+     只读角色曾经也会看到这个按钮，点下去才吃 403 —— 渲染面与准入面必须是同一个判定。 #}
+  {% if can_write %}
   <div class="head-actions">
     <form method="post" action="/ui/reports/publish-due" hx-post="/ui/reports/publish-due"
           hx-target="#sweep-result" hx-swap="innerHTML">
@@ -16,6 +19,7 @@
       <button type="submit">释放到期报告</button>
     </form>
   </div>
+  {% endif %}
 </header>
 
 <div id="sweep-result"></div>

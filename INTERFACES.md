@@ -1,7 +1,7 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T20 已对齐）
-> 文档版本：v0.14
+> 文档状态：实施基线（T1-T21 已对齐）
+> 文档版本：v0.15
 > 最后更新：2026-10-16
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
@@ -39,7 +39,7 @@
 | Agent | `GET /agent/runs`、`/agent/runs/{id}`、`/agent/runs/{id}/steps` | ADMIN/EDITOR | **只读**（运行由 pipeline/worker 创建，不经 API）；列表按 `status`/`topic_id` 过滤并分页，轨迹含未挂到步骤的工具调用 |
 | 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
 | 推送 | `/push/targets`、`/push/records`、`/push/retry` | ADMIN/EDITOR | 投递允许列表、投递记录与失败重试扫描 |
-| 管理界面 | `GET /ui/{reports,reports/{id},pushes,topics,topics/{id},repositories,runs,evaluations,dashboard,dashboard/runs/{id},audit,login}`；`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/publish-due`、`POST /ui/topics`、`POST /ui/topics/{id}/{update,toggle,delete}`、`/ui/login`、`/ui/logout` | 与同一资源在 API 侧完全相同的角色常量（`REPORT_READ_ROLES` / `REPORT_WRITE_ROLES` / `TOPIC_READ_ROLES` / `TOPIC_WRITE_ROLES` / `REPOSITORY_READ_ROLES` / `METRICS_ROLES` / `AUDIT_READ_ROLES`） | 服务端渲染页面，复用同一套服务层；登录态为「左侧分组侧栏 + 右侧内容」，侧栏条目与路由准入由同一组常量生成（菜单列出而打开被拒 = 缺陷）；侧栏与内容之间的边界可调（鼠标 / 方向键 / `localStorage`）；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；写成功 `303` 重定向、失败原地重渲染并回填；推送渠道取自目标行而非表单；运行 / 评测的触发不在界面上（同 API 的理由） |
+| 管理界面 | `GET /ui/{reports,reports/{id},pushes,topics,topics/{id},repositories,runs,evaluations,dashboard,dashboard/runs/{id},audit,login}`；`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/publish-due`、`POST /ui/topics`、`POST /ui/topics/{id}/{update,toggle,delete}`、`/ui/login`、`/ui/logout` | 与同一资源在 API 侧完全相同的角色常量（`REPORT_READ_ROLES` / `REPORT_WRITE_ROLES` / `TOPIC_READ_ROLES` / `TOPIC_WRITE_ROLES` / `REPOSITORY_READ_ROLES` / `METRICS_ROLES` / `AUDIT_READ_ROLES`） | 服务端渲染页面，复用同一套服务层；登录态为「左侧分组侧栏 + 右侧内容」，侧栏条目与路由准入由同一组常量生成（菜单列出而打开被拒 = 缺陷）；侧栏与内容之间的边界可调（鼠标 / 方向键 / `localStorage`）；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；写成功 `303` 重定向、失败原地重渲染并回填；推送渠道取自目标行而非表单；运行 / 评测的触发不在界面上（同 API 的理由）；**运维配置（推送目标白名单、用户账号）只从后端写入，界面上的提及仅对 `ADMIN` 渲染**（`OPS_CONFIG_ROLES`；非管理员时这份 allowlist 连查询都不执行） |
 | 评测 | `/evaluations`、`/evaluations/runs`、`/evaluations/runs/{id}`、`/evaluations/{dataset_id}/cases`、`/evaluations/{dataset_id}/run`、`/evaluations/{dataset_id}/comparison` | ADMIN/EDITOR（全部，含读） | 数据集版本、样本、按变体执行与统一对比报告；未知变体 `400`、版本冲突 `409`、关闭时 `503` |
 | 监控 | `/metrics/overview` | ADMIN/EDITOR | 纯只读的运维总览：任务、Token、延迟、失败率、报告人工阻断率与最新一轮评测裁决；`window_days` 1-90 越界 `422`（不夹取），窗口半开，未行使的指标为 `null` 而非 `0`，评测段不随窗口变化 |
 | 回填 | **无 HTTP 端点**；CLI `backfill --action start\|resume\|status\|list`、Celery `run_backfill` | 部署/运维（无 API 角色） | 一次性、昂贵、对共享公共 API 施压的历史走查，因此只服务操作员而不暴露给请求处理器；`target_pages` 与 `per_page` 均为 `1..100`，`--provider` 一次只走一个源（无 `all`）；作业行即检查点，可断点续传；操作失误（越界、并发占用、不可续传、源不可分页）以非零码退出并打印原因，走查失败打印游标停在哪后退出，作业保持可续传 |

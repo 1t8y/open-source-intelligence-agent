@@ -91,20 +91,33 @@ def test_the_panel_offers_the_allowlist_and_the_delivery_history(
     assert "还没有推送记录。" in page.text
 
 
-def test_the_panel_says_so_when_there_is_no_target(
+def test_the_panel_explains_a_missing_target_for_the_role_reading_it(
     session: Session,
     workspace: Workspace,
     editor: Actor,
+    admin: Actor,
     client: TestClient,
 ) -> None:
-    """Without an allowlist entry the card explains how to get one instead of a dead form."""
+    """Without an allowlist entry the card explains why, in terms its reader can act on.
+
+    Adding a push target is deployment configuration written from the backend, so an editor cannot
+    do it. Telling an editor to go write `push_targets` describes an action they do not have — and
+    hands them a table name they have no business matching against. The admin, who can act on it,
+    gets the table; the editor gets the admin.
+    """
     report = seed_pushable_report(session, workspace, status=APPROVED)
+
     assert web_login(client, editor).status_code == 303
+    editor_page = client.get(f"{BASE}/{report.id}")
+    assert f'action="{BASE}/{report.id}/push"' not in editor_page.text
+    assert "请联系管理员在运维侧添加并启用" in editor_page.text
+    assert "push_targets" not in editor_page.text
 
-    page = client.get(f"{BASE}/{report.id}")
-
-    assert "还没有可用的推送目标。" in page.text
-    assert f'action="{BASE}/{report.id}/push"' not in page.text
+    assert web_login(client, admin).status_code == 303
+    admin_page = client.get(f"{BASE}/{report.id}")
+    assert f'action="{BASE}/{report.id}/push"' not in admin_page.text
+    assert "push_targets" in admin_page.text
+    assert "请联系管理员" not in admin_page.text
 
 
 # --------------------------------------------------------------------------------------
