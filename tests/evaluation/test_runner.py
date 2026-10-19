@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 from evaluation_support import (
+    GROWTH_TOPIC,
     WINDOW_END,
     build_case_document,
     build_dataset_document,
@@ -44,6 +45,7 @@ from open_source_intelligence.persistence.models.evaluation import (
     EvalResult,
     EvalRun,
 )
+from open_source_intelligence.persistence.models.intelligence import Topic
 
 SETTINGS = build_settings()
 
@@ -323,13 +325,18 @@ def test_aggregate_run_skips_not_applicable_metrics(session: Session, workspace:
 def test_cases_with_a_missing_topic_are_counted_as_failures(
     session: Session, workspace: Workspace
 ) -> None:
-    """A broken case must be visible as a failure instead of silently scoring zero."""
+    """A broken case must be visible as a failure instead of silently scoring zero.
+
+    The dataset is valid when imported and its topic is switched off afterwards, because since
+    T25 a dataset naming a topic nobody has is refused at import. "Topic vanished between import
+    and run" is the shape this defence can actually meet in production.
+    """
     seed_eval_world(session, workspace)
     document = build_dataset_document(
         name="missing-topic",
-        cases=[build_case_document(case_key="ghost", topic="No Such Topic")],
+        cases=[build_case_document(case_key="ghost", topic=GROWTH_TOPIC)],
     )
-    dataset_id = import_dataset(session, parse_dataset(document)).dataset_id
+    dataset_id = _import_then_disable_its_topic(session, document)
     report = run_evaluation(
         session,
         dataset_id=dataset_id,
@@ -482,6 +489,22 @@ def test_runs_and_cases_stay_addressable_by_dataset(session: Session, workspace:
     assert {row.id for row in first_runs}.isdisjoint({row.id for row in second_runs})
 
 
+def _import_then_disable_its_topic(session: Session, document: dict) -> int:
+    """Import a dataset that is valid *now*, then switch its topic off.
+
+    Since T25 the import refuses an enabled case whose topic this deployment does not have, so a
+    dataset can no longer be born broken. The runner still has to defend against a topic that
+    disappears between import and run (deleted, renamed, disabled), and this builds exactly that
+    state instead of one the importer would reject.
+    """
+    dataset_id = import_dataset(session, parse_dataset(document)).dataset_id
+    names = {case["topic"] for case in document["cases"] if case.get("enabled", True)}
+    for topic in session.scalars(select(Topic).where(Topic.name.in_(sorted(names)))):
+        topic.enabled = False
+    session.commit()
+    return dataset_id
+
+
 def test_a_run_row_is_created_even_when_every_case_fails(
     session: Session, workspace: Workspace
 ) -> None:
@@ -489,9 +512,9 @@ def test_a_run_row_is_created_even_when_every_case_fails(
     seed_eval_world(session, workspace)
     document = build_dataset_document(
         name="all-broken",
-        cases=[build_case_document(case_key="ghost-a", topic="Missing A")],
+        cases=[build_case_document(case_key="ghost-a", topic=GROWTH_TOPIC)],
     )
-    dataset_id = import_dataset(session, parse_dataset(document)).dataset_id
+    dataset_id = _import_then_disable_its_topic(session, document)
     run_evaluation(
         session,
         dataset_id=dataset_id,
@@ -540,9 +563,9 @@ def test_a_wholly_failed_run_cannot_pass(session: Session, workspace: Workspace)
     seed_eval_world(session, workspace)
     document = build_dataset_document(
         name="all-broken-agent",
-        cases=[build_case_document(case_key="ghost-a", topic="Missing A")],
+        cases=[build_case_document(case_key="ghost-a", topic=GROWTH_TOPIC)],
     )
-    dataset_id = import_dataset(session, parse_dataset(document)).dataset_id
+    dataset_id = _import_then_disable_its_topic(session, document)
     report = run_evaluation(
         session,
         dataset_id=dataset_id,

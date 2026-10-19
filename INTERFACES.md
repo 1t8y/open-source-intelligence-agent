@@ -1,6 +1,6 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T24 已对齐）
+> 文档状态：实施基线（T1-T25 已对齐）
 > 文档版本：v0.16
 > 最后更新：2026-10-16
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
@@ -244,6 +244,7 @@ Evaluation 错误码（`evaluation/errors.py`，`EvaluationError` 为基类，AP
 | 错误码 | 场景 | API 状态 |
 |---|---|---:|
 | `DATASET_INVALID` | 数据集文件缺字段、类型错或内部不自洽 | 400 |
+| `DATASET_TOPIC_MISSING` | 启用样本引用了本部署不存在或已停用的主题（T25，导入时校验） | 400 |
 | `UNKNOWN_TARGET` | 目标变体不在五个之内 | 400 |
 | `DATASET_VERSION_CONFLICT` | 同 `name` + `version` 内容不同（版本不可覆盖） | 409 |
 | `EVALUATION_DISABLED` | `eval_enabled=false`，评测层被关闭 | 503 |

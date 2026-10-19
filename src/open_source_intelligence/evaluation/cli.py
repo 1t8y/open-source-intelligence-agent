@@ -29,7 +29,7 @@ from .dataset import (
     list_datasets,
     load_dataset_file,
 )
-from .errors import EvaluationError
+from .errors import DatasetTopicMissing, EvaluationError
 from .runner import compare_latest, run_evaluation
 
 ACTIONS = ("list", "import", "run", "compare")
@@ -83,10 +83,31 @@ def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
             ]
         }
     if args.action == "import":
-        results = [
-            import_dataset(session, spec, created_by=args.actor_id) for spec in _load_specs(args)
-        ]
-        return {"imported": [result.to_dict() for result in results]}
+        imported: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        # Directory mode means "import everything that applies here"; a dataset written for
+        # another deployment is not an error in that mode, it is simply not applicable. Naming
+        # one file explicitly means the opposite - the operator asked for that file, so a missing
+        # topic has to be loud.
+        directory_mode = args.dataset_file is None
+        for spec in _load_specs(args):
+            try:
+                imported.append(import_dataset(session, spec, created_by=args.actor_id).to_dict())
+            except DatasetTopicMissing as exc:
+                if not directory_mode:
+                    raise
+                skipped.append(
+                    {
+                        "name": spec.name,
+                        "version": spec.version,
+                        "code": exc.code,
+                        "reason": str(exc),
+                    }
+                )
+        payload: dict[str, Any] = {"imported": imported}
+        if directory_mode:
+            payload["skipped"] = skipped
+        return payload
     if args.action == "run":
         report = run_evaluation(
             session,

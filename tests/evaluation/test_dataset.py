@@ -13,6 +13,7 @@ from evaluation_support import (
     build_dataset_document,
     seed_eval_world,
 )
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from support import Workspace
 
@@ -27,9 +28,11 @@ from open_source_intelligence.evaluation.dataset import (
 )
 from open_source_intelligence.evaluation.errors import (
     DatasetInvalid,
+    DatasetTopicMissing,
     DatasetVersionConflict,
     EvaluationNotFound,
 )
+from open_source_intelligence.persistence.models.intelligence import Topic
 
 
 def test_the_shipped_dataset_loads_and_covers_three_samples() -> None:
@@ -105,13 +108,27 @@ def test_a_non_object_document_is_refused() -> None:
         parse_dataset([1, 2, 3])
 
 
+def _import_dataset(session: Session, spec, **kwargs):
+    """Import a dataset after making sure the topic it names exists.
+
+    Since T25 `import_dataset` refuses an enabled case whose topic this deployment does not have,
+    so the import-mechanics tests need a world that satisfies that precondition. Giving them one
+    is not a workaround: production imports always happen in a deployment that has the topic.
+    """
+    workspace = Workspace(session)
+    for name in sorted({case.topic for case in spec.cases if case.enabled}):
+        if session.scalar(select(Topic).where(Topic.name == name)) is None:
+            workspace.add_topic(name=name)
+    return import_dataset(session, spec, **kwargs)
+
+
 def test_import_creates_then_replays_an_identical_document(session: Session) -> None:
     """Re-importing the same content must be a no-op that reports `replayed`."""
     spec = parse_dataset(build_dataset_document())
-    first = import_dataset(session, spec)
+    first = _import_dataset(session, spec)
     assert (first.created, first.replayed, first.case_count) == (True, False, 1)
 
-    second = import_dataset(session, parse_dataset(build_dataset_document()))
+    second = _import_dataset(session, parse_dataset(build_dataset_document()))
     assert (second.created, second.replayed) == (False, True)
     assert second.dataset_id == first.dataset_id
     assert len(list_cases(session, dataset_id=first.dataset_id)) == 1
@@ -120,19 +137,19 @@ def test_import_creates_then_replays_an_identical_document(session: Session) -> 
 
 def test_importing_a_changed_case_under_the_same_version_is_refused(session: Session) -> None:
     """Versions are immutable, so changed content must bump the version instead."""
-    import_dataset(session, parse_dataset(build_dataset_document()))
+    _import_dataset(session, parse_dataset(build_dataset_document()))
     changed = build_dataset_document(
         cases=[build_case_document(facts=[{"repo": "acme/rocket", "field": "stars", "value": 1}])]
     )
     with pytest.raises(DatasetVersionConflict) as excinfo:
-        import_dataset(session, parse_dataset(changed))
+        _import_dataset(session, parse_dataset(changed))
     assert "bump the version" in str(excinfo.value)
 
 
 def test_a_new_version_creates_a_separate_dataset(session: Session) -> None:
     """Bumping the version must produce a second, independently addressable dataset."""
-    first = import_dataset(session, parse_dataset(build_dataset_document(version="v1")))
-    second = import_dataset(session, parse_dataset(build_dataset_document(version="v2")))
+    first = _import_dataset(session, parse_dataset(build_dataset_document(version="v1")))
+    second = _import_dataset(session, parse_dataset(build_dataset_document(version="v2")))
     assert first.dataset_id != second.dataset_id
     assert (second.created, second.replayed) == (True, False)
     assert len(list_datasets(session)) == 2
@@ -143,8 +160,8 @@ def test_the_reference_and_rubric_survive_a_round_trip(
 ) -> None:
     """Guards against a driver-dependent JSON comparison breaking replay detection."""
     spec = load_dataset_file(DATASET_PATH)
-    first = import_dataset(session, spec)
-    second = import_dataset(session, load_dataset_file(DATASET_PATH))
+    first = _import_dataset(session, spec)
+    second = _import_dataset(session, load_dataset_file(DATASET_PATH))
     assert second.replayed is True
     case = next(
         row
@@ -179,7 +196,7 @@ def test_import_rejects_malformed_json(tmp_path) -> None:
 def test_resolve_dataset_by_id_and_by_name_version(session: Session) -> None:
     """Both addressing modes must find the same row, and a miss must be a `404`-style error."""
     spec = parse_dataset(build_dataset_document(name="resolve-me", version="v9"))
-    imported = import_dataset(session, spec)
+    imported = _import_dataset(session, spec)
     assert resolve_dataset(session, dataset_id=imported.dataset_id).name == "resolve-me"
     assert resolve_dataset(session, name="resolve-me", version="v9").id == imported.dataset_id
     with pytest.raises(EvaluationNotFound):
@@ -198,7 +215,7 @@ def test_a_disabled_case_is_stored_but_excluded_when_requested(session: Session)
             build_case_document(case_key="parked", enabled=False),
         ]
     )
-    imported = import_dataset(session, parse_dataset(document))
+    imported = _import_dataset(session, parse_dataset(document))
     assert len(list_cases(session, dataset_id=imported.dataset_id)) == 2
     enabled = list_cases(session, dataset_id=imported.dataset_id, enabled_only=True)
     assert [row.case_key for row in enabled] == ["live"]
@@ -207,7 +224,7 @@ def test_a_disabled_case_is_stored_but_excluded_when_requested(session: Session)
 def test_import_records_the_actor(session: Session) -> None:
     """`created_by` must be persisted so a dataset has an accountable owner."""
     spec = parse_dataset(build_dataset_document())
-    imported = import_dataset(session, spec, created_by=None)
+    imported = _import_dataset(session, spec, created_by=None)
     dataset = resolve_dataset(session, dataset_id=imported.dataset_id)
     assert dataset.created_by is None
 
@@ -220,3 +237,76 @@ def test_the_seeded_world_matches_the_shipped_dataset(
     spec = load_dataset_file(DATASET_PATH)
     stored = json.dumps(spec.cases[0].to_input_json(), ensure_ascii=False)
     assert GROWTH_TOPIC in stored
+
+
+def test_import_refuses_an_enabled_case_whose_topic_is_missing(
+    session: Session, workspace: Workspace
+) -> None:
+    """Importing a dataset bound to somebody else's topic must fail here, not at run time.
+
+    The failure mode this prevents is expensive: every variant of every case runs, and each one
+    comes back `failed` with `EVAL_TOPIC_NOT_FOUND`. Fifteen red rows read like a broken model,
+    and the actual cause - a dataset written for another deployment - is one line in a JSON file.
+    """
+    spec = parse_dataset(build_dataset_document())
+
+    with pytest.raises(DatasetTopicMissing) as excinfo:
+        import_dataset(session, spec)
+
+    assert GROWTH_TOPIC in str(excinfo.value)
+    assert list_datasets(session) == []
+
+
+def test_import_does_not_check_the_topic_of_a_disabled_case(
+    session: Session, workspace: Workspace
+) -> None:
+    """A parked scenario is allowed to name a topic nobody has yet."""
+    workspace.add_topic(name=GROWTH_TOPIC)
+    document = build_dataset_document()
+    document["cases"].append(
+        build_case_document(case_key="parked", topic="a topic nobody created", enabled=False)
+    )
+
+    imported = _import_dataset(session, parse_dataset(document))
+
+    assert imported.case_count == 2
+    assert [row.case_key for row in list_cases(session, dataset_id=imported.dataset_id)] == [
+        "case-a",
+        "parked",
+    ]
+
+
+def test_replaying_a_version_does_not_recheck_topics(
+    session: Session, workspace: Workspace
+) -> None:
+    """A replay is a content check, not a readiness check.
+
+    Disabling a topic after its dataset was imported must not turn "nothing changed" into an
+    error - otherwise a routine no-op import starts failing for a reason that has nothing to do
+    with the file.
+    """
+    workspace.add_topic(name=GROWTH_TOPIC)
+    spec = parse_dataset(build_dataset_document())
+    first = _import_dataset(session, spec)
+    for topic in session.scalars(select(Topic).where(Topic.name == GROWTH_TOPIC)):
+        topic.enabled = False
+    session.commit()
+
+    replay = _import_dataset(session, spec)
+
+    assert replay.dataset_id == first.dataset_id
+    assert replay.replayed is True
+
+
+def test_the_v2_dataset_binds_one_enabled_case_to_a_real_topic_name() -> None:
+    """The shipped v2 file must be importable as written: one live case, two parked ones."""
+    spec = load_dataset_file("datasets/weekly-agent-quality.v2.json")
+
+    enabled = [case for case in spec.cases if case.enabled]
+    parked = [case for case in spec.cases if not case.enabled]
+
+    assert spec.version == "v2"
+    assert [case.case_key for case in enabled] == ["growth-surge"]
+    assert enabled[0].topic == "sweep-llm-agent-topic"
+    assert {case.case_key for case in parked} == {"missing-readme", "injection-readme"}
+    assert spec.cases[0].window_start.isoformat() == "2026-10-16T00:00:00+00:00"

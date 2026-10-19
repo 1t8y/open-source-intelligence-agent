@@ -31,6 +31,18 @@ class DatasetVersionConflict(EvaluationError):
     code = "DATASET_VERSION_CONFLICT"
 
 
+class DatasetTopicMissing(EvaluationError):
+    """An enabled case names a topic this deployment does not have.
+
+    Importing it anyway produces a dataset where every variant fails with
+    `EVAL_TOPIC_NOT_FOUND` - five green `failed` rows that look like a model problem and are
+    actually a dataset bound to somebody else's topic name. It is checked at import because that
+    is the one moment an operator is looking at the dataset and can fix it.
+    """
+
+    code = "DATASET_TOPIC_MISSING"
+
+
 class EvaluationNotFound(EvaluationError):
     """A dataset, case, or run does not exist."""
 

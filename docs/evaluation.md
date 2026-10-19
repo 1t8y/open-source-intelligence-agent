@@ -57,11 +57,20 @@
 }
 ```
 
-`topic` 是**主题名**，运行时解析为 `topics.id`；解析不到时该样本记为 `failed` 且错误码为 `EVAL_TOPIC_NOT_FOUND`（样本本身仍留在数据集中，失败被记为证据而不是让整批 sweep 崩掉）。`reference.facts` 的 `repo` 用仓库全名寻址，评分器会把它解析回 `repo_snapshots` 的真实取值 —— 事实一致性因此是"与数据库比对"，不是"与模型判断比对"。`rubric` 的阈值目前只作记录，实际门禁用 `ARCHITECTURE.md` §12 的绝对目标（见第 3 节）。
+`topic` 是**主题名**，运行时解析为 `topics.id`；解析不到时该样本记为 `failed` 且错误码为 `EVAL_TOPIC_NOT_FOUND`（样本本身仍留在数据集中，失败被记为证据而不是让整批 sweep 崩掉）。**导入时也校验一次（T25）**：只要有 `enabled` 的样本引用了本部署不存在或已停用的主题，`import_dataset()` 抛 `DatasetTopicMissing`（`code=DATASET_TOPIC_MISSING`），消息里同时列出缺的名字与本库可用的主题名。理由很实际 —— 在那之前，一份写给别人主题名的数据集会安静地导入成功，然后五个变体各跑一遍、各记一条 `failed`，看起来像模型坏了，实际是一行 JSON 写错了。只校验 `enabled` 的样本：停用的样本是"等数据形态就绪再开"的场景，允许指向尚不存在的主题；目录模式（一次性导入整个 `datasets/`）遇到不适用的数据集会**跳过**并把它写进 `skipped`，而显式指定单个文件时仍然报错。`reference.facts` 的 `repo` 用仓库全名寻址，评分器会把它解析回 `repo_snapshots` 的真实取值 —— 事实一致性因此是"与数据库比对"，不是"与模型判断比对"。`rubric` 的阈值目前只作记录，实际门禁用 `ARCHITECTURE.md` §12 的绝对目标（见第 3 节）。
 
 ### 2.3 数据集版本
 
 每个数据集使用 `name + version` 唯一标识，文件名形如 `datasets/weekly-agent-quality.v1.json`。**修改样本必须新建版本，不能覆盖旧版本**：导入时对规范化后的数据集内容取 SHA-256 指纹，同名同版本且指纹相同则视为重放（`replayed=True`，不新增行），同名同版本但指纹不同则抛 `DatasetVersionConflict`（`409 DATASET_VERSION_CONFLICT`）。评测结果绑定 `dataset_id` 与 `agent_config_id`（baseline 的 `agent_config_id` 为 `NULL`）。
+
+**当前仓库里有两个版本，它们服务于不同的世界**：
+
+| 文件 | 用途 | 状态 |
+|---|---|---|
+| `datasets/weekly-agent-quality.v1.json` | 三个场景（增长 / 缺 README / 注入）× 三个夹具主题名 `AI Agent`、`AI Agent Sparse`、`AI Agent Injection` | **测试与 T14 冒烟用**。`tests/evaluation_support.py` 的 `seed_eval_world()` 会建出这三个主题与配套仓库，所以它在夹具世界里有效 |
+| `datasets/weekly-agent-quality.v2.json` | 绑定本部署真实数据：主题 `sweep-llm-agent-topic`，窗口 `2026-10-16..2026-10-19`（库里仅这两天有快照），`reference.facts` 取自 2026-10-19 的最新快照 | **真实部署用**。三个场景里只有 `growth-surge` 启用；`missing-readme` 与 `injection-readme` 停用，因为触发它们需要专门的数据形态（未缓存 README / 缓存里直写注入文本），在真实主题上直接跑只会得到普通样本，让评测误以为"该场景已覆盖" |
+
+v1 留在仓库里不是残留：它是夹具世界的输入，且库里的 `eval_datasets` 行仍指向它。v2 是对"本部署真实能跑什么"的回答 —— 这两个问题不一样，混成一份文件就会两头都不对。
 
 ## 3. 自动指标
 

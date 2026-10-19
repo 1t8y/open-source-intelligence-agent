@@ -316,13 +316,37 @@ docker compose ... exec -T api python -m open_source_intelligence.backfill.cli \
 ## 10. 评测（后端，人工触发）
 
 ```bash
-docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli --action list --limit 5      # ✅ 已实跑
-docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli --action import --dataset-file <path> --name <name> --version v1   # ⏸ 未实跑（数据集已在库中）
-docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli --action run --dataset-id 1 --target agent_full   # ✅ 已实跑
-docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli --action compare --dataset-id 1                   # ✅ 已实跑
+# 列出库里的数据集版本（v1 是夹具世界的，v2 是绑定本部署真实数据的）
+docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli --action list --limit 5
+
+# 导入本部署该用的数据集。单文件模式下主题不存在会直接报 DATASET_TOPIC_MISSING
+docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli \
+  --action import --dataset-file datasets/weekly-agent-quality.v2.json
+
+# 跑五个变体（容器无出网时用离线桩，见下）
+docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli --action run --dataset-id 2
+
+# 看对比
+docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli --action compare --dataset-id 2
 ```
 
-`run` 的实测结果是 `run_id 6`、3 个用例全 `failed`、`scored_case_count 0`、`tool_call_total 0`；`compare` 同样报 `passed: false` 且五个变体的 `scored_case_count` 都是 `0`。原因见 §11 第 3 条 —— **这是"没测到"，不是"回归"**。
+**`--action import` 会在导入时校验主题（T25）。** 启用样本里只要有一个引用了本部署不存在或已停用的主题，就抛 `DATASET_TOPIC_MISSING`，消息同时给出缺失名与可用主题名。两类例外是刻意的：**停用**样本允许指向尚不存在的主题（它是"等数据形态就绪再开"的场景），**重放**已存在的版本也不再校验（那是一次内容检查，不是就绪检查）。目录模式（不带 `--dataset-file`）遇到不适用的数据集会**跳过**并写进 `skipped`；显式指定单文件时仍然报错 —— "把能导的都导了"与"我就要这个"是两件事。
+
+`--action run` 的实测结果（dataset 2，离线桩，2026-10-19）：
+
+```text
+variant                    cite   fact   task  tools  gate_fail
+baseline_single_prompt   0.0000 0.0000 1.0000      0          2
+agent_full               1.0000 1.0000 1.0000     16          0
+agent_no_verifier        0.0000 0.0000 1.0000     11          2
+agent_no_tools           0.0000 0.0000 1.0000      6          2
+agent_no_history         1.0000 1.0000 1.0000     16          0
+passed: True    regressions: ['agent_no_verifier', 'agent_no_tools']
+```
+
+五个变体全部 `succeeded`、`scored_case_count = 1`。读法：`agent_full` 相对 baseline 与两个消融有明确差异（去掉验证器或工具后引用覆盖与事实一致性归零），`agent_no_history` 与 full 持平 —— 历史报告是增益而不是必需，这正是消融要回答的问题。**这是本库第一份有效对比**：在这之前五个变体全 `failed`，原因是数据集写死了本库不存在的主题名（见 §11 第 3 条，已修）。
+
+⚠️ **容器无出网时评测跑不起来真模型。** 五个变体里有四个会跑研究 Agent，`AGENT_PROVIDER=openai_compatible` 在无出网环境下每次都以 `AGENT_MODEL_UNAVAILABLE` 收口。用离线桩跑可以拿到完整的对比结构（上面的数字就是离线桩的），但它不计 token，`total_tokens` 与 `total_cost` 会是 0 —— 那是"这个模型不收费"，不是"评测省了钱"。
 
 读结果时有三条口径必须知道（都是踩过的）：
 
@@ -330,11 +354,9 @@ docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli
 - **未行使的指标是 `null` 而不是 `0`**（`citation_coverage` / `task_completion` / `tool_success_rate` 等）。看到 `null` 先查用例为什么没产出分数，不要当成"0 分"。
 - 变体名（`baseline_single_prompt` / `agent_full` / `agent_no_verifier` / `agent_no_tools` / `agent_no_history`）是**契约里的标识符，不翻译**。
 
-当前这个库里 `compare --dataset-id 1` 的实测结果是五个变体全 `failed`、`scored_case_count = 0`，原因见 §11 第 3 条。
+## 11. 当前状态与已知缺口（实测，2026-10-19）
 
-## 11. 当前状态与已知缺口（实测，2026-10-16）
-
-四处**实测**出来的缺口，都不是"环境不行"，根因都落在代码里，所以都附了证据行。**T23 修掉了第 1、2 两处**（同一根因的两面），第 3、4 仍开放：
+四处**实测**出来的缺口，都不是"环境不行"，根因都落在代码里，所以都附了证据行。**四处全部已修**：T23 修掉第 1、2 条（同一根因的两面），T24 修掉第 4 条，T25 修掉第 3 条。
 
 - **缺口 1（已修）**：新增 `contents` 阶段（`pipeline/contents.py`）作为 `repository_contents` 的**唯一生产写入方**，排在 `rank` 之后按候选排名预热缓存。实测：`--action daily` 的 contents run（183）抓到 10/10 个 README，10 行缓存的 `char_length(content)` 上界正好 20000、`source_url` 全为 `https`；同一天再跑 `--action contents`（run 184）为 `skipped=10`/`fetched=0` —— 幂等窗口起作用，没有发起第二次请求。
 - **缺口 2（已修）**：`agent/llm/messages.py` 提供 `tool_error_payload` / `is_tool_error_payload` 一对定义，`agent/graph.py` 渲染与 `agent/llm/offline.py:_collect_evidence` 过滤共用同一判据 —— 失败观察不再被当成"读到了内容"。实测：研究运行从 `needs_review`+`AGENT_EVIDENCE_INCOMPLETE`+`sufficient=false` 变为 `completed`+`sufficient=true`（`content_repo_ids=[99, 100]`）；`reports generate` 从硬失败 `readme source not found` 变为成功（报告 36/37），`reports verify` 两份 `verdict=passed`、`citation_coverage=1.0`、`unresolved_refs=[]`。
@@ -351,8 +373,8 @@ docker compose ... exec -T api python -m open_source_intelligence.evaluation.cli
 修法建议（第 1/2 条已在 T23 实施，见 §11 开头；第 3/4 条仍开放）：
 
 - **缺口 1/2（已实施）**：先给"读缓存"补一条生产路径 —— 要么在采集/快照阶段抓 README 落进 `repository_contents`（这也让 `get_repository_content` 有可能成功），要么明确"内容缓存由运维预置"并把 `verify` 的 README 条件降级为可选。同时收紧 `_collect_evidence`：`profile` 与 `content` 两处现在都是 `isinstance(payload, dict)` 就收，**必须排除失败载荷**（`query_repo_metrics` 与 `search_prior_reports` 分支收的是 list，不受影响）。两处都要补**能失败的**回归测试。
-- **缺口 3**：把数据集里的主题名改成本部署真实存在的主题，或在导入时校验。
-- **缺口 4**：这是一个预算决定，不是代码问题 —— 要么把 `run_research_agent` 加进 beat（并接受每天自动消耗一次模型预算），要么把文档里"等就绪后再开"改成"有意保持人工"。
+- **缺口 3（已修，T25）**：数据集写死的是早期夹具主题名（`AI Agent` / `AI Agent Sparse` / `AI Agent Injection`），本库一个都没有，于是五个变体全 `EVAL_TOPIC_NOT_FOUND`。修法两面：新增绑定真实数据的 `datasets/weekly-agent-quality.v2.json`（主题 `sweep-llm-agent-topic`、窗口 `2026-10-16..2026-10-20`、facts 取自 2026-10-19 快照），并让 `import_dataset()` 在导入时校验启用样本的主题存在（`DATASET_TOPIC_MISSING`）。实测对比见 §10。
+- **缺口 4（已修，T24）**：`run_research_agent` 仍不进 beat，但每日任务会按 `AGENT_AUTO_RESEARCH_ENABLED` 派发（默认关）。这是一个预算决定，结论是"机制到位、开关给人"。
 
 ## 12. 看账本与排查
 

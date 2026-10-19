@@ -1,6 +1,6 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：T1-T24 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
+> 项目状态：T1-T25 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
 > 文档版本：v0.12
 > 最后更新：2026-10-15
 
@@ -48,12 +48,13 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-**T1–T24 全部完成**，`ARCHITECTURE.md` §14 的实施任务清单至此全部 `[x]`。最近六步：
+**T1–T25 全部完成**，`ARCHITECTURE.md` §14 的实施任务清单至此全部 `[x]`。最近七步：
 
 - **T19 主题配置的 HTTP 面**：主题是流水线的第一环（`list_enabled_topics` 只读 `enabled=True` 的主题，没有主题就没有任何数据产出），而它此前没有任何入口。契约先行补 `INTERFACES.md` §3 与 `docs/api-contract.md` §3.2，再落 `topics/` 领域模块与五条端点；**触发研究仍不在 API 上**（消耗模型预算，与 T15 拒绝 `POST /agent/runs` 同理）。探针与实跑查出四处产品缺陷（`created_by` 从不写入导致建主题必然失败、过宽的 `except IntegrityError` 把坏插入说成重名、空名能存进表、审计行不带请求 id），全部修复并补回归。
 - **T20 设计稿上屏**：导航从顶栏 2 项铺成左侧分组侧栏 8 项 4 组，补出推送记录、主题管理、仓库目录、采集与运行、评测、审计日志六个页面；`app.css` 173 → 433 行而**原有九个 token 取值一个未改**。两条结构判断值得记：所谓"割裂感"的成因是**内容区居中**（`max-width: 1180px; margin: 0 auto` 在 1920 宽下留出约 250px 死水带），不是侧栏太窄；侧栏条目与路由准入**共用一个常量**（`web/router.py:NAV_GROUPS`），因此"菜单里出现而打开被拒"与"能打开却不在菜单里"同时不可能发生。
 - **T21 运维配置面的归属**：推送目标白名单与用户账号**不做界面**，由后端拥有（账号只有 `bootstrap` CLI，目标直接写 `push_targets`）；界面上不可避免要提到它的两处只对 `ADMIN` 渲染，且该页**只在管理员时加载**这份 allowlist。顺手修掉一个同级缺陷：「释放到期报告」按钮按读角色渲染、路由却按写角色准入 —— 只读角色看得见、点了才 403。
 - **T22 运维手册**：新增 [docs/operations.md](docs/operations.md) —— 启动、建号、主题、白名单、采集与日报、研究、报告链路、回填、评测、排查、危险动作，每条命令都在运行中的栈上实跑过。写它的过程实测出四类缺口（README 内容缓存没有写入方、离线模型把失败的工具载荷当证据、评测数据集引用了不存在的主题名、研究不在 beat 里），逐条记在该文档 §11。
+- **T25 让质量可证**：数据集此前写死早期夹具主题名（`AI Agent` / `AI Agent Sparse` / `AI Agent Injection`），本库一个都没有，于是五个评测变体全部以 `EVAL_TOPIC_NOT_FOUND` 收口 —— 验收标准第 8 条（可比 baseline / Agent / 消融）从未真正达成。新增 `datasets/weekly-agent-quality.v2.json`，把主题、窗口（库里仅 2026-10-16 与 10-19 有快照）与 `reference.facts` 全部对齐真实数据；`import_dataset()` 现在**导入时**校验启用样本的主题存在（`DATASET_TOPIC_MISSING`），消息直接列出可用主题名；目录模式跳过不适用的数据集并记入 `skipped`。实测 `--action run` 五个变体全部 `succeeded`，`--action compare` 给出第一份有效对比：`agent_full` 引用覆盖与事实一致均 1.0、16 次工具调用、0 项 gate 失败；`baseline_single_prompt` 与两个消融均为 0.0，`passed=true`。
 - **T24 让「自动」成立**：每日任务在四个确定性阶段之后可以派发研究运行（`pipeline/research_dispatch.py`）。派发判据三条同时成立：主题启用、本业务日 `rank` 成功且有候选、本业务日没有非 `failed` 的 `agent_runs` 行。开关 `AGENT_AUTO_RESEARCH_ENABLED` **默认关闭**（一次研究消耗真实预算），上限 `AGENT_DAILY_RESEARCH_LIMIT`。实测抓到一个真缺陷：最初把 `failed` 也算作"今天已研究"，于是第一次真实派发撞上 `AGENT_MODEL_UNAVAILABLE` 之后当天不再重试 —— 一次模型抖动就让整夜空转；判据改为排除 `failed`。`AGENT_MAX_TOKENS` 默认提到 30000（实测真实证据 18753 tokens），并记下"已有库的 `agent_configs` 行不受默认值影响"这条运维坑。
 - **T23 让报告链路真正可用**：修 T22 实测出的、同一根因的两面 —— `repository_contents` 在 `src/` 里**没有任何生产写入方**，以及离线模型把**失败的**工具载荷当成内容证据（`{"error": {...}}` 也是 dict）。给流水线补第四阶段 `contents`（排在 `rank` 之后，因为"哪些仓库值得预热"的答案就在排名里，候选集合与"研究被允许读的仓库"是同一批行），并把失败壳的构造与判据收进 `agent/llm/messages.py` 一处供渲染与过滤共用。实测：研究运行从 `needs_review`+`AGENT_EVIDENCE_INCOMPLETE`+`sufficient=false` 变为 `completed`+`sufficient=true`，`reports generate` 从硬失败 `readme source not found` 变为成功、`reports verify` 判 `passed`（详见 `ARCHITECTURE.md` §9.18）。
 

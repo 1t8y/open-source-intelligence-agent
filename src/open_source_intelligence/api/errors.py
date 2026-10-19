@@ -63,6 +63,10 @@ DOMAIN_PROBLEM_STATUS: dict[str, int] = {
     # Evaluation failures. A malformed dataset or an unknown variant is the caller's mistake; a
     # conflicting version is a conflict; a switched-off subsystem is unavailable.
     "DATASET_INVALID": status.HTTP_400_BAD_REQUEST,
+    # The file is well formed; it is bound to a topic this deployment does not have. That is still
+    # the caller's mistake - they imported a dataset written for another environment - and the
+    # message lists the topics that do exist.
+    "DATASET_TOPIC_MISSING": status.HTTP_400_BAD_REQUEST,
     "UNKNOWN_TARGET": status.HTTP_400_BAD_REQUEST,
     "DATASET_VERSION_CONFLICT": status.HTTP_409_CONFLICT,
     "EVALUATION_DISABLED": status.HTTP_503_SERVICE_UNAVAILABLE,

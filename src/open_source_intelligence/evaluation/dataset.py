@@ -27,8 +27,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.persistence.models.evaluation import EvalCase, EvalDataset
+from open_source_intelligence.persistence.models.intelligence import Topic
 
-from .errors import DatasetInvalid, DatasetVersionConflict, EvaluationNotFound
+from .errors import (
+    DatasetInvalid,
+    DatasetTopicMissing,
+    DatasetVersionConflict,
+    EvaluationNotFound,
+)
 
 DATASET_SCHEMA_VERSION: Final[int] = 1
 MAX_NAME_CHARS: Final[int] = 128
@@ -291,6 +297,30 @@ def _fingerprint(
     )
 
 
+def _require_topics_for_cases(session: Session, spec: DatasetSpec) -> None:
+    """Refuse an import whose *enabled* cases name topics this deployment does not have.
+
+    Only enabled cases are checked, and only when the version is new. A disabled case is a
+    scenario parked until its data exists, so it is allowed to name a topic nobody has yet; and a
+    replay is a content check, not a readiness check, so it must not acquire a new way to fail.
+
+    The alternative - importing and discovering it at run time - produces a dataset whose every
+    variant fails with `EVAL_TOPIC_NOT_FOUND`, which reads like "the model is broken" rather than
+    "this file was written for a different deployment".
+    """
+    wanted = sorted({case.topic for case in spec.cases if case.enabled})
+    if not wanted:
+        return
+    available = set(session.scalars(select(Topic.name).where(Topic.enabled.is_(True))).all())
+    missing = [name for name in wanted if name not in available]
+    if missing:
+        raise DatasetTopicMissing(
+            f"dataset {spec.name} version {spec.version} names topic(s) that are missing or "
+            f"disabled here: {', '.join(repr(name) for name in missing)}; "
+            f"enabled topics: {', '.join(repr(name) for name in sorted(available)) or '(none)'}"
+        )
+
+
 def import_dataset(
     session: Session,
     spec: DatasetSpec,
@@ -305,6 +335,7 @@ def import_dataset(
         )
     )
     if dataset is None:
+        _require_topics_for_cases(session, spec)
         dataset = EvalDataset(
             name=spec.name,
             version=spec.version,
