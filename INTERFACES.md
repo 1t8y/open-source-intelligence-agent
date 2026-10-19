@@ -1,6 +1,6 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T23 已对齐）
+> 文档状态：实施基线（T1-T24 已对齐）
 > 文档版本：v0.16
 > 最后更新：2026-10-16
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
@@ -273,8 +273,26 @@ run_snapshot_stage(session, *, business_date, attempt=1) -> StageOutcome
 run_rank_stage(session, *, topic, business_date, attempt=1) -> StageOutcome
 run_rank_all_topics(session, *, business_date, attempt=1) -> list[StageOutcome]
 run_contents_stage(session, *, business_date, sources, limit, refresh_after=None, attempt=1) -> ContentsStageOutcome
-run_daily_pipeline(session, *, business_date, collectors, limit, content_sources=(), content_limit=0, attempt=1) -> DailyPipelineResult
+run_daily_pipeline(session, *, business_date, collectors, limit, content_sources=(), content_limit=None, content_refresh_after=None, attempt=1) -> DailyPipelineResult
 ```
+
+研究派发接口（T24，`pipeline/research_dispatch.py`）：
+
+```text
+select_research_targets(session, *, business_date, timezone_name, limit) -> ResearchTargetSelection
+dispatch_research_targets(targets, dispatcher: Callable[[int], str]) -> ResearchDispatchReport
+ResearchTarget { topic_id: int, candidate_count: int }
+ResearchTargetSelection { targets: list<ResearchTarget>, eligible_count: int, already_started_topic_ids: list<int>, deferred_count: int }
+ResearchDispatchReport { dispatched: dict<topic_id, task_id>, errors: dict<topic_id, str> }
+```
+
+`select_research_targets` 是**纯读**：一个主题入选要同时满足三条 —— 启用；该主题本业务日的 `rank` 运行 `succeeded` 且 `candidate_count > 0`；该主题本业务日**没有非 `failed`** 的 `agent_runs` 行（`started_at >= business_day_start(business_date, timezone_name)` 且 `status != 'failed'`）。第三条同时是重试保护与预算保护：beat 重投同一批任务不会第二次扣钱，操作员当天手工跑过研究也不会被自动化再跑一遍。**`failed` 不算数**：一次失败（模型端点不通、传输被拒）没有产出任何可读的东西，也就没有付过第二次钱的必要，把它算成"今天已研究过"会让一次模型抖动把整夜变成空转 —— 而无人值守最该扛住的就是这种抖动。`pending`/`running`（在跑）与 `needs_review`/`completed`（有草稿）才挡。结果按 `topic_id` 升序，截断到 `limit`；被截断的数量是 `eligible_count - len(targets)`（`deferred_count`），让"今天还剩几个主题没研究"是个可读出的数字而不是沉默。同一主题当天重跑过 `rank` 时取**最新**一条运行：重跑取代失败的旧尝试，而不是被它挡住。
+
+`dispatch_research_targets` 不 import Celery：`dispatcher(topic_id) -> task_id` 由调用方注入（worker 传 `send_task`，CLI 传同步执行）。单个主题抛异常记进 `errors` 并继续下一个，与"一个源拒绝不终止当天批次"同一条原则。
+
+派发本身**不是**流水线阶段，因此**不写** `pipeline_runs` 行：它没有产出可数的数据，写了只会让账本里出现一条 "dispatched: 1" 的空阶段。研究运行的证据在 `agent_runs` 与 `pipeline_runs(run_type=agent)` 里，由 `run_research_agent` 自己写。
+
+开关与上限：`AGENT_AUTO_RESEARCH_ENABLED`（默认 `false`）、`AGENT_DAILY_RESEARCH_LIMIT`（默认 `2`）。关闭时 `run_daily_pipeline` 任务与 CLI **都不调用**上面的选择函数，载荷里 `research_dispatched` 为 `null` 而不是 `[]` —— "没开"与"开了但没有目标"是两件不同的事。
 
 固定顺序为 `collect -> snapshot -> rank -> contents`，每个阶段各写一条运行记录。采集阶段只有在所有供应商都失败时才抛 `PipelineStageError`（错误码 `COLLECTOR_FAILED`）并停止批次；部分失败记为 `partial` 后继续。快照失败抛 `PipelineStageError`（`SNAPSHOT_FAILED`）。单个主题的排序失败只把该主题记为 `failed`（`RANK_FAILED`），不阻塞其他主题，整体状态为 `partial`。排序阶段不调用大模型。
 

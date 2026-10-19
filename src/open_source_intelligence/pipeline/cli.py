@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from open_source_intelligence.agent.runtime import run_research_agent as execute_research_agent
 from open_source_intelligence.collectors.cli import build_collectors, build_content_sources
 from open_source_intelligence.core.config import get_settings
 from open_source_intelligence.persistence.session import (
@@ -16,6 +17,10 @@ from open_source_intelligence.persistence.session import (
 )
 from open_source_intelligence.pipeline.contents import business_day_start, run_contents_stage
 from open_source_intelligence.pipeline.daily import run_daily_pipeline, run_rank_all_topics
+from open_source_intelligence.pipeline.research_dispatch import (
+    dispatch_research_targets,
+    select_research_targets,
+)
 from open_source_intelligence.pipeline.runs import (
     get_pipeline_run,
     list_pipeline_runs,
@@ -47,6 +52,19 @@ def parse_args() -> argparse.Namespace:
         "--force",
         action="store_true",
         help="Ignore the content cache window and ask about every candidate again",
+    )
+    parser.add_argument(
+        "--with-research",
+        action="store_true",
+        help=(
+            "After --action daily, run one research Agent per eligible topic in this process "
+            "(the same selection the worker dispatches; ignores AGENT_AUTO_RESEARCH_ENABLED)"
+        ),
+    )
+    parser.add_argument(
+        "--research-limit",
+        type=int,
+        help="Topics researched by --with-research (default: AGENT_DAILY_RESEARCH_LIMIT)",
     )
     parser.add_argument(
         "--run-type",
@@ -103,6 +121,47 @@ def resolve_content_limit(args: argparse.Namespace, settings: object) -> int:
     return limit
 
 
+def resolve_research_limit(args: argparse.Namespace, settings: object) -> int:
+    """Return the research dispatch bound, from the flag or the configured default."""
+    configured = getattr(settings, "agent_daily_research_limit", None)
+    limit = args.research_limit if args.research_limit is not None else configured
+    if not isinstance(limit, int) or not 1 <= limit <= 50:
+        raise SystemExit("--research-limit must be between 1 and 50")
+    return limit
+
+
+def run_research_inline(
+    session: Any,
+    *,
+    business_date: date,
+    settings: Any,
+    limit: int,
+) -> dict[str, Any]:
+    """Run the research selection inline and return what each topic produced.
+
+    The CLI's counterpart to the worker's `send_task`: same selection rule, same report shape,
+    executed in this process so a demonstration can show the draft id instead of a task id.
+    """
+    selection = select_research_targets(
+        session,
+        business_date=business_date,
+        timezone_name=settings.app_timezone,
+        limit=limit,
+    )
+
+    def run_one(topic_id: int) -> str:
+        outcome = execute_research_agent(session, topic_id=topic_id, settings=settings)
+        return f"agent_run:{outcome.agent_run_id}:{outcome.status}"
+
+    report = dispatch_research_targets(selection.targets, run_one)
+    return {
+        **report.to_dict(),
+        "eligible": selection.eligible_count,
+        "deferred": selection.deferred_count,
+        "already_started": selection.already_started_topic_ids,
+    }
+
+
 def run_deterministic_action(args: argparse.Namespace, business_date: date) -> dict[str, Any]:
     """Execute one deterministic action and return its JSON payload."""
     settings = get_settings()
@@ -126,7 +185,19 @@ def run_deterministic_action(args: argparse.Namespace, business_date: date) -> d
                         content_limit=resolve_content_limit(args, settings),
                         content_refresh_after=refresh_after,
                     )
-            return result.to_dict()
+                    dispatch_payload = (
+                        run_research_inline(
+                            session,
+                            business_date=business_date,
+                            settings=settings,
+                            limit=resolve_research_limit(args, settings),
+                        )
+                        if args.with_research
+                        else None
+                    )
+            daily_payload = result.to_dict()
+            daily_payload["research_dispatched"] = dispatch_payload
+            return daily_payload
         if args.action == "contents":
             with httpx.Client(timeout=20, follow_redirects=True) as client:
                 content_sources = build_content_sources(args.provider, client)

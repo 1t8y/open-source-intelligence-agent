@@ -18,9 +18,9 @@
 
 `beat` 的周期表里只有四项（`workers/celery_app.py:build_beat_schedule`）：每分钟的健康检查、每 `PUBLISH_SWEEP_MINUTES` 一次的到期发布扫描、每 `PUSH_RETRY_INTERVAL_MINUTES` 一次的推送重试、以及每天 `PIPELINE_SCHEDULE_HOUR:PIPELINE_SCHEDULE_MINUTE`（默认 02:00）的**确定性流水线**。
 
-**关键事实：每天的定时任务只做到"排名 + 预热仓库正文"。** `run_daily_pipeline` 的四个阶段是 collect → snapshot → rank → contents（`pipeline/daily.py`），`contents` 把入选候选的 README 抓进 `repository_contents` 缓存（研究运行读的就是这份缓存，见 §7）；它**不启动研究 Agent**；`workers.tasks.run_research_agent` 已注册但**不在 beat 表里**（`ARCHITECTURE.md` §9.3 记了这条决定，`tests/workers/test_agent_task.py:57` 用断言钉住它）。所以：
+**关键事实：每天的定时任务默认只做到"排名 + 预热仓库正文"。** `run_daily_pipeline` 的四个阶段是 collect → snapshot → rank → contents（`pipeline/daily.py`），`contents` 把入选候选的 README 抓进 `repository_contents` 缓存（研究运行读的就是这份缓存，见 §7）。四个阶段之后，任务会**看一眼**要不要派发研究：`AGENT_AUTO_RESEARCH_ENABLED`（默认 `false`）打开时，它按 §7 的规则选出当天的主题并入队一个研究任务；关闭时 `research_dispatched` 为 `null`。`workers.tasks.run_research_agent` **仍不单独进 beat 表**（`tests/workers/test_research_dispatch_task.py` 用断言钉住这一点：同一次研究不能有两个调度源，否则会双倍花钱）。
 
-> **"界面里没有新报告"的第一嫌疑不是"坏了"，而是"今天还没人跑研究"。** 报告生成、审核、发布、推送这一半都是**人工触发**的。§7 与 §8 是这一半的入口。
+> **"界面里没有新报告"要先看两件事**：① `AGENT_AUTO_RESEARCH_ENABLED` 开了没有（没开就是"今天还没人跑研究"）；② 开了但当天已有 `agent_runs` 行时不会再派发（幂等，见 §7）。报告生成、审核、发布、推送这一半默认仍是**人工触发**的，§8 是入口。
 
 ## 2. 第一次启动
 
@@ -210,12 +210,16 @@ docker compose ... exec -T api python -m open_source_intelligence.pipeline.cli -
 
 **采集是可用的**（实测 GitHub `api.github.com` 与 HF 镜像两条都能取到数据，并更新 `data_sources.last_success_at`）。`provider_errors` 非空时才需要看这一源的凭据与限流。
 
-## 7. 研究 Agent（人工触发）
+## 7. 研究 Agent（自动派发默认关闭，也可人工触发）
 
 ```bash
 # 跑一次研究：读排名结果里"入选"的候选，产出报告草稿
 docker compose ... exec -T api python -m open_source_intelligence.agent.cli \
   --action run --topic-id 14 --max-candidates 3
+
+# 一条命令走完"采集 → 快照 → 排名 → 正文缓存 → 研究"，研究在本进程里同步跑
+docker compose ... exec -T api python -m open_source_intelligence.pipeline.cli \
+  --action daily --provider github --limit 3 --with-research --research-limit 1
 
 # 看运行账本 / 看某一次运行的全部步骤与工具调用
 docker compose ... exec -T api python -m open_source_intelligence.agent.cli --action runs --run-limit 5
@@ -233,9 +237,38 @@ docker compose ... exec -T api python -m open_source_intelligence.agent.cli --ac
 
 `--window-start` / `--window-end` 覆盖窗口（ISO 8601）；`--max-candidates` 覆盖主题的候选上限，**这是控制这一轮模型预算最直接的一个旋钮**。运行级预算在 `AGENT_MAX_LOOPS` / `AGENT_MAX_MODEL_CALLS` / `AGENT_MAX_TOOL_CALLS` / `AGENT_MAX_TOKENS` / `AGENT_MAX_COST`。
 
-⚠️ **`AGENT_MAX_TOKENS` 的默认值 12000 在"缓存有内容"之后偏小。** README 缓存修好之前（T23），读缓存工具每次都失败，工具载荷很短，同一主题的研究跑下来只有几千 token；缓存一填上，证据真实地变长，实测一次运行 `total_tokens` 18753，于是真实模型那次以 `AGENT_BUDGET_EXCEEDED` 收口（`status=needs_review`，草稿仍写完了 6 个章节）。离线桩因为不计 token 不受影响。要跑通"真实模型 + 真实证据"的完整链路，把 `.env` 的 `AGENT_MAX_TOKENS` 提到 **25000 以上**（`AGENT_MAX_COST` 同样要按真实价格核对）。这不是缺陷，是**真实证据的成本第一次被看见**。
+### 自动派发（T24）
 
-**它是人工触发的，不是忘了接。** 这条决定写在 `ARCHITECTURE.md` §9.3：Agent 消耗真实模型预算，自动编排要等报告与发布阶段就绪后再开。⚠️ 那两阶段（T11–T13）已经完成，**但开关还没人开** —— 当前状态是"必须人工触发"，见 §11 第 4 条。
+`AGENT_AUTO_RESEARCH_ENABLED=false`（默认）时，每日任务在四个阶段之后什么都不做，载荷里 `research_dispatched` 为 `null`。改成 `true` 之后，任务会对**同时满足三条**的主题各派发一个研究任务：
+
+1. 主题启用；
+2. 该主题**本业务日**的 `rank` 运行 `succeeded` 且 `candidate_count > 0`（排名没找到候选，研究它只会花钱证明"没什么可说"）；
+3. 该主题**本业务日没有非 `failed`** 的 `agent_runs` 行。
+
+第 3 条是预算保护，也是重试保护：beat 重投、worker 重启、操作员当天手工跑过，都不会让同一个主题第二次扣钱。**失败的那次不算**：`AGENT_MODEL_UNAVAILABLE` 这类失败没有产出草稿，当天应该允许再来一次，否则一次模型抖动就会让自动派发整天停摆（T24 实测第一次就是这么撞上的）。上限是 `AGENT_DAILY_RESEARCH_LIMIT`（默认 2），被上限挡住的个数写在载荷的 `deferred` 里。
+
+```bash
+# 打开开关：改 .env 的 AGENT_AUTO_RESEARCH_ENABLED=true 之后重建（--force-recreate 让 beat/worker 读到新环境）
+docker compose ... up -d --force-recreate worker beat
+# 然后等 02:00，或者手动投一次每日任务
+```
+
+`--with-research` 与开关是两条独立入口：它**不受** `AGENT_AUTO_RESEARCH_ENABLED` 影响（显式请求优先），研究在 CLI 进程里同步跑完，输出里给的是 `agent_run:<id>:<status>` 而不是 Celery 任务 id。
+
+⚠️ **`AGENT_MAX_TOKENS` 的默认值已从 12000 提到 30000（T24）。** 原因：README 缓存修好之后（T23），证据真实地变长，实测一次运行 `total_tokens` 18753 —— 12000 的默认值会让**真实模型第一次运行就** `AGENT_BUDGET_EXCEEDED`（`status=needs_review`，草稿仍写完了 6 个章节）。离线桩因为不计 token 不受影响。
+
+⚠️ **改 `AGENT_MAX_TOKENS` 对已有库不生效。** `agent_configs` 是**首次**运行时创建的一行（`agent/runtime.py:load_or_create_config`），之后一直复用；预算存在那一行里，不由环境变量每次覆盖（这是 FR-A-05「配置可版本化、每次运行绑定唯一 `agent_config_id`」的代价）。已有库要改预算，直接改那一行：
+
+```sql
+-- 先看现值
+SELECT id, name, max_tokens, max_cost, enabled FROM agent_configs ORDER BY id DESC;
+-- 再改（新运行会读到新值；历史运行的 config_id 仍指向旧值，这是有意的）
+UPDATE agent_configs SET max_tokens = 30000 WHERE id = <上面看到的 id>;
+```
+
+`AGENT_MAX_COST` 同样要按真实价格核对：token 上限抬上去之后，费用上限才是真正的闸门。
+
+**研究仍不在 beat 表里。** 它由每日任务派发（开关控制），而不是被一个独立时钟触发 —— 两处同时调度会让同一次研究双倍花钱。`tests/workers/test_research_dispatch_task.py` 用断言钉住"开关打开也不会多出一条 beat 条目"。
 
 ## 8. 报告链路（人工触发）
 

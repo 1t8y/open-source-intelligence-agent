@@ -49,11 +49,16 @@ class Settings(BaseSettings):
     agent_max_loops: int = Field(default=4, ge=1, le=20)
     agent_max_model_calls: int = Field(default=6, ge=1, le=50)
     agent_max_tool_calls: int = Field(default=10, ge=1, le=100)
-    agent_max_tokens: int = Field(default=12000, ge=1, le=1_000_000)
+    agent_max_tokens: int = Field(default=30000, ge=1, le=1_000_000)
     agent_max_cost: Decimal = Field(default=Decimal("0.50"), ge=0)
     agent_max_candidates: int = Field(default=5, ge=1, le=30)
     agent_request_timeout_seconds: int = Field(default=60, ge=1, le=600)
     agent_prompts_dir: str | None = None
+    #: Automatic research dispatch is off by default: a research run costs real budget, and an
+    #: unattended loop that starts one per topic per day is a spending decision, not a defaults
+    #: decision. The mechanism is wired either way - see `pipeline/research_dispatch.py`.
+    agent_auto_research_enabled: bool = False
+    agent_daily_research_limit: int = Field(default=2, ge=1, le=50)
     publish_delay_minutes: int = Field(default=60, ge=0, le=10080)
     publish_min_citation_coverage: float = Field(default=1.0, ge=0.0, le=1.0)
     publish_sweep_minutes: int = Field(default=15, ge=1, le=1440)

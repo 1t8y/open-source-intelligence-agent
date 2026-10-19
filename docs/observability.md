@@ -78,7 +78,7 @@ T15 要回答三个运维问题，`ARCHITECTURE.md` §14 把第一个写成了�
 | `GET /ui/dashboard?window_days=` | 看板页（六个区块，1 / 7 / 30 天切换） |
 | `GET /ui/dashboard/runs/{run_id}` | 运行轨迹页 |
 
-**Agent 运行对 API 是只读的。** HTTP 只提供上面三个 `GET`：一次运行会消耗模型预算，触发权属于操作员与调度器，而不是任意一个已登录客户端。**今天运行由操作员 CLI 创建**（`agent/cli.py --action run`）：`workers.tasks.run_research_agent` 已注册但不在 beat 表里，每日确定性任务也只做到排名（见 `docs/api-contract.md` §5 的校正说明）。
+**Agent 运行对 API 是只读的。** HTTP 只提供上面三个 `GET`：一次运行会消耗模型预算，触发权属于操作员与调度器，而不是任意一个已登录客户端。**运行有两个来源**：操作员 CLI（`agent/cli.py --action run`，或 `pipeline.cli --action daily --with-research`），以及每日任务在 `AGENT_AUTO_RESEARCH_ENABLED=true` 时的派发（T24，见 `pipeline/research_dispatch.py`；默认关闭）。`workers.tasks.run_research_agent` 仍**不单独进 beat 表** —— 两个调度源会让同一次研究双倍花钱。
 
 路由声明顺序是结构性约束：`/api/v1/agent/runs` 必须先于 `/api/v1/agent/runs/{run_id}`、`/ui/dashboard` 必须先于 `/ui/dashboard/runs/{run_id}`，否则字面量段会被路径参数吞掉 —— 与 `/reports/publish-due`、评测 `/runs` 是同一类陷阱。
 

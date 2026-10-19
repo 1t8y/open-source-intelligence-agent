@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from celery import Task, shared_task
+from sqlalchemy.orm import Session
 
 from open_source_intelligence.agent.errors import AGENT_MODEL_UNAVAILABLE
 from open_source_intelligence.agent.runtime import run_research_agent as execute_research_agent
@@ -28,6 +29,10 @@ from open_source_intelligence.persistence.session import (
 )
 from open_source_intelligence.pipeline.contents import business_day_start
 from open_source_intelligence.pipeline.daily import run_daily_pipeline as execute_daily_pipeline
+from open_source_intelligence.pipeline.research_dispatch import (
+    dispatch_research_targets,
+    select_research_targets,
+)
 from open_source_intelligence.pipeline.runs import PipelineStageError
 from open_source_intelligence.reports.publishing import (
     PUBLISH_BATCH_LIMIT,
@@ -105,6 +110,12 @@ def run_daily_pipeline(
 
     Each attempt writes its own PipelineRun records, so the retry trail stays
     visible: attempt 1 fails, attempt 2 succeeds, and both remain queryable.
+
+    When `AGENT_AUTO_RESEARCH_ENABLED` is on, the batch then dispatches one research run per
+    eligible topic (see `pipeline/research_dispatch.py`). Dispatching is deliberately *outside*
+    `run_daily_pipeline`: that function is the deterministic half and is called by drills and
+    tests that must not queue model calls as a side effect. The selection runs inside the same
+    session so it reads the rank rows this batch just wrote.
     """
     if provider not in {"github", "huggingface", "all"}:
         raise ValueError("provider must be github, huggingface, or all")
@@ -116,6 +127,7 @@ def run_daily_pipeline(
     resolved_date = resolve_business_date(business_date, settings)
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
+    dispatch_payload: dict[str, Any] | None = None
     try:
         with httpx.Client(timeout=20, follow_redirects=True) as client:
             collectors = build_collectors(provider, client)
@@ -131,6 +143,13 @@ def run_daily_pipeline(
                     content_refresh_after=business_day_start(resolved_date, settings.app_timezone),
                     attempt=attempt,
                 )
+                if settings.agent_auto_research_enabled:
+                    dispatch_payload = _dispatch_research(
+                        session,
+                        business_date=resolved_date,
+                        settings=settings,
+                        app=self.app,
+                    )
     except PipelineStageError as exc:
         if self.request.retries < settings.pipeline_task_max_retries:
             raise self.retry(
@@ -145,7 +164,44 @@ def run_daily_pipeline(
         engine.dispose()
     payload: dict[str, Any] = result.to_dict()
     payload["task"] = DAILY_PIPELINE_TASK
+    # `None` rather than `{}` when the switch is off: "we did not look" and "we looked and found
+    # nothing" are different facts, and a payload that renders both as an empty dict erases the
+    # difference for whoever reads the result later.
+    payload["research_dispatched"] = dispatch_payload
     return payload
+
+
+def _dispatch_research(
+    session: Session,
+    *,
+    business_date: date,
+    settings: Settings,
+    app: Any,
+) -> dict[str, Any]:
+    """Select today's research targets and queue one task per topic.
+
+    `app.send_task` by name rather than importing the bound task and calling `.delay`: the daily
+    task must not depend on the research module being importable at call time (it pulls in the
+    model adapters), and sending by name is what lets a worker pick it up on any process.
+    """
+    selection = select_research_targets(
+        session,
+        business_date=business_date,
+        timezone_name=settings.app_timezone,
+        limit=settings.agent_daily_research_limit,
+    )
+
+    def enqueue(topic_id: int) -> str:
+        async_result = app.send_task(RESEARCH_AGENT_TASK, kwargs={"topic_id": topic_id})
+        return str(async_result.id)
+
+    report = dispatch_research_targets(selection.targets, enqueue)
+    return {
+        **report.to_dict(),
+        "eligible": selection.eligible_count,
+        "deferred": selection.deferred_count,
+        "already_started": selection.already_started_topic_ids,
+    }
 
 
 def _optional_datetime(value: str | None) -> datetime | None:

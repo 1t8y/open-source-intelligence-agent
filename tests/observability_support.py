@@ -12,20 +12,28 @@ would let the failure-rate and trace assertions pass without measuring anything.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from support import NOW, Workspace
+from support import Workspace
 
 from open_source_intelligence.persistence.models.agent import AgentRun, AgentStep, ToolCall
 from open_source_intelligence.persistence.models.intelligence import PipelineRun
 from open_source_intelligence.persistence.models.reporting import Report
 
-#: The instant every observability test measures against. `Workspace` seeds its rows at the same
-#: moment, so the seeded ledger and the read clock agree without either being patched.
-ANCHOR = NOW
+#: The instant every observability test measures against, anchored to *yesterday noon*.
+#:
+#: It has to move with the clock: the observation window is rolling (`now - days`), so a fixed
+#: anchor makes the ledger fall out of every window on a calendar boundary. That happened for real
+#: - rows seeded at `2026-10-12T12:00Z` sat inside a seven-day window on the 18th and outside it on
+#: the 19th, and four metrics/dashboard tests went red with no code change behind them.
+#:
+#: One day back rather than "now" keeps the newest band (`ANCHOR - 3h`) comfortably inside the
+#: narrowest window no matter what hour the suite runs at, and it stays clear of the newest edge so
+#: `started_at <= window_end` never depends on which second the process started.
+ANCHOR = (datetime.now(UTC) - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
 
 #: Offsets from the anchor. Three bands, so "the window filters" is a claim with something to
 #: filter: inside, outside the 7-day window, and outside every window the dashboard offers.

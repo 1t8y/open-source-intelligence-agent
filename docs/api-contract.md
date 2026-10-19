@@ -305,7 +305,7 @@
 
 **创建路径不在 API 上。** Agent 运行由管道侧创建，并把结果连同行级证据写入 `agent_runs` / `agent_steps` / `tool_calls`。HTTP 接口对运行**只读**——这是有意的：运行会消耗模型预算，触发权属于操作员与调度器，而不是任意一个已登录的客户端。
 
-**当前由谁创建（T22 校正）**：`workers.tasks.run_research_agent` 已注册但**不在 beat 表里**（`ARCHITECTURE.md` §9.3：Agent 消耗真实模型预算，自动编排要等报告与发布阶段就绪后再开），而每日确定性任务 `run_daily_pipeline` 的三个阶段是 collect → snapshot → rank，**不派发研究运行**（`pipeline/daily.py:264`）。所以今天运行只可能由**操作员 CLI**（`agent/cli.py --action run`）或评测的目标函数创建；本节原文写的"每日任务完成候选筛选后启动一次运行"与实现不符，已按实测更正。开不开 beat 自动编排是一个**预算决定**，尚未做出。
+**当前由谁创建（T24 更新）**：三个来源。① 操作员 CLI（`agent/cli.py --action run`，或 `pipeline.cli --action daily --with-research`）；② 每日任务在 `AGENT_AUTO_RESEARCH_ENABLED=true` 时派发（`pipeline/research_dispatch.py`：主题启用 + 本业务日 `rank` 成功且有候选 + 本业务日无 `agent_runs` 行，每业务日最多 `AGENT_DAILY_RESEARCH_LIMIT` 个）；③ 评测的目标函数。该开关**默认 `false`**。`workers.tasks.run_research_agent` 仍然**不单独进 beat 表**（`ARCHITECTURE.md` §9.3）：研究由每日任务派发，不设第二个时钟，否则同一次运行会被两个调度源各触发一次。
 
 因此本节的三个端点全部是读侧，权限统一为 `ADMIN`、`EDITOR`（`METRICS_ROLES`）。`VIEWER` 得到 `403`，匿名得到 `401`；两类失败都不透露目标运行是否存在。
 
