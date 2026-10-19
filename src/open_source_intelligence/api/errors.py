@@ -22,6 +22,7 @@ from open_source_intelligence.reports.errors import (
     ReportNotFoundError,
     ReportStateError,
 )
+from open_source_intelligence.reports.sharing import ShareError
 from open_source_intelligence.topics.errors import TopicError
 
 PROBLEM_BASE = "https://example.local/problems"
@@ -81,6 +82,12 @@ DOMAIN_PROBLEM_STATUS: dict[str, int] = {
     # still arrive from a non-HTTP caller of `topics.service`, and a `409` for "your name is empty"
     # would send that caller looking for a topic that already has it.
     "TOPIC_NAME_BLANK": UNPROCESSABLE_CONTENT,
+    # Share links. A refused report is a conflict, not a bad request: the caller named a real
+    # report and the answer is "not this one". A malformed lifetime falls to the base code, which
+    # is a caller mistake.
+    "SHARE_SENSITIVITY_REFUSED": status.HTTP_409_CONFLICT,
+    "SHARE_NOT_PUBLISHED": status.HTTP_409_CONFLICT,
+    "SHARE_ERROR": status.HTTP_400_BAD_REQUEST,
 }
 
 
@@ -210,6 +217,24 @@ def add_problem_handlers(app: FastAPI) -> None:
             request,
             status_code=status.HTTP_400_BAD_REQUEST,
             code="VALIDATION_ERROR",
+            detail=str(exc),
+        )
+
+    @app.exception_handler(ShareError)
+    async def share_error_handler(
+        request: Request,
+        exc: ShareError,
+    ) -> JSONResponse:
+        """Render a refused share-link operation with its own stable code.
+
+        Registering the base class covers all three failures; the sensitivity refusal is the one
+        that matters, because it is the guard that keeps a no-login address from opening onto
+        internal content.
+        """
+        return problem_response(
+            request,
+            status_code=_domain_status(exc.code, status.HTTP_409_CONFLICT),
+            code=exc.code,
             detail=str(exc),
         )
 

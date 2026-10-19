@@ -201,6 +201,9 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .guest-shell .main { width: 100%; display: flex; justify-content: center; }
 .guest-shell .page { max-width: 380px; width: 100%; padding: 0; }
 .guest-shell .card { margin: 0; }
+/* 分享页要在无侧栏的前提下读正文，380px 的窄卡装不下一段报告；其余未登录页（登录 / 403 / 404）
+   仍然用一个居中的窄卡。`wide_layout` 只由 `/share/{token}` 传 True。 */
+.guest-shell.guest-wide .page { max-width: 860px; }
 .guest-shell .brand { padding: 0 0 var(--sp4); }
 
 /* ==========================================================================
@@ -279,6 +282,8 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .alert.warn { background: #fdf3e2; color: var(--warn); }
 
 .ok-text { color: var(--ok); }
+/* 分享链接要能整条选中复制：等宽、撑满、只读框。 */
+.share-url { width: 100%; font-family: var(--mono, ui-monospace, monospace); font-size: 13px; }
 .error-text { color: var(--error); }
 
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(176px, 1fr)); gap: var(--sp3) var(--sp5); margin: 12px 0; }

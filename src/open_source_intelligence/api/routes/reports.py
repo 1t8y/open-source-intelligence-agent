@@ -29,6 +29,13 @@ from open_source_intelligence.reports.publishing import (
     record_review,
 )
 from open_source_intelligence.reports.revisions import revise_report, rollback_report
+from open_source_intelligence.reports.sharing import (
+    DEFAULT_SHARE_TTL_HOURS,
+    MAX_SHARE_TTL_HOURS,
+    create_share_link,
+    list_share_links,
+    revoke_share_link,
+)
 from open_source_intelligence.reports.verification import verify_report
 from open_source_intelligence.security.authorization import (
     REPORT_READ_ROLES,
@@ -571,3 +578,113 @@ def push_one(
         actor_id=user.id,
     )
     return PushOutcomeResponse(**outcome.to_dict())
+
+
+class ShareLinkRequest(BaseModel):
+    """Lifetime for a new share link. Omitted means the link never expires."""
+
+    ttl_hours: int | None = Field(default=DEFAULT_SHARE_TTL_HOURS, ge=1, le=MAX_SHARE_TTL_HOURS)
+
+
+class ShareLinkResponse(BaseModel):
+    """The one response that carries a plaintext token."""
+
+    share_id: int
+    token: str
+    url_path: str
+    expires_at: datetime | None
+
+
+class ShareLinkSummaryResponse(BaseModel):
+    """A link as listable later: no token, only its state and usage."""
+
+    share_id: int
+    created_by: int | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
+    last_accessed_at: datetime | None
+    access_count: int
+    created_at: datetime
+    revoked: bool
+    active: bool
+
+
+class ShareLinkListResponse(BaseModel):
+    """Every link minted for one report."""
+
+    items: list[ShareLinkSummaryResponse]
+
+
+class ShareRevokeResponse(BaseModel):
+    """Whether this call performed the revocation. `false` means it was already revoked."""
+
+    share_id: int
+    revoked: bool
+
+
+@router.post("/{report_id}/shares", response_model=ShareLinkResponse, status_code=201)
+def create_report_share(
+    report_id: int,
+    payload: ShareLinkRequest,
+    request: Request,
+    user: WriteUser,
+    session: DbSession,
+) -> ShareLinkResponse:
+    """Mint a no-login link for one published `PUBLIC` report.
+
+    The gate is `sensitivity`, not `visibility`. A share link is an address with no login
+    behind it, so it asks "may this content leave the organisation" - the question
+    `sensitivity` answers. Gating on `visibility` would have let an `INTERNAL` report (readable
+    by every logged-in user) out through a public door.
+
+    `token` appears in this response and nowhere else: only its sha256 is stored, so the link
+    cannot be recovered later and a database dump is not a set of working credentials.
+    """
+    authorize_report_read(session, request, user, report_id=report_id)
+    created = create_share_link(
+        session,
+        report_id=report_id,
+        actor_id=user.id,
+        ttl_hours=payload.ttl_hours,
+    )
+    return ShareLinkResponse(**created.to_dict())
+
+
+@router.get("/{report_id}/shares", response_model=ShareLinkListResponse)
+def list_report_shares(
+    report_id: int,
+    request: Request,
+    user: WriteUser,
+    session: DbSession,
+) -> ShareLinkListResponse:
+    """List the links minted for a report. Never returns a plaintext token."""
+    authorize_report_read(session, request, user, report_id=report_id)
+    return ShareLinkListResponse(
+        items=[
+            ShareLinkSummaryResponse(**summary.to_dict())
+            for summary in list_share_links(session, report_id=report_id)
+        ]
+    )
+
+
+@router.delete("/{report_id}/shares/{share_id}", response_model=ShareRevokeResponse)
+def revoke_report_share(
+    report_id: int,
+    share_id: int,
+    request: Request,
+    user: WriteUser,
+    session: DbSession,
+) -> ShareRevokeResponse:
+    """Stop a link from resolving.
+
+    Idempotent: a second call reports `revoked=false` rather than failing, because the caller's
+    intent - "make sure this address stops working" - is already satisfied.
+    """
+    authorize_report_read(session, request, user, report_id=report_id)
+    revoked = revoke_share_link(
+        session,
+        report_id=report_id,
+        share_id=share_id,
+        actor_id=user.id,
+    )
+    return ShareRevokeResponse(share_id=share_id, revoked=revoked)

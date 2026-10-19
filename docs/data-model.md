@@ -318,6 +318,29 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 
 `owner_id` 为 `NULL` 的 `PRIVATE` 报告只有 `ADMIN` 可读——这是"没有负责人的私有内容按最窄范围处理"的安全默认值，而不是"人人可读"。
 
+### `report_share_links`
+
+T26 新增。**免登录只读**的分享凭证。它存在的理由：`sensitivity='PUBLIC'` 此前只是一个标签，既不能让组织外的人读到报告，也不参与任何判定——报告的唯一出口是"给人建个账号"。这张表把"公开"变成一个可撤销的动作。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 链接 ID |
+| `report_id` | BIGINT UNSIGNED | FK reports.id, CASCADE | 被分享的报告 |
+| `token_hash` | CHAR(64) | NOT NULL, UNIQUE | `sha256(token)` 的十六进制；**明文不入库** |
+| `created_by` | BIGINT UNSIGNED | FK users.id, SET NULL, NULL | 生成者；账号删除后链接仍在，便于追查"曾经谁分享过" |
+| `expires_at` | DATETIME(6) | NULL | `NULL` 表示不过期 |
+| `revoked_at` | DATETIME(6) | NULL | 撤销时刻；非空即失效 |
+| `last_accessed_at` | DATETIME(6) | NULL | 最近一次成功解析 |
+| `access_count` | INT | NOT NULL DEFAULT 0 | 成功解析次数 |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+| `updated_at` | DATETIME(6) | NOT NULL | UTC |
+
+索引：`UNIQUE(token_hash)`、`(report_id, revoked_at)`。
+
+三条约束落在服务层而不是 CHECK：报告必须 `sensitivity='PUBLIC'` 且 `status='published'` 才能生成；`expires_at` 为空或晚于当前时刻；`revoked_at` 为空。**失效时一律 `404`**，不区分"不存在 / 已撤销 / 已过期 / 报告被撤回"，因为可区分就等于提供了探测接口。
+
+`token_hash` 是这张表的安全边界：整表泄露时泄露的是"某份报告曾被分享过"，不是"现在谁都能读到哪份报告"。明文只在 `create_share_link` 的返回值里出现一次，列表接口永远不返回。
+
 ### `report_versions`
 
 字段：`id`、`report_id`、`version`、`content_markdown`、`created_by`、`change_reason`、`created_at`。唯一约束：`UNIQUE(report_id, version)`。

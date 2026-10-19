@@ -307,3 +307,43 @@ class ReportReview(Base):
         nullable=False,
         default=utc_now,
     )
+
+
+class ReportShareLink(Base, TimestampMixin):
+    """A bearer credential that makes one published PUBLIC report readable without a login.
+
+    Only the token's digest is stored: `token_hash`. That is the whole security argument for
+    putting this in the database at all - if this table leaks, what leaks is "somebody once
+    shared this report", not "here is a URL that reads it". The plaintext therefore exists only
+    in the response that created the row, and `list_share_links` can never hand it back.
+
+    `expires_at` of `NULL` means "no expiry". `revoked_at` of `NULL` means "not revoked".
+    Everything else - wrong token, revoked, expired, report no longer PUBLIC or no longer
+    published - resolves to the same `None`, because telling them apart turns the route into an
+    oracle that answers "did this report ever exist".
+    """
+
+    __tablename__ = "report_share_links"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_report_share_links_token_hash"),
+        Index("ix_report_share_links_report_revoked", "report_id", "revoked_at"),
+    )
+
+    id: Mapped[uint64_pk]
+    report_id: Mapped[int] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[int | None] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_accessed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    access_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )

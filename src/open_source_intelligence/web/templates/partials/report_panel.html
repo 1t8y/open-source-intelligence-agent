@@ -200,6 +200,72 @@
 </section>
 
 <section class="card">
+  <h2>分享链接</h2>
+  {% if share_token %}
+  {# 明文只在这里出现一次：这一份 HTML 是 POST 的响应，刷新会重发请求而不是重放令牌。
+     用只读输入框而不是 <code>，是因为读者要复制它，而要复制一段文字最自然的方式是选中。 #}
+  <p class="alert ok">链接已生成，只显示这一次。库内只保存摘要，关掉页面后无法找回。</p>
+  <p>
+    <input class="share-url" type="text" readonly value="{{ request.base_url }}share/{{ share_token }}"
+           onclick="this.select()" aria-label="分享链接">
+  </p>
+  <p class="hint">拿到这条地址的人无需登录即可阅读。链接可在下面随时撤回。</p>
+  {% endif %}
+
+  {% if not shareable %}
+  {# 不能分享时必须说明为什么，否则这张卡看起来像个坏掉的按钮。 #}
+  <p class="hint">当前不能生成分享链接：{{ share_blocker }}。</p>
+  {% elif can_write %}
+  <form class="inline-form" method="post" action="/ui/reports/{{ report.id }}/share"
+        hx-post="/ui/reports/{{ report.id }}/share" hx-target="#report-panel" hx-swap="innerHTML">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="primary">生成分享链接</button>
+  </form>
+  <p class="hint">
+    生成的地址<b>不需要登录</b>，因此只对敏感性为 {{ report.sensitivity }} 且已发布的报告开放；
+    链接默认 7 天后失效，可随时撤回。
+  </p>
+  {% else %}
+  <p class="hint">当前角色只读，不能生成分享链接。</p>
+  {% endif %}
+
+  {% if share_links %}
+  <table class="grid">
+    <thead>
+      <tr><th>生成时间</th><th>到期</th><th>访问次数</th><th>最近访问</th><th>状态</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+      {% for link in share_links %}
+      <tr>
+        <td>{{ link.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td>{{ link.expires_at.strftime("%Y-%m-%d %H:%M") if link.expires_at else "不过期" }}</td>
+        <td>{{ link.access_count }}</td>
+        <td>{{ link.last_accessed_at.strftime("%Y-%m-%d %H:%M") if link.last_accessed_at else "—" }}</td>
+        <td>
+          {% if link.revoked_at %}<span class="error-text">已撤回</span>
+          {% elif link.is_active() %}<span class="ok-text">有效</span>
+          {% else %}<span class="error-text">已过期</span>{% endif %}
+        </td>
+        <td>
+          {% if can_write and not link.revoked_at %}
+          <form method="post" action="/ui/reports/{{ report.id }}/share/{{ link.share_id }}/revoke"
+                hx-post="/ui/reports/{{ report.id }}/share/{{ link.share_id }}/revoke"
+                hx-target="#report-panel" hx-swap="innerHTML">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="link-button">撤回</button>
+          </form>
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% elif shareable %}
+  <p class="hint">还没有分享链接。</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>审核记录</h2>
   {% if detail.reviews %}
   <table class="grid">

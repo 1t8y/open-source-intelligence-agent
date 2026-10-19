@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ report.title }} · 分享{% endblock %}
+{% block content %}
+{# 这一页没有侧栏、没有写操作、没有 CSRF 字段，也不出现任何其他报告的信息。
+   读者是拿到链接的匿名外部访问者 —— 页面能做的事必须与他能做的事完全一致。 #}
+<section class="card">
+  <h1 class="page-title">{{ report.title }}</h1>
+  <p class="meta">
+    主题 {{ topic_name }} · 第 {{ report.current_version }} 版
+    {% if report.published_at %}· 发布于 {{ report.published_at.strftime("%Y-%m-%d %H:%M") }} UTC{% endif %}
+  </p>
+  <p class="hint">这是一份只读分享页，由报告作者主动生成。链接可随时被撤回。</p>
+</section>
+
+<section class="card">
+  <pre class="content">{{ report.content_markdown }}</pre>
+</section>
+{% endblock %}

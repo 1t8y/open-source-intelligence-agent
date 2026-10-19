@@ -293,6 +293,52 @@ UPDATE agent_configs SET max_tokens = 30000 WHERE id = <上面看到的 id>;
 - 到期释放有两个入口：beat 每 `PUBLISH_SWEEP_MINUTES` 扫一次，或 `--action publish-due` / 界面上的「释放到期报告」按钮。**在只有排队、没有到期报告时它是空操作**，不是故障。
 - 发布这一步的裁决结果体现在它的返回值与对应的 pipeline run 指标里：`requires_review` 与 `reason_codes`。实测见到的原因是 `AGENT_RUN_NOT_CLEAN` → `resolution: pending_review`（同一类还有 `PUBLISH_POLICY_BLOCKED`）。看到 `requires_review: true` 就是**策略按设计把它交给人了**，不是失败。
 
+### 8.1 免登录分享链接（T26）
+
+报告此前只能登录后看。分享链接给出一条**不需要账号**的只读地址，用来把周报发给组织外的人。
+
+**前置条件两条，缺一不可**：`reports.sensitivity = 'PUBLIC'`（内容敏感性）**且** `reports.status = 'published'`。
+
+```bash
+# 1) 把一份已发布的报告标为可对外（敏感性是内容属性，运营按事实填）
+#    界面：报告详情 → 编辑 → 敏感性选「公开」→ 保存。命令行版：
+docker compose ... exec -T api python -c "
+from open_source_intelligence.core.config import get_settings
+from open_source_intelligence.persistence.models.reporting import Report
+from open_source_intelligence.persistence.session import create_database_engine, create_session_factory
+s = get_settings(); e = create_database_engine(s.database_url); f = create_session_factory(e)
+with f() as session:
+    report = session.get(Report, 37)
+    print(report.status, report.sensitivity)
+    report.sensitivity = 'PUBLIC'
+    session.commit()
+e.dispose()
+"
+
+# 2) 生成链接（明文令牌只在这一次响应里出现）
+curl -s -X POST http://127.0.0.1:8000/api/v1/reports/37/shares \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"ttl_hours": 168}'
+# {"share_id": 1, "token": "…43 字符…", "url_path": "/share/…", "expires_at": "2026-10-26T…"}
+
+# 3) 读者直接打开（不需要登录、不需要 Cookie）
+curl -s -D- http://127.0.0.1:8000/share/<token> | head -20
+# HTTP/1.1 200 OK   /   cache-control: no-store   /   x-robots-tag: noindex, nofollow
+
+# 4) 撤回
+curl -s -X DELETE http://127.0.0.1:8000/api/v1/reports/37/shares/1 \
+  -H "Authorization: Bearer <token>"
+# {"share_id": 1, "revoked": true}      再撤一次 → {"revoked": false}（幂等）
+```
+
+界面上是同一件事：报告详情页的「分享链接」卡片在 `PUBLIC` + 已发布时才出现「生成分享链接」按钮；不满足条件时卡片会**说明原因**（敏感性不符 / 状态不符），而不是让按钮凭空消失。
+
+**运维必须知道的四件事**：
+
+- **令牌只出现一次。** 库内只存 `sha256(token)`，没有明文列。链接丢了只能重新生成一条 —— 这是让"整表泄露"不等于"所有报告可读"的代价，不要为了方便找回而加明文列。
+- **失效一律 404**，不区分不存在 / 已撤回 / 已过期 / 报告被撤回 / 报告改回非 `PUBLIC`。这是刻意的：能区分就成了探测接口。
+- **撤回立即生效**（`no-store`，没有缓存），但**读者可能已经保存了页面**。链接是凭证，不是访问控制。
+- **报告改回 `INTERNAL` 或退回 `draft`，链接自动失效**，不必单独撤；反过来，撤销链接**不会**改变报告状态。
+
 ## 9. 回填（后端，人工触发）
 
 ```bash

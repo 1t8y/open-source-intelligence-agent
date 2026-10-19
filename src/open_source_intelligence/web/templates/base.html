@@ -12,7 +12,7 @@
 {# 外壳只有两种：登录态是「侧栏 + 内容」，未登录态（登录页 / 403 / 404）是一块居中的窄卡。
    两个分支共用同一个 content 块 —— Jinja 不允许同名块出现两次，所以不是复制模板，
    而是换外层 class，由 `.guest-shell` 那几条规则把布局改成居中。 #}
-<div class="{{ 'app' if current_user else 'guest-shell' }}" id="app">
+<div class="{{ 'app' if current_user else ('guest-shell guest-wide' if wide_layout else 'guest-shell') }}" id="app">
 
   {% if current_user %}
   {# 侧栏把全部主要功能按「报告 / 数据 / 质量 / 运维」四组归类。

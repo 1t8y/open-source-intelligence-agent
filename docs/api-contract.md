@@ -1,6 +1,6 @@
 # API 接口契约
 
-> 版本：v1.6
+> 版本：v1.7
 > 前缀：`/api/v1`  
 > 最后更新：2026-10-16
 
@@ -631,6 +631,43 @@
     "error_code": null, "error_message": null, "delivered": true, "replayed": false }] }
 ```
 
+### `GET /share/{token}`
+
+**免登录**。渲染一份 `sensitivity='PUBLIC'` 且 `status='published'` 的报告正文，供组织外读者通过链接阅读（T26）。响应是 HTML 页面，`Cache-Control: no-store`，并不返回 JSON。
+
+失效一律 `404`，且**不区分原因**（令牌不存在 / 已撤销 / 已过期 / 报告已被撤回 / 报告不再是 `PUBLIC`）。可区分就等于提供了一个探测接口：拿着一个随机串就能问出"这份报告存在过吗"。
+
+页面只读：不渲染任何写操作、不加载 CSRF 字段、不出现其他报告的任何信息。解析成功只累加 `access_count` 与 `last_accessed_at`，不写审计行 —— 读者是匿名外部访问者，为他们每次刷新写审计既无主体可归属，也会淹没正常审计流量。
+
+### `POST /reports/{report_id}/shares`
+
+权限：`ADMIN`、`EDITOR`（与 `REPORT_WRITE_ROLES` 一致）。为报告生成一条分享链接。
+
+前置条件：`sensitivity='PUBLIC'` 且 `status='published'`。否则 `409 SHARE_SENSITIVITY_REFUSED`。判定落在 `sensitivity` 而不是 `visibility` —— 分享链接是**不需要登录**的地址，允许给 `INTERNAL` 报告发公开链接等于用一个接口绕开整套可见性模型。
+
+请求体：`{ "ttl_hours": 168 }`（可选，1-8760；省略表示不过期）。
+
+```json
+{ "share_id": 3, "token": "kQ7...43chars", "url_path": "/share/kQ7...43chars",
+  "expires_at": "2026-10-26T13:00:00+00:00", "created_at": "2026-10-19T13:00:00+00:00" }
+```
+
+**`token` 明文只在这一次响应里出现**，库内只存 `sha256(token)`。列表接口不返回明文，链接丢了只能重新生成。这样整表泄露时，泄露的是"某份报告曾被分享过"，而不是"现在谁都能读到哪份报告"。
+
+### `GET /reports/{report_id}/shares`
+
+权限：`ADMIN`、`EDITOR`。列出该报告的分享链接（**不含明文令牌**）。
+
+```json
+{ "items": [{ "share_id": 3, "created_by": 7, "expires_at": "2026-10-26T13:00:00+00:00",
+  "revoked_at": null, "last_accessed_at": "2026-10-19T15:02:00+00:00", "access_count": 4,
+  "created_at": "2026-10-19T13:00:00+00:00", "revoked": false, "active": true }] }
+```
+
+### `DELETE /reports/{report_id}/shares/{share_id}`
+
+权限：`ADMIN`、`EDITOR`。撤销一条链接，写 `report.share_revoke` 审计。**幂等**：已撤销的再撤一次返回 `200` 且不改变 `revoked_at`，因为"确保它不再可用"这个意图已经达成；只有链接不属于该报告时才 `404`。
+
 ### 管理界面（`/ui`）
 
 前端设计稿（`D:\job-workspace\.frontend-design\intelligence-console-v0.html`，仓库外）在 T20 上屏，落成下面这组页面。同一套服务层的服务端渲染界面（Jinja2 + HTMX，`include_in_schema=False`）。
@@ -645,6 +682,8 @@
 | `POST /ui/reports/{report_id}/{verify,review,publish,rollback,edit}` | 写角色 | 动作，返回刷新后的报告片段 |
 | `POST /ui/reports/{report_id}/push` | 写角色 | 推送到一个允许列表目标，返回刷新后的报告片段；渠道取自目标行，表单传 `channel` 无效 |
 | `POST /ui/reports/publish-due` | 写角色 | 到期释放驱动，返回释放结果片段；**按钮只对写角色渲染** —— 渲染面与准入面取同一个常量 |
+| `POST /ui/reports/{report_id}/share` | 写角色 | 生成分享链接，返回刷新后的报告片段；**明文令牌只出现在这一次响应里**，列表与刷新都不会重现 |
+| `POST /ui/reports/{report_id}/share/{share_id}/revoke` | 写角色 | 撤回一条分享链接；幂等，重复撤回只改提示文案 |
 | `GET /ui/pushes` | 写角色 | 投递记录；**推送目标白名单仅管理员可见**，非管理员时这份 allowlist 连查询都不执行；`list_pushes` 是限量查询而非分页，页面如实印出上限 |
 | `GET /ui/topics` | 读角色 | 主题列表，支持 `q`（字面子串）与 `enabled`；`total` 受可见性约束 |
 | `GET /ui/topics/{topic_id}` | 读角色 | 单个主题的编辑表单与采集参数 |

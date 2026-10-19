@@ -15,6 +15,7 @@ from open_source_intelligence.persistence.session import (
 )
 from open_source_intelligence.web.router import add_web_surface
 from open_source_intelligence.web.router import router as web_router
+from open_source_intelligence.web.sharing import router as share_router
 
 from .errors import add_problem_handlers
 from .middleware import add_request_id_middleware
@@ -65,6 +66,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(repositories_router)
     app.include_router(topics_router)
     app.include_router(audit_router)
+    app.include_router(share_router)
     app.include_router(web_router)
 
     @app.get("/", include_in_schema=False)

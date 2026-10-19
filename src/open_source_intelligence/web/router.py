@@ -73,6 +73,15 @@ from open_source_intelligence.reports.revisions import (
     revise_report,
     rollback_report,
 )
+from open_source_intelligence.reports.sharing import (
+    SHAREABLE_SENSITIVITY,
+    SHAREABLE_STATUS,
+    ShareError,
+    ShareLinkNotFound,
+    create_share_link,
+    list_share_links,
+    revoke_share_link,
+)
 from open_source_intelligence.reports.verification import verify_report
 from open_source_intelligence.security.audit import format_ip_address, record_audit_event
 from open_source_intelligence.security.authorization import (
@@ -575,6 +584,27 @@ def _push_context(session: Session, report_id: int) -> dict[str, Any]:
     }
 
 
+def _share_context(session: Session, report: Report) -> dict[str, Any]:
+    """Build the data the share card needs: the links and whether a new one may be minted.
+
+    The eligibility answer is computed from the same two constants the service refuses on
+    (`SHAREABLE_SENSITIVITY`, `SHAREABLE_STATUS`), so the card cannot offer a button that the
+    service will reject - the same rule the navigation and topic pages follow.
+    """
+    shareable = report.sensitivity == SHAREABLE_SENSITIVITY and report.status == SHAREABLE_STATUS
+    if report.sensitivity != SHAREABLE_SENSITIVITY:
+        blocker = f"敏感性为 {report.sensitivity}，只有 {SHAREABLE_SENSITIVITY} 的报告可以对外分享"
+    elif report.status != SHAREABLE_STATUS:
+        blocker = f"报告状态为 {report.status}，只有 {SHAREABLE_STATUS} 的报告可以对外分享"
+    else:
+        blocker = None
+    return {
+        "share_links": list_share_links(session, report_id=report.id),
+        "shareable": shareable,
+        "share_blocker": blocker,
+    }
+
+
 # --------------------------------------------------------------------------------------
 # Session
 # --------------------------------------------------------------------------------------
@@ -787,6 +817,7 @@ def _panel(
     *,
     flash: str | None = None,
     error: str | None = None,
+    share_token: str | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
     """Render the report panel that every action endpoint swaps back in."""
@@ -804,7 +835,11 @@ def _panel(
             "flash": flash,
             "error": error,
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
+            # 明文令牌只在这一次响应里出现：_panel 处理的是 POST 的返回值，刷新页面会重发请求而不是
+            # 重放这个字符串，因此"只显示一次"由 HTTP 语义保证，不靠前端清空变量。
+            "share_token": share_token,
             **_push_context(session, report.id),
+            **_share_context(session, report),
         },
         status_code=status_code,
     )
@@ -832,7 +867,9 @@ def report_page(
             "flash": None,
             "error": None,
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
+            "share_token": None,
             **_push_context(session, report.id),
+            **_share_context(session, report),
             "active": "reports",
         },
         csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
@@ -1093,6 +1130,73 @@ def edit_action(
 # --------------------------------------------------------------------------------------
 # Push deliveries
 # --------------------------------------------------------------------------------------
+
+
+@router.post("/reports/{report_id}/share", response_class=HTMLResponse)
+def create_share_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    report_id: int,
+    csrf: CsrfField = "",
+) -> HTMLResponse:
+    """Mint a no-login link and render it once.
+
+    The plaintext token is passed to this one render and never stored. A refresh re-posts the
+    form (the browser asks first) instead of replaying the string, so "shown once" follows from
+    HTTP semantics rather than from front-end bookkeeping.
+    """
+    _authorize_action(request, session, web, report_id, csrf)
+    try:
+        created = create_share_link(session, report_id=report_id, actor_id=web.user.id)
+    except ShareError as exc:
+        return _panel(
+            request,
+            session,
+            web,
+            report_id,
+            error=f"{exc.code}：{exc}",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    return _panel(
+        request,
+        session,
+        web,
+        report_id,
+        share_token=created.token,
+        flash="分享链接已生成。它只在这里显示一次，库内只存摘要 —— 关掉页面后无法找回。",
+    )
+
+
+@router.post("/reports/{report_id}/share/{share_id}/revoke", response_class=HTMLResponse)
+def revoke_share_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    report_id: int,
+    share_id: int,
+    csrf: CsrfField = "",
+) -> HTMLResponse:
+    """Stop a link from resolving, idempotently."""
+    _authorize_action(request, session, web, report_id, csrf)
+    try:
+        revoked = revoke_share_link(
+            session,
+            report_id=report_id,
+            share_id=share_id,
+            actor_id=web.user.id,
+        )
+    except ShareLinkNotFound as exc:
+        return _panel(
+            request,
+            session,
+            web,
+            report_id,
+            error=f"{exc.code}：{exc}",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    flash = "链接已撤回" if revoked else "该链接此前已撤回，无需重复操作"
+    return _panel(request, session, web, report_id, flash=flash)
 
 
 @router.get("/pushes", response_class=HTMLResponse)

@@ -1,6 +1,6 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T25 已对齐）
+> 文档状态：实施基线（T1-T26 已对齐）
 > 文档版本：v0.16
 > 最后更新：2026-10-16
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
@@ -38,8 +38,9 @@
 | 仓库 | `/repositories`、`/repositories/{id}/snapshots` | ADMIN/EDITOR/VIEWER | 仓库元数据为公开级（`security-and-privacy.md` §2），不做逐行 ACL；`topic_id` 过滤要求主题可见（`enabled` 对全角色、禁用主题仅 ADMIN），越权 `403` + `repository.read` 审计。快照窗口是**闭区间**，与 `get_snapshot_series` 一致 |
 | Agent | `GET /agent/runs`、`/agent/runs/{id}`、`/agent/runs/{id}/steps` | ADMIN/EDITOR | **只读**（运行由 pipeline/worker 创建，不经 API）；列表按 `status`/`topic_id` 过滤并分页，轨迹含未挂到步骤的工具调用 |
 | 报告 | `/reports`、`/{id}/verify`、`/{id}/review`、`/{id}/publish`、`/{id}/rollback`、`/{id}/push`、`/publish-due` | 读 ADMIN/EDITOR/VIEWER，写 ADMIN/EDITOR | 版本、状态机、ACL 和审核 |
+| 报告分享 | `GET /share/{token}`（**免登录、只读**）、`POST /reports/{id}/shares`、`DELETE /reports/{id}/shares/{share_id}` | 分享页不校验登录；生成与撤销要求 `REPORT_WRITE_ROLES` 且报告 `sensitivity=PUBLIC` 且 `status=published` | 令牌明文只在创建响应里出现一次，库内只存 SHA-256；无效 / 过期 / 已撤销一律 `404`，不区分原因 |
 | 推送 | `/push/targets`、`/push/records`、`/push/retry` | ADMIN/EDITOR | 投递允许列表、投递记录与失败重试扫描 |
-| 管理界面 | `GET /ui/{reports,reports/{id},pushes,topics,topics/{id},repositories,runs,evaluations,dashboard,dashboard/runs/{id},audit,login}`；`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/publish-due`、`POST /ui/topics`、`POST /ui/topics/{id}/{update,toggle,delete}`、`/ui/login`、`/ui/logout` | 与同一资源在 API 侧完全相同的角色常量（`REPORT_READ_ROLES` / `REPORT_WRITE_ROLES` / `TOPIC_READ_ROLES` / `TOPIC_WRITE_ROLES` / `REPOSITORY_READ_ROLES` / `METRICS_ROLES` / `AUDIT_READ_ROLES`） | 服务端渲染页面，复用同一套服务层；登录态为「左侧分组侧栏 + 右侧内容」，侧栏条目与路由准入由同一组常量生成（菜单列出而打开被拒 = 缺陷）；侧栏与内容之间的边界可调（鼠标 / 方向键 / `localStorage`）；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；写成功 `303` 重定向、失败原地重渲染并回填；推送渠道取自目标行而非表单；运行 / 评测的触发不在界面上（同 API 的理由）；**运维配置（推送目标白名单、用户账号）只从后端写入，界面上的提及仅对 `ADMIN` 渲染**（`OPS_CONFIG_ROLES`；非管理员时这份 allowlist 连查询都不执行） |
+| 管理界面 | `GET /ui/{reports,reports/{id},pushes,topics,topics/{id},repositories,runs,evaluations,dashboard,dashboard/runs/{id},audit,login}`；`POST /ui/reports/{id}/{verify,review,publish,rollback,edit,push}`、`POST /ui/reports/{id}/share`、`POST /ui/reports/{id}/share/{share_id}/revoke`、`POST /ui/reports/publish-due`、`POST /ui/topics`、`POST /ui/topics/{id}/{update,toggle,delete}`、`/ui/login`、`/ui/logout` | 与同一资源在 API 侧完全相同的角色常量（`REPORT_READ_ROLES` / `REPORT_WRITE_ROLES` / `TOPIC_READ_ROLES` / `TOPIC_WRITE_ROLES` / `REPOSITORY_READ_ROLES` / `METRICS_ROLES` / `AUDIT_READ_ROLES`） | 服务端渲染页面，复用同一套服务层；登录态为「左侧分组侧栏 + 右侧内容」，侧栏条目与路由准入由同一组常量生成（菜单列出而打开被拒 = 缺陷）；侧栏与内容之间的边界可调（鼠标 / 方向键 / `localStorage`）；会话走 `HttpOnly` Cookie，写操作走 CSRF 双提交；写成功 `303` 重定向、失败原地重渲染并回填；推送渠道取自目标行而非表单；运行 / 评测的触发不在界面上（同 API 的理由）；**运维配置（推送目标白名单、用户账号）只从后端写入，界面上的提及仅对 `ADMIN` 渲染**（`OPS_CONFIG_ROLES`；非管理员时这份 allowlist 连查询都不执行） |
 | 评测 | `/evaluations`、`/evaluations/runs`、`/evaluations/runs/{id}`、`/evaluations/{dataset_id}/cases`、`/evaluations/{dataset_id}/run`、`/evaluations/{dataset_id}/comparison` | ADMIN/EDITOR（全部，含读） | 数据集版本、样本、按变体执行与统一对比报告；未知变体 `400`、版本冲突 `409`、关闭时 `503` |
 | 监控 | `/metrics/overview` | ADMIN/EDITOR | 纯只读的运维总览：任务、Token、延迟、失败率、报告人工阻断率与最新一轮评测裁决；`window_days` 1-90 越界 `422`（不夹取），窗口半开，未行使的指标为 `null` 而非 `0`，评测段不随窗口变化 |
 | 回填 | **无 HTTP 端点**；CLI `backfill --action start\|resume\|status\|list`、Celery `run_backfill` | 部署/运维（无 API 角色） | 一次性、昂贵、对共享公共 API 施压的历史走查，因此只服务操作员而不暴露给请求处理器；`target_pages` 与 `per_page` 均为 `1..100`，`--provider` 一次只走一个源（无 `all`）；作业行即检查点，可断点续传；操作失误（越界、并发占用、不可续传、源不可分页）以非零码退出并打印原因，走查失败打印游标停在哪后退出，作业保持可续传 |
@@ -111,7 +112,7 @@ create_session_factory(engine: Engine) -> sessionmaker[Session]
 Base.metadata
 ```
 
-首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`；此后 T10 追加 `report_versions`，T11 追加 `report_verifications`、`report_reviews`，T13 追加 `push_targets`、`report_pushes`，T14 追加 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results`，T16 追加 `backfill_jobs`，元数据共 **29 张表**（`feedback` 属计划内、尚未实现）。
+首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`；此后 T10 追加 `report_versions`，T11 追加 `report_verifications`、`report_reviews`，T13 追加 `push_targets`、`report_pushes`，T14 追加 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results`，T16 追加 `backfill_jobs`，T26 追加 `report_share_links`，元数据共 **30 张表**（`feedback` 属计划内、尚未实现）。
 
 Security 接口：
 
@@ -176,6 +177,25 @@ generate_report(session, *, agent_run_id: int, title: str | None = None, now: da
 ```
 
 CLI 入口为 `python -m open_source_intelligence.reports.cli`，动作为 `--action {generate,verify,publish,review,publish-due,push,push-retry}`（`--agent-run-id` 单独使用等价于 `generate`，保持 T10 入口兼容）。报告只从最新章节草稿合成；六个章节必须齐全且每节至少一条引用，含数字的章节至少一条 `metric` 引用。引用必须解析到 `repo_snapshots`、`repository_contents` 或已发布 `reports`。重复生成相同内容不新增版本，内容变化时递增 `reports.current_version` 并写入 `report_versions`。`push` 额外接受 `--channel {email,webhook} --target-id <id>`，`push-retry` 接受 `--limit <n>`。
+
+报告分享接口（T26，`reports/sharing.py` 是唯一出入口）：
+
+```text
+create_share_link(session, *, report_id, actor_id, ttl_hours, now=None) -> ShareLinkCreated
+resolve_share_token(session, token, now=None) -> SharedReport
+revoke_share_link(session, *, report_id, share_id, actor_id, now=None) -> None
+list_share_links(session, *, report_id) -> list[ShareLinkSummary]
+ShareLinkCreated { share_id: int, token: str, url_path: str, expires_at: datetime | None }
+SharedReport { report: Report, share_id: int }
+```
+
+**闸门是 `sensitivity` 而不是 `visibility`。** 两者是两套词表：`visibility`（`PRIVATE/TEAM/INTERNAL`）管"系统内谁能看"，`sensitivity`（`PUBLIC/INTERNAL/CONFIDENTIAL`）管"内容能不能离开组织"。分享链接生成的是**不需要登录**的地址，所以判定必须落在 `sensitivity` 上：只有 `sensitivity='PUBLIC'` 且 `status='published'` 的报告可以生成，其余一律 `SHARE_SENSITIVITY_REFUSED`（`409`）——允许给 `INTERNAL` 报告发公开链接，等于用一个接口绕开整套可见性模型。`PUBLIC` 此前只是一个落在下拉框里的标签，不参与任何判定；T26 之后它第一次有约束力。
+
+**令牌规则**：`secrets.token_urlsafe(32)`（43 字符，256 位熵），明文**只在创建响应里出现一次**，库内只存 `sha256(token)`。列表接口永远不返回明文，因此"链接丢了"只能重新生成一条。这条规则的意义是：`report_share_links` 整表泄露时，泄露的是"某份报告曾被分享过"，不是"任何一份报告现在能被读到"。
+
+**解析与失效**：`resolve_share_token` 按 `sha256` 查行，随后依次判 `revoked_at IS NULL`、`expires_at IS NULL OR expires_at > now`、报告仍为 `published` 且 `sensitivity='PUBLIC'`。任何一条不成立都返回 `None`，路由统一渲染 `404`——**不区分"令牌不存在"、"已撤销"、"已过期"、"报告被撤回"**，因为能区分就等于给了一个探测接口。解析成功只更新 `last_accessed_at` 与 `access_count`，**不写审计行**：分享页的读者是外部匿名访问者，为他们每一次刷新写一条 `audit_logs` 既无主体可归属，也会让审计表被正常流量淹没；生成与撤销是操作员动作，两者都写审计（`report.share_create` / `report.share_revoke`）。
+
+**只读**：分享页只渲染报告正文与引用，不渲染任何写操作、不加载 `CSRF_FIELD`、不返回任何其他报告的链接或计数。它随报告版本一起变——撤销分享不冻结副本，读者看到的是"这一刻的报告"。
 
 推送接口（T13，`notifications.service` 是唯一出站入口）：
 
