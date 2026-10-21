@@ -590,3 +590,35 @@ def test_build_channel_refuses_an_unknown_channel() -> None:
     """The channel set is closed."""
     with pytest.raises(PushTargetNotAllowed):
         build_channel(build_settings(), "carrier_pigeon")
+
+
+def test_private_webhook_target_needs_the_test_escape_hatch() -> None:
+    """A loopback destination stays refused until the test-only switch flips it."""
+    with pytest.raises(PushTargetNotAllowed, match="non-public"):
+        validate_webhook_destination("https://127.0.0.1:8443/hook")
+
+    assert validate_webhook_destination("https://127.0.0.1:8443/hook", allow_private=True) is None
+
+
+def test_private_webhook_escape_is_refused_outside_local_and_test() -> None:
+    """The SSRF guard must never be widened in staging or production."""
+    for env in ("staging", "production"):
+        with pytest.raises(ValueError, match="only allowed in local and test"):
+            build_settings(app_env=env, push_webhook_allow_private_targets=True)
+        with pytest.raises(ValueError, match="only allowed in local and test"):
+            build_settings(app_env=env, push_webhook_ca_bundle="/tmp/ca.pem")
+
+
+def test_live_webhook_channel_carries_the_test_escape_hatches() -> None:
+    """`build_channel` hands the private-address and CA-bundle switches to the adapter."""
+    live = build_channel(
+        build_settings(
+            push_delivery="live",
+            push_webhook_allow_private_targets=True,
+            push_webhook_ca_bundle="/tmp/ca.pem",
+        ),
+        "webhook",
+    )
+    assert live.channel == "webhook"
+    assert live._allow_private is True  # noqa: SLF001 - asserting the adapter wiring
+    assert live._verify == "/tmp/ca.pem"  # noqa: SLF001 - asserting the adapter wiring

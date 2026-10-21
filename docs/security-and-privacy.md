@@ -106,7 +106,7 @@
 - 统一过滤 API Key、连接串、Cookie、私钥、邮箱凭证和内部 URL。
 - README 和网页内容按不可信输入处理，限制长度并保留来源引用。
 - 敏感字段进入日志前必须经过 Redaction Filter；失败时丢弃字段而不是原样输出。
-- Webhook 仅允许绝对 HTTPS URL，禁止 URL 内嵌凭证；发送前解析主机并拒绝 loopback、私网、链路本地和其他非公网地址，同时禁用重定向和环境代理。
+- Webhook 仅允许绝对 HTTPS URL，禁止 URL 内嵌凭证；发送前解析主机并拒绝 loopback、私网、链路本地和其他非公网地址，同时禁用重定向和环境代理。**两个测试逃生口**（`push_webhook_allow_private_targets`、`push_webhook_ca_bundle`）由配置校验锁死在 `local`/`test`，`staging`/`production` 下开启任一即拒绝启动——它们只为本地端到端演练放行私网接收器与自签 CA，不构成生产面的 SSRF 放宽。
 - Webhook 响应摘要、SMTP 诊断和评测 Provider 异常在持久化前统一脱敏，避免第三方错误正文把 Token 或密码写入交付记录。
 
 ## 5. Prompt Injection 与 Agent 工具安全

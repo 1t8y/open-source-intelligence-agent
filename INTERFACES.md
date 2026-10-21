@@ -1,6 +1,6 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T26 已对齐）
+> 文档状态：实施基线（T1-T27 已对齐）
 > 文档版本：v0.16
 > 最后更新：2026-10-16
 > 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
@@ -211,6 +211,8 @@ build_channel(settings, channel) -> NotificationChannel
 ```
 
 `push_report` 的守卫顺序固定为 **状态（`approved` / `published`）→ `CONFIDENTIAL` 需同版本 `approve` 审核 → 允许列表（启用 + 渠道一致 + `allow_private` / `allow_confidential`）**，任一违规抛 `PushError` 子类。传输失败**不抛异常**，返回 `status="failed"` 的 `PushOutcome` 并落库；`push_after_publish` 吞掉一切异常（写 `report.push` / `denied` 审计），因为它挂在发布链路里。`build_channel` 在 `live` 模式缺 `push_smtp_host` / `push_email_from` 时抛 `PushTargetNotAllowed`，且发生在写行之前。
+
+Webhook 目的地校验（T27，`validate_webhook_destination`）在 HTTPS + 无内嵌凭证之外**拒绝 loopback / 私网 / 链路本地等非公网地址**（SSRF 守卫）。两个**仅测试**的逃生口由 `Settings` 的 `model_validator` 锁死在 `local`/`test`，`staging`/`production` 一律拒绝：`push_webhook_allow_private_targets`（允许投递到 `127.0.0.1` 等私网接收器）与 `push_webhook_ca_bundle`（自签 CA，让投递层信任本地接收器的证书）。两者默认关闭，只为端到端演练证明「真实投递 + HMAC 签名」而存在，不改变生产守卫。
 
 Evaluation 接口（T14）：
 

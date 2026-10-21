@@ -584,6 +584,23 @@ def _push_context(session: Session, report_id: int) -> dict[str, Any]:
     }
 
 
+def _delivery_mode(settings: Settings) -> dict[str, Any]:
+    """Describe how delivery is configured so the ledger page can say it out loud.
+
+    The answer is the same three facts the service acts on — `push_delivery`, whether pushing is
+    on, and whether the webhook channel carries a signing secret — plus the two test-only escape
+    hatches that a local drill flips. A reader should not have to infer "these are all offline
+    receipts" from a table full of `offline:` details.
+    """
+    return {
+        "delivery": settings.push_delivery,
+        "enabled": settings.push_enabled,
+        "webhook_signed": settings.push_webhook_signing_secret is not None,
+        "allow_private_targets": settings.push_webhook_allow_private_targets,
+        "custom_ca": settings.push_webhook_ca_bundle is not None,
+    }
+
+
 def _share_context(session: Session, report: Report) -> dict[str, Any]:
     """Build the data the share card needs: the links and whether a new one may be minted.
 
@@ -1237,6 +1254,7 @@ def pushes_page(
             "status_options": PUSH_STATUSES,
             "limit": RECENT_LIMIT,
             "active": "pushes",
+            "delivery": _delivery_mode(_settings(request)),
         },
     )
 

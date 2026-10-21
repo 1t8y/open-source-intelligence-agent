@@ -52,4 +52,6 @@ def build_channel(settings: Settings, channel: str) -> NotificationChannel:
     return WebhookChannel(
         signing_secret=signing_secret,
         timeout_seconds=settings.push_timeout_seconds,
+        verify=settings.push_webhook_ca_bundle or True,
+        allow_private=settings.push_webhook_allow_private_targets,
     )

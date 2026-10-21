@@ -175,6 +175,8 @@ PY
 
 **投递本身还有一道开关**：`PUSH_DELIVERY=offline`（默认）走一个确定性、无网络的传输，任何环境都能跑；`live` 才会真的连 SMTP / 发 Webhook，且**缺凭据时在任何投递行落库之前就被拒绝**（所以"配置错了"不会留下半条记录）。
 
+**Webhook 目的地还有一道 SSRF 守卫**：`https` 之外还拒绝 loopback / 私网 / 链路本地等非公网地址。要在本地验证真实投递（而不是看 `offline:` 摘要），用两个**仅测试**逃生口——`PUSH_WEBHOOK_ALLOW_PRIVATE_TARGETS=true` 放行私网接收器、`PUSH_WEBHOOK_CA_BUNDLE=<自签 ca.pem>` 让投递层信任接收器证书；两者在 `staging`/`production` 下开启任一都会被配置校验拒绝。端到端演练脚本见 `.apitest/t27_webhook_drill.py`（自签 CA + `127.0.0.1:8443` 接收器 + 真实 `push_report`，验证 HMAC 签名与真实 `http:200` 落库）。当前投递模式在 `/ui/pushes` 页头的「投递模式」卡片可见。
+
 ## 6. 触发采集、排名与正文缓存（确定性半段）
 
 ```bash

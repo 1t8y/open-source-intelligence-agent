@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     push_smtp_password: SecretStr | None = None
     push_smtp_starttls: bool = True
     push_webhook_signing_secret: SecretStr | None = None
+    #: Test-only escape hatches for end-to-end webhook drills. A live webhook guard rejects
+    #: loopback and private addresses to stop SSRF, which is exactly what a local receiver runs
+    #: on; flipping this lets a `local`/`test` deployment deliver to a `127.0.0.1` receiver and
+    #: prove the transport and HMAC signing over a real HTTP request. Both are refused in
+    #: `staging`/`production`, where the guard must never be widened.
+    push_webhook_allow_private_targets: bool = False
+    push_webhook_ca_bundle: str | None = None
     eval_enabled: bool = True
     eval_regression_tolerance: float = Field(default=0.02, ge=0.0, le=1.0)
     docs_enabled: bool = True
@@ -148,6 +155,14 @@ class Settings(BaseSettings):
             raise ValueError("push_email_from must be an email address")
         return value
 
+    @field_validator("push_webhook_ca_bundle")
+    @classmethod
+    def normalize_ca_bundle(cls, value: str | None) -> str | None:
+        """Treat a blank CA bundle path as unset."""
+        if value is None or not value.strip():
+            return None
+        return value.strip()
+
     @field_validator(
         "github_token",
         "huggingface_token",
@@ -180,6 +195,23 @@ class Settings(BaseSettings):
             placeholder = "change-me-to-a-random-secret-of-at-least-32-characters"
             if self.secret_key.get_secret_value() == placeholder:
                 raise ValueError("production secret_key must not use the example placeholder")
+        return self
+
+    @model_validator(mode="after")
+    def validate_webhook_test_escapes(self) -> "Settings":
+        """Keep the webhook test escape hatches out of staging and production.
+
+        The private-address guard is the SSRF defence: a staging or production deployment must
+        never widen it, and a custom CA bundle would let the delivery layer trust an arbitrary
+        root, so both are refused everywhere except `local` and `test`.
+        """
+        if self.app_env not in {"local", "test"}:
+            if self.push_webhook_allow_private_targets:
+                raise ValueError(
+                    "push_webhook_allow_private_targets is only allowed in local and test"
+                )
+            if self.push_webhook_ca_bundle is not None:
+                raise ValueError("push_webhook_ca_bundle is only allowed in local and test")
         return self
 
 

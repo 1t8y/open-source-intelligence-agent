@@ -37,8 +37,18 @@ def validate_webhook_url(destination: str) -> SplitResult:
     return parts
 
 
-def validate_webhook_destination(destination: str) -> None:
-    """Reject webhook URLs that resolve to loopback, private, or other non-public addresses."""
+def validate_webhook_destination(
+    destination: str,
+    *,
+    allow_private: bool = False,
+) -> None:
+    """Reject webhook URLs that resolve to loopback, private, or other non-public addresses.
+
+    `allow_private` is the test-only escape hatch (driven by
+    `push_webhook_allow_private_targets`): a local receiver necessarily lives on a loopback or
+    private address, and flipping it lets a `local`/`test` deployment prove real delivery. The
+    setting is refused outside `local`/`test`, so the SSRF guard is never widened in production.
+    """
     parts = validate_webhook_url(destination)
     hostname = parts.hostname
     assert hostname is not None
@@ -55,6 +65,8 @@ def validate_webhook_destination(destination: str) -> None:
         raise PushTargetNotAllowed(f"webhook host cannot be resolved: {hostname}") from exc
     if not addresses:
         raise PushTargetNotAllowed(f"webhook host cannot be resolved: {hostname}")
+    if allow_private:
+        return
     for address in addresses:
         if not ip_address(address).is_global:
             raise PushTargetNotAllowed(
@@ -76,9 +88,13 @@ class WebhookChannel:
         *,
         signing_secret: str | None = None,
         timeout_seconds: int = 20,
+        verify: bool | str = True,
+        allow_private: bool = False,
     ) -> None:
         self._signing_secret = signing_secret
         self._timeout = timeout_seconds
+        self._verify = verify
+        self._allow_private = allow_private
 
     @property
     def channel(self) -> str:
@@ -87,7 +103,7 @@ class WebhookChannel:
 
     def send(self, *, destination: str, message: OutboundMessage) -> DeliveryReceipt:
         """POST one JSON notification, signing it when a secret is configured."""
-        validate_webhook_destination(destination)
+        validate_webhook_destination(destination, allow_private=self._allow_private)
         body = json.dumps(message.to_dict(), ensure_ascii=False, sort_keys=True).encode()
         headers = {"Content-Type": "application/json"}
         if self._signing_secret is not None:
@@ -100,6 +116,7 @@ class WebhookChannel:
                 timeout=self._timeout,
                 follow_redirects=False,
                 trust_env=False,
+                verify=self._verify,
             )
         except httpx.HTTPError as exc:
             return DeliveryReceipt(
