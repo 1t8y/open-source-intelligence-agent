@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -107,6 +108,8 @@ class OpenAICompatibleClient:
         model: str,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        input_price_per_mtok: Decimal = Decimal("0"),
+        output_price_per_mtok: Decimal = Decimal("0"),
         client: httpx.Client | None = None,
     ) -> None:
         self._api_base = api_base.rstrip("/")
@@ -114,6 +117,8 @@ class OpenAICompatibleClient:
         self._model_name = model
         self._timeout_seconds = timeout_seconds
         self._max_tokens = max_tokens
+        self._input_price_per_mtok = input_price_per_mtok
+        self._output_price_per_mtok = output_price_per_mtok
         self._client = client
 
     @property
@@ -210,13 +215,30 @@ class OpenAICompatibleClient:
             raise ModelClientError(MODEL_INVALID_RESPONSE, "model choice carried no message")
         text = message.get("content")
         usage = body.get("usage")
+        prompt_tokens = _usage_field(usage, "prompt_tokens")
+        completion_tokens = _usage_field(usage, "completion_tokens")
         return ModelTurn(
             text=text if isinstance(text, str) else "",
             tool_calls=self._parse_tool_calls(message.get("tool_calls")),
             model=self._model_name,
-            prompt_tokens=_usage_field(usage, "prompt_tokens"),
-            completion_tokens=_usage_field(usage, "completion_tokens"),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost=self._price_turn(prompt_tokens, completion_tokens),
         )
+
+    def _price_turn(self, prompt_tokens: int, completion_tokens: int) -> Decimal:
+        """Price one turn from the configured per-million-token rates.
+
+        The provider reports token counts but no monetary amount, so the cost is computed here
+        and flows into `agent_runs.estimated_cost` through the graph's accumulator. When no
+        price is configured the turn costs zero, which keeps the offline default and any
+        provider without a billing table from fabricating a number.
+        """
+        cost = (
+            Decimal(prompt_tokens) * self._input_price_per_mtok
+            + Decimal(completion_tokens) * self._output_price_per_mtok
+        ) / Decimal(1_000_000)
+        return cost.quantize(Decimal("0.000000"))
 
     @staticmethod
     def _parse_tool_calls(raw: Any) -> tuple[ModelToolCall, ...]:

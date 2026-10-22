@@ -99,7 +99,8 @@ def build_default_registry() -> ToolRegistry:
                 handler=get_repository_content,
                 description=(
                     "获取仓库缓存的 README 内容片段；内容会被清洗并按 max_chars 截断，"
-                    "返回值始终标记为不可信外部文本。只读。"
+                    "返回值始终标记为不可信外部文本。可给 query_hint 指定关注点，"
+                    "长 README 会按相关性优先返回最匹配的片段而非只截取开头。只读。"
                 ),
             ),
             ToolSpec(
@@ -108,7 +109,9 @@ def build_default_registry() -> ToolRegistry:
                 input_model=SearchPriorReportsInput,
                 handler=search_prior_reports,
                 description=(
-                    "查询授权主题下已发布的历史报告摘要，用于建立对比基线。只读，受主题 ACL 限制。"
+                    "查询授权主题下已发布的历史报告摘要，用于建立对比基线。"
+                    "可给 query 指定关注点，按相关性而非时间召回最匹配的往期结论。"
+                    "只读，受主题 ACL 限制。"
                 ),
             ),
             ToolSpec(

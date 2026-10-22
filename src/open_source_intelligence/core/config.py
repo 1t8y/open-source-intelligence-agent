@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = Field(default=10, ge=1, le=100)
     agent_max_tokens: int = Field(default=30000, ge=1, le=1_000_000)
     agent_max_cost: Decimal = Field(default=Decimal("0.50"), ge=0)
+    #: Provider billing table, in USD per one million tokens. DeepSeek's `usage` payload
+    #: reports token counts but no monetary amount, so the only way to land a real `cost` on
+    #: `agent_runs.estimated_cost` is to price it here. Defaults are DeepSeek's non-thinking
+    #: (`deepseek-chat` / `deepseek-flash` with thinking disabled) list price at the time of
+    #: wiring; a different provider or a price change is a configuration edit, not a code edit.
+    agent_input_price_per_mtok: Decimal = Field(default=Decimal("0.14"), ge=0)
+    agent_output_price_per_mtok: Decimal = Field(default=Decimal("0.28"), ge=0)
     agent_max_candidates: int = Field(default=5, ge=1, le=30)
     agent_request_timeout_seconds: int = Field(default=60, ge=1, le=600)
     agent_prompts_dir: str | None = None

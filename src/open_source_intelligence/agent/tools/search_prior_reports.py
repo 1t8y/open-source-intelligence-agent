@@ -1,10 +1,18 @@
-"""`search_prior_reports` implementation: summaries of earlier published reports."""
+"""`search_prior_reports` implementation: relevance-ranked summaries of earlier reports.
+
+The default ranking is recency (newest first), which is what a `limit`-bounded list means. When
+the caller supplies a `query`, the reports are instead ranked by lexical relevance to that query
+(see `agent/retrieval/vector.py`), so "the prior conclusion most about this week's topic" is not
+whatever happened to be written last. The query ranking stays offline and degrades to recency
+when the query is blank or matches nothing.
+"""
 
 from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from open_source_intelligence.agent.retrieval.vector import rank_snippets
 from open_source_intelligence.core.text import clean_untrusted_text, truncate_text
 from open_source_intelligence.persistence.models.reporting import Report, ReportSource
 
@@ -20,13 +28,18 @@ from .outcome import ToolOutcome
 SUMMARY_CHARS = 500
 SUMMARY_SECTION_KEY = "summary"
 
+#: How many candidates to fetch before relevance-ranking, so the ranking has room to choose
+#: rather than reordering an already-truncated head. Kept a small multiple of the user limit:
+#: the summaries are short and the extra reads are cheap.
+CANDIDATE_MULTIPLE = 4
+
 
 def search_prior_reports(
     session: Session,
     ctx: ToolContext,
     payload: SearchPriorReportsInput,
 ) -> ToolOutcome:
-    """Return report-level summaries, never leaking unauthorized reports."""
+    """Return report-level summaries, relevance-ranked, never leaking unauthorized reports."""
     if not ctx.can_access_topic(payload.topic_id):
         raise ToolExecutionError(
             TOOL_ACCESS_DENIED,
@@ -40,7 +53,6 @@ def search_prior_reports(
             Report.status == "published",
         )
         .order_by(Report.generated_at.desc())
-        .limit(payload.limit + 1)
     )
     if payload.repo_id is not None:
         stmt = stmt.where(
@@ -51,10 +63,13 @@ def search_prior_reports(
                 )
             )
         )
-    reports = list(session.scalars(stmt).all())
+
+    reports = list(session.scalars(stmt.limit(payload.limit * CANDIDATE_MULTIPLE)).all())
     truncated = len(reports) > payload.limit
+
+    # Build summaries first (the source_refs need per-report queries), then rank.
     summaries: list[ReportSummary] = []
-    for report in reports[: payload.limit]:
+    for report in reports:
         refs = session.scalars(
             select(ReportSource.source_ref)
             .where(
@@ -78,4 +93,16 @@ def search_prior_reports(
                 source_refs=[str(ref) for ref in refs if ref],
             )
         )
-    return ToolOutcome(data=summaries, result_count=len(summaries), truncated=truncated)
+
+    if payload.query and payload.query.strip():
+        ranked = rank_snippets(
+            payload.query,
+            [f"{summary.title}\n{summary.summary}" for summary in summaries],
+            top_k=payload.limit,
+        )
+        by_text = {f"{summary.title}\n{summary.summary}": summary for summary in summaries}
+        ordered = [by_text[item.text] for item in ranked if item.text in by_text]
+    else:
+        ordered = summaries[: payload.limit]
+
+    return ToolOutcome(data=ordered, result_count=len(ordered), truncated=truncated)

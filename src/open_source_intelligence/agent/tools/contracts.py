@@ -174,6 +174,7 @@ class SearchPriorReportsInput(StrictModel):
         ge=MIN_PRIOR_REPORT_LIMIT,
         le=MAX_PRIOR_REPORT_LIMIT,
     )
+    query: str | None = Field(default=None, max_length=200)
 
 
 class ReportSummary(StrictModel):

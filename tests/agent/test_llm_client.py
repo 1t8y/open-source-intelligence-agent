@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -56,6 +57,17 @@ def _client(handler: Handler) -> OpenAICompatibleClient:
         api_base="https://api.example.com/v1",
         api_key="test-key",
         model="gpt-4o-mini",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def _priced_client(handler: Handler) -> OpenAICompatibleClient:
+    return OpenAICompatibleClient(
+        api_base="https://api.example.com/v1",
+        api_key="test-key",
+        model="gpt-4o-mini",
+        input_price_per_mtok=Decimal("0.14"),
+        output_price_per_mtok=Decimal("0.28"),
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
@@ -342,3 +354,34 @@ def test_openai_client_degrades_malformed_arguments() -> None:
 
     turn = _client(handler).complete([], ())
     assert turn.tool_calls[0].arguments == {}
+
+
+def test_openai_client_prices_a_turn_from_the_billing_table() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+            },
+        )
+
+    turn = _priced_client(handler).complete([], ())
+    # (1000 * 0.14 + 500 * 0.28) / 1_000_000 == 0.000280
+    assert turn.cost == Decimal("0.000280")
+
+
+def test_openai_client_leaves_cost_at_zero_without_prices() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+            },
+        )
+
+    turn = _client(handler).complete([], ())
+    assert turn.cost == Decimal("0")

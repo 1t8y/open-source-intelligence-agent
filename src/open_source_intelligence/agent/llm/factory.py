@@ -26,5 +26,7 @@ def build_model_client(settings: Settings) -> ModelClient:
             api_key=settings.agent_api_key.get_secret_value(),
             model=settings.agent_model,
             timeout_seconds=settings.agent_request_timeout_seconds,
+            input_price_per_mtok=settings.agent_input_price_per_mtok,
+            output_price_per_mtok=settings.agent_output_price_per_mtok,
         )
     return OfflineModelClient(settings.agent_model)
