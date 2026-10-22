@@ -584,6 +584,20 @@ def _push_context(session: Session, report_id: int) -> dict[str, Any]:
     }
 
 
+def _research_trace_context(session: Session, report: Report) -> dict[str, Any]:
+    """Build the data the collapsed "research trace" card needs.
+
+    The trace is the Agent's step-by-step trajectory (what it planned, which tools it called,
+    what each returned). It is deliberately *collapsed* on the report page: the report's value is
+    the finished narrative, not the machinery, so the trace is available to inspect on demand
+    without pushing its latency and token columns in front of the reader.
+    """
+    trace = (
+        get_agent_run_trace(session, run_id=report.agent_run_id) if report.agent_run_id else None
+    )
+    return {"trace": trace}
+
+
 def _delivery_mode(settings: Settings) -> dict[str, Any]:
     """Describe how delivery is configured so the ledger page can say it out loud.
 
@@ -857,6 +871,7 @@ def _panel(
             "share_token": share_token,
             **_push_context(session, report.id),
             **_share_context(session, report),
+            **_research_trace_context(session, report),
         },
         status_code=status_code,
     )
@@ -887,6 +902,7 @@ def report_page(
             "share_token": None,
             **_push_context(session, report.id),
             **_share_context(session, report),
+            **_research_trace_context(session, report),
             "active": "reports",
         },
         csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),

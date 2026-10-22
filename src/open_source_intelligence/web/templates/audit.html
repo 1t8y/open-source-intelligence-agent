@@ -39,7 +39,7 @@
   </form>
 
   {% if page.items %}
-  <table class="grid">
+  <table class="grid audit-grid">
     <thead>
       <tr>
         <th class="num">#</th>
@@ -67,7 +67,7 @@
         <td><span class="badge status-{{ entry.result }}">{{ entry.result | label }}</span></td>
         <td class="mono">{{ entry.request_id or "—" }}</td>
         <td class="mono">{{ ip_addresses.get(entry.id) or "—" }}</td>
-        <td class="mono truncate">
+        <td class="mono audit-meta">
           {% if entry.metadata_json %}{{ entry.metadata_json | redacted_json }}{% else %}—{% endif %}
         </td>
       </tr>

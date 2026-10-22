@@ -1,6 +1,6 @@
 # 企业开源技术情报 Agent 与自动周报平台
 
-> 项目状态：T1-T27 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
+> 项目状态：T1-T28 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
 > 文档版本：v0.12
 > 最后更新：2026-10-15
 
@@ -48,8 +48,9 @@ D:\job-workspace\project_sources\open-source-intelligence-agent
 
 ## 当前阶段
 
-**T1–T27 全部完成**，`ARCHITECTURE.md` §14 的实施任务清单至此全部 `[x]`。最近八步：
+**T1–T28 全部完成**，`ARCHITECTURE.md` §14 的实施任务清单至此全部 `[x]`。最近八步：
 
+- **T28 一键初始化与种子数据**：全新部署启动后是空库，界面全空态，"验证核心功能"要手工十几步。新增 `scripts/seed_demo.py`（幂等种子：三账号、数据源、主题、五个候选仓库 + 快照 + README 缓存、推送目标）与 `scripts/init_demo.py`（端到端：离线研究 → 生成 → 发布 → 自动推送，产出真实 `published` 报告），一条命令把空库变成可验证状态。顺带落地 T25 停用的两个评测边界场景（`missing-readme` / `injection-readme` 的数据形态），且种子会清空主题下历史候选的 `selected_for_agent` 以纠正脏库。
 - **T27 让投递真的送出去**：投递链路（允许列表、守卫、幂等、重试、审计）自 T13 就存在，但 `PUSH_DELIVERY=offline` 是默认值、SMTP/Webhook 凭据全空，`report_pushes` 从未有过一次**真实网络投递**——离线通道写的是 `offline:` 前缀的摘要。补两个**仅测试**逃生口（`push_webhook_allow_private_targets` / `push_webhook_ca_bundle`，由配置校验锁死在 `local`/`test`，生产/staging 拒绝）放行私网接收器与自签 CA，用本地 HTTPS 接收器跑通真实投递并验证 HMAC 签名；`/ui/pushes` 页头新增「投递模式」卡片，一眼看清当前是真发还是假发。SSRF 守卫在生产面原样保留。
 - **T19 主题配置的 HTTP 面**：主题是流水线的第一环（`list_enabled_topics` 只读 `enabled=True` 的主题，没有主题就没有任何数据产出），而它此前没有任何入口。契约先行补 `INTERFACES.md` §3 与 `docs/api-contract.md` §3.2，再落 `topics/` 领域模块与五条端点；**触发研究仍不在 API 上**（消耗模型预算，与 T15 拒绝 `POST /agent/runs` 同理）。探针与实跑查出四处产品缺陷（`created_by` 从不写入导致建主题必然失败、过宽的 `except IntegrityError` 把坏插入说成重名、空名能存进表、审计行不带请求 id），全部修复并补回归。
 - **T20 设计稿上屏**：导航从顶栏 2 项铺成左侧分组侧栏 8 项 4 组，补出推送记录、主题管理、仓库目录、采集与运行、评测、审计日志六个页面；`app.css` 173 → 433 行而**原有九个 token 取值一个未改**。两条结构判断值得记：所谓"割裂感"的成因是**内容区居中**（`max-width: 1180px; margin: 0 auto` 在 1920 宽下留出约 250px 死水带），不是侧栏太窄；侧栏条目与路由准入**共用一个常量**（`web/router.py:NAV_GROUPS`），因此"菜单里出现而打开被拒"与"能打开却不在菜单里"同时不可能发生。

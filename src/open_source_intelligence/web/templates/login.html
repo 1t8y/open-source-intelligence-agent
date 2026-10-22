@@ -16,10 +16,25 @@
     </label>
     <label>
       <span>密码</span>
-      <input type="password" name="password" autocomplete="current-password" required>
+      <input type="password" name="password" id="password" autocomplete="current-password" required>
+    </label>
+    <label class="checkbox-line">
+      <input type="checkbox" id="show-password">
+      <span>显示密码</span>
     </label>
     <button type="submit" class="primary">登录</button>
   </form>
   <p class="hint">会话保存在 HttpOnly Cookie 中，表单提交带 CSRF 校验。</p>
 </section>
+<script>
+  (function () {
+    var toggle = document.getElementById("show-password");
+    var field = document.getElementById("password");
+    if (toggle && field) {
+      toggle.addEventListener("change", function () {
+        field.type = toggle.checked ? "text" : "password";
+      });
+    }
+  })();
+</script>
 {% endblock %}

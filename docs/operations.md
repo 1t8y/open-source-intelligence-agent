@@ -57,6 +57,26 @@ curl -s http://127.0.0.1:8000/health
 docker compose --env-file .env -f infra/docker-compose.yml ps
 ```
 
+### 2.1 一键初始化：空库直接变成可验证状态（T28）
+
+第 2–3 步之后库是空的（无账号、无数据源、无主题、无候选、无推送目标），界面全空态。要直接看到一份**真实 published 报告**，跑两条进仓库的脚本（都已随镜像分发，`Dockerfile` 里有 `COPY scripts`）：
+
+```bash
+# 1) 种子数据：三账号、GitHub 数据源、一个主题、五个候选仓库（各带两天快照与 README 缓存）、
+#    两个推送目标，以及 T25 评测停用的两个边界场景数据形态。幂等，可重复跑。
+docker compose --env-file .env -f infra/docker-compose.yml exec -T api \
+  python /app/scripts/seed_demo.py
+
+# 2) 端到端：用离线模型跑一次研究 → 生成 → 发布（拨快 now 越过延迟窗口）→ 自动推送，
+#    产出一份真实 published 报告。
+docker compose --env-file .env -f infra/docker-compose.yml exec -T api \
+  python /app/scripts/init_demo.py
+```
+
+`init_demo.py` 的输出以 `final: report=N status=published` 收尾（退出码 0）。两个边界仓库（`example/readme-missing` 缺 README、`example/prompt-injection` 含注入文本）被种成 `selected_for_agent=false`，只作为评测数据存在、不进入研究候选——它们若被选进研究会把报告卡在 `needs_review`。
+
+账号口令：`admin` 默认 `dev-admin-password-change-me`，`editor`/`viewer` 默认 `dev-user-password-change-me`（仅本地演示，别用于生产）；用环境变量 `SEED_ADMIN_PASSWORD` / `SEED_USER_PASSWORD` 覆盖。
+
 **重建前后对照**（实测，用来判断"我是不是在看旧版本"）：镜像构建时间晚于 `git log -1` 才对得上。旧镜像上八个界面路由里只有 `login` / `reports` 存在，其余 404；重建后全部变成 303（未登录跳登录页，**说明路由在**）：
 
 ```text

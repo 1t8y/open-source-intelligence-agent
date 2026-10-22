@@ -325,3 +325,53 @@
   <h2>报告正文</h2>
   <pre class="content">{{ report.content_markdown }}</pre>
 </section>
+
+{% if trace %}
+<details class="card research-trace">
+  <summary>
+    <span>研究过程</span>
+    <span class="meta">
+      运行 #{{ trace.run.id }} · {{ trace.run.loop_count }} 次循环 ·
+      {{ trace.run.tool_call_count }} 次工具调用 · {{ trace.run.model_call_count }} 次模型调用
+      {% if trace.run.estimated_cost %}· 估算成本 {{ trace.run.estimated_cost }}{% endif %}
+    </span>
+  </summary>
+  <p class="hint">
+    这份报告由研究 Agent 自动产出。下面是它的完整轨迹——每一步的决策、调用的工具与返回结果。
+    报告正文是最终叙事，这里记录的是它如何一步步拿到证据；两者分开呈现，正文不因轨迹而显得冗长。
+  </p>
+  {% if trace.steps %}
+  <ol class="trace">
+    {% for item in trace.steps %}
+    <li class="trace-step">
+      <div class="row">
+        <span class="badge">#{{ item.step.step_index }}</span>
+        <span class="badge status-{{ item.step.status }}">{{ item.step.step_type }} · {{ item.step.status }}</span>
+        {% if item.step.latency_ms is not none %}<span class="meta">{{ item.step.latency_ms }} ms</span>{% endif %}
+      </div>
+      {% if item.step.summary %}<p class="trace-summary">{{ item.step.summary | redact }}</p>{% endif %}
+      {% if item.tool_calls %}
+      <table class="grid">
+        <thead>
+          <tr><th>工具</th><th>状态</th><th>参数</th><th>结果摘要</th></tr>
+        </thead>
+        <tbody>
+          {% for call in item.tool_calls %}
+          <tr>
+            <td><code>{{ call.tool_name }}</code></td>
+            <td><span class="badge status-{{ call.status }}">{{ call.status }}</span></td>
+            <td><code class="trace-payload">{{ call.arguments_json | redacted_json }}</code></td>
+            <td>{{ call.result_summary | redact }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="hint">这次运行没有记录任何步骤。</p>
+  {% endif %}
+</details>
+{% endif %}

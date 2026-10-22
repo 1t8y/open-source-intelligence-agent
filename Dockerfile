@@ -16,6 +16,7 @@ COPY prompts ./prompts
 COPY datasets ./datasets
 COPY alembic.ini ./
 COPY migrations ./migrations
+COPY scripts ./scripts
 
 RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" .
 

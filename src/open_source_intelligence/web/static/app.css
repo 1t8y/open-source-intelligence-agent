@@ -53,7 +53,7 @@
   --sidebar: 236px;
   --sidebar-min: 180px;
   --sidebar-max: 420px;
-  --content-max: 1180px;
+  --content-max: 1600px;
 
   /* 中文站不引 webfont：PingFang SC / 微软雅黑 是本机最清晰的中文无衬线，
      数 MB 的字库对内部工具是错误取舍。等宽栈用于数字、ID、版本号、时间。 */
@@ -191,8 +191,9 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .main { min-width: 0; }
 
 /* 内容左对齐，不居中：居中会在侧栏与内容之间留出一条死水带（1920 宽下约 250px），
-   两块各占一岛、中间一条河，那正是"割裂感"的来源。左对齐后两侧共用一个边界。 */
-.page { max-width: var(--content-max); margin: 0; padding: var(--sp6) var(--sp6) 96px; }
+   两块各占一岛、中间一条河，那正是"割裂感"的来源。左对齐后两侧共用一个边界。
+   上限放宽到 1600px，让宽屏下的表格（尤其审计日志的九列）不再被 1180px 卡得挤成一团。 */
+.page { max-width: var(--content-max); width: 100%; margin: 0; padding: var(--sp6) var(--sp6) 96px; }
 
 /* 未登录 / 403 / 404：没有侧栏可依附，居中一块窄卡。
    外壳里仍是同一套 `.main > .page` 结构（模板只有一个 content 块，不能按登录态复制它），
@@ -306,6 +307,12 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .grid td.mono, .grid .mono { font-family: var(--mono); font-size: 12px; }
 .grid .truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 审计日志：九列表格在窄容器里会被压成一团，附加信息是 JSON，单行省略会吞掉关键字段。
+   给表格一层横向滚动兜底，同时让附加信息列换行展示而不是截断。 */
+.audit-grid { display: block; overflow-x: auto; white-space: nowrap; }
+.audit-grid th, .audit-grid td { white-space: nowrap; }
+.audit-grid td.audit-meta { white-space: normal; word-break: break-all; max-width: 480px; min-width: 220px; }
+
 .pager { margin-top: 12px; font-size: 13px; color: var(--muted); }
 .pager a { margin-left: var(--sp3); }
 
@@ -326,6 +333,11 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 
 form label { display: block; margin-bottom: 12px; }
 form label > span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+
+/* 行内复选框（如登录页「显示密码」）：label 里的 span 不再独占一行。 */
+label.checkbox-line { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+label.checkbox-line input { width: auto; margin: 0; }
+label.checkbox-line span { color: var(--muted); font-size: 13px; margin: 0; }
 
 input[type="text"], input[type="password"], input[type="number"], input[type="datetime-local"],
 select, textarea {
@@ -411,6 +423,25 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
 .trace-step:last-child { padding-bottom: 0; }
 .trace-summary { margin: 4px 0 8px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
 .trace-payload { display: inline-block; max-width: 380px; word-break: break-all; color: var(--muted); }
+
+/* 报告详情页的「研究过程」折叠块：默认收起，轨迹可查看但不抢正文。 */
+details.research-trace > summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp4);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+details.research-trace > summary::-webkit-details-marker { display: none; }
+details.research-trace > summary::before {
+  content: "▸";
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+details.research-trace[open] > summary::before { transform: rotate(90deg); }
+details.research-trace > summary .meta { margin-left: auto; }
+details.research-trace[open] { padding-bottom: var(--sp5); }
 
 /* ==========================================================================
    6. 分栏：详情页左主体右侧栏

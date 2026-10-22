@@ -172,6 +172,95 @@ def _net_star_delta(points: Sequence[dict[str, Any]]) -> int:
     return _int_field(points[-1], "stars") - _int_field(points[0], "stars")
 
 
+@dataclass(frozen=True, slots=True)
+class _Trend:
+    """A qualitative reading of one repository's metric series.
+
+    The report's `trend` section should say *what is happening* — is the topic heating up,
+    cooling off, or holding steady — rather than restate the counters every other section
+    already lists. Deriving a direction and an acceleration from the per-day deltas turns a
+    two-point "before/after" into a judgement the reader can act on.
+    """
+
+    direction: str  # "rising" / "steady" / "declining" / "unknown"
+    acceleration: str  # "accelerating" / "decelerating" / "steady" / "unknown"
+    net_delta: int
+    point_count: int
+
+    @property
+    def label(self) -> str:
+        """A short Chinese reading for the report body."""
+        direction_label = {
+            "rising": "升温",
+            "steady": "平稳",
+            "declining": "回落",
+            "unknown": "数据不足",
+        }[self.direction]
+        # A steady series has no acceleration worth naming; appending "增速平稳" to "平稳"
+        # would be a tautology. Only a directional series gets an acceleration qualifier.
+        if self.direction in {"steady", "unknown"} or self.acceleration in {"steady", "unknown"}:
+            return direction_label
+        acceleration_label = {
+            "accelerating": "增速加快",
+            "decelerating": "增速放缓",
+        }[self.acceleration]
+        return f"{direction_label}（{acceleration_label}）"
+
+
+def _daily_deltas(points: Sequence[dict[str, Any]]) -> list[int]:
+    """Return the per-day star deltas, preferring the stored delta over the adjacent difference.
+
+    `repo_snapshots.stars_delta` may be null (older seeds only stored absolute counts), so fall
+    back to the difference between consecutive `stars` values. Both are integers; the caller
+    only cares about sign and magnitude.
+    """
+    deltas: list[int] = []
+    for index, point in enumerate(points):
+        stored = point.get("stars_delta")
+        if _is_real_int(stored):
+            deltas.append(stored)
+        elif index > 0:
+            deltas.append(_int_field(point, "stars") - _int_field(points[index - 1], "stars"))
+    return deltas
+
+
+def _analyze_trend(points: Sequence[dict[str, Any]]) -> _Trend:
+    """Classify one metric series into a direction and an acceleration."""
+    net = _net_star_delta(points)
+    count = len(points)
+    if count < 2:
+        return _Trend("unknown", "unknown", net, count)
+
+    deltas = _daily_deltas(points)
+    if not deltas:
+        return _Trend("unknown", "unknown", net, count)
+
+    total = sum(deltas)
+    if total > 0:
+        direction = "rising"
+    elif total < 0:
+        direction = "declining"
+    else:
+        direction = "steady"
+
+    # Acceleration compares the recent half of the series against the earlier half, so a series
+    # that is still positive but slowing reports "增速放缓" rather than an undifferentiated
+    # "升温". With only two points there is a single delta, so acceleration is unknowable.
+    half = max(1, len(deltas) // 2)
+    early = sum(deltas[:half])
+    late = sum(deltas[half:])
+    if len(deltas) < 2:
+        acceleration = "unknown"
+    elif late > early:
+        acceleration = "accelerating"
+    elif late < early:
+        acceleration = "decelerating"
+    else:
+        acceleration = "steady"
+
+    return _Trend(direction, acceleration, net, count)
+
+
 def _collect_evidence(messages: Sequence[ChatMessage]) -> _Evidence:
     """Rebuild the research snapshot from recorded tool observations.
 
@@ -249,11 +338,13 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
     into the draft: it stays marked as untrusted input and is only acknowledged as a source.
     """
     repo_ids = evidence.repo_ids()
-    deltas = {repo_id: _net_star_delta(evidence.metrics.get(repo_id, [])) for repo_id in repo_ids}
+    trends = {repo_id: _analyze_trend(evidence.metrics.get(repo_id, [])) for repo_id in repo_ids}
+    deltas = {repo_id: trends[repo_id].net_delta for repo_id in repo_ids}
     ranked = sorted(repo_ids, key=lambda repo_id: (-deltas[repo_id], repo_id))
     total_delta = sum(deltas.values())
-    growing = [repo_id for repo_id in ranked if deltas[repo_id] > 0]
-    stagnant = [repo_id for repo_id in ranked if deltas[repo_id] <= 0]
+    growing = [repo_id for repo_id in ranked if trends[repo_id].direction == "rising"]
+    steady = [repo_id for repo_id in ranked if trends[repo_id].direction == "steady"]
+    declining = [repo_id for repo_id in ranked if trends[repo_id].direction == "declining"]
 
     metric_citations = [
         _metric_citation(repo_id, evidence.metrics[repo_id])
@@ -276,35 +367,53 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
     if growing:
         top = "、".join(_repository_label(evidence, repo_id) for repo_id in growing[:2])
         summary_lines.append(f"增长最明显的仓库为 {top}。")
-    if stagnant:
-        flat = "、".join(_repository_label(evidence, repo_id) for repo_id in stagnant[:2])
-        summary_lines.append(f"{flat} 在本期变化平稳，未观察到明显热度上升。")
+    if declining:
+        cooling = "、".join(_repository_label(evidence, repo_id) for repo_id in declining[:2])
+        summary_lines.append(f"{cooling} 本期出现回落。")
 
-    trend_lines = []
+    # The trend section states a *judgement*, not a restatement of counters. It opens with a
+    # topic-level reading (is the topic heating up or cooling off) and then explains each
+    # repository's direction and acceleration, so a reader gets the narrative without having
+    # to re-derive it from the summary's numbers.
+    trend_lines: list[str] = []
+    if growing and not declining:
+        trend_lines.append("本期主题整体处于**升温**阶段，多数候选仓库热度上行。")
+    elif declining and not growing:
+        trend_lines.append("本期主题整体处于**降温**阶段，多数候选仓库热度回落。")
+    elif growing or declining:
+        trend_lines.append("本期主题热度出现**分化**：部分仓库升温、部分回落，未形成单一方向。")
+    else:
+        trend_lines.append("本期主题整体**平稳**，各候选仓库热度未见明显方向性变化。")
+    trend_lines.append("")
     for repo_id in repo_ids:
+        trend = trends[repo_id]
         points = evidence.metrics.get(repo_id, [])
-        first = _int_field(points[0], "stars") if points else 0
-        last = _int_field(points[-1], "stars") if points else 0
-        trend_lines.append(
-            f"- {_repository_label(evidence, repo_id)}：stars 由 {first} 变化到 {last}，"
-            f"净增 {deltas[repo_id]}，共 {len(points)} 个观测点。"
-        )
-    if not trend_lines:
+        if trend.point_count < 2:
+            trend_lines.append(
+                f"- {_repository_label(evidence, repo_id)}：观测点不足，暂无法判断趋势。"
+            )
+        else:
+            trend_lines.append(
+                f"- {_repository_label(evidence, repo_id)}：{trend.label}，"
+                f"净增 {trend.net_delta} stars（{trend.point_count} 个观测点）。"
+            )
+    if not repo_ids:
         trend_lines.append("- 本期没有可用的时间序列观测点。")
 
     highlight_lines = [
-        f"- {_repository_label(evidence, repo_id)}：净增 {deltas[repo_id]} stars。"
+        f"- {_repository_label(evidence, repo_id)}：{trends[repo_id].label}，"
+        f"净增 {deltas[repo_id]} stars。"
         for repo_id in growing[:3]
-    ] or ["- 本期没有观察到净增为正的仓库。"]
+    ] or ["- 本期没有观察到升温的仓库。"]
 
     risk_lines = []
-    for repo_id in stagnant[:3]:
+    for repo_id in (declining + steady)[:3]:
         points = evidence.metrics.get(repo_id, [])
         if not points:
             risk_lines.append(f"- {_repository_label(evidence, repo_id)}：缺少时间序列观测。")
         else:
             risk_lines.append(
-                f"- {_repository_label(evidence, repo_id)}：净增 {deltas[repo_id]}，"
+                f"- {_repository_label(evidence, repo_id)}：{trends[repo_id].label}，"
                 "热度未提升或出现回落。"
             )
     if repo_ids and len(evidence.contents) < len(repo_ids):
@@ -315,14 +424,27 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
         risk_lines.append("- 本期未发现需要特别提示的风险项。")
 
     recommendation_lines = []
-    if growing:
+    accelerating = [
+        repo_id for repo_id in growing if trends[repo_id].acceleration == "accelerating"
+    ]
+    if accelerating:
         recommendation_lines.append(
-            "建议优先跟进 {} 的近期动态，并核对是否有新的发布或生态变化。".format(
+            "建议优先跟进 {}，其增速正在加快，可能存在新的发布或生态催化。".format(
+                "、".join(_repository_label(evidence, repo_id) for repo_id in accelerating[:2])
+            )
+        )
+    elif growing:
+        recommendation_lines.append(
+            "建议关注 {} 的近期动态，并核对是否有新的发布或生态变化。".format(
                 "、".join(_repository_label(evidence, repo_id) for repo_id in growing[:2])
             )
         )
-    if stagnant:
-        recommendation_lines.append("建议将变化平稳的仓库降为观察项，待出现增长信号后重新评估。")
+    if declining:
+        recommendation_lines.append(
+            "建议核实 {} 回落的原因，判断是短暂波动还是方向性变化。".format(
+                "、".join(_repository_label(evidence, repo_id) for repo_id in declining[:2])
+            )
+        )
     recommendation_lines.append(
         "上述结论仅基于已入库的指标与缓存内容，正式发布前应由人工复核关键数字。"
     )
