@@ -23,6 +23,11 @@ from .messages import ChatMessage, ModelToolCall, ModelTurn, ToolSchema
 
 DEFAULT_TIMEOUT_SECONDS = 60
 RATE_LIMIT_STATUS = 429
+#: Output ceiling for one completion. A reasoning model that also spends tokens on its chain of
+#: thought needs an explicit cap on the *answer* length or it silently truncates a long JSON
+#: draft mid-object, which the draft parser then rejects as "not a JSON object". This is large
+#: enough for six full report sections and small enough to keep a stray run from burning budget.
+DEFAULT_MAX_TOKENS = 8192
 
 
 def _usage_field(usage: Any, key: str) -> int:
@@ -101,12 +106,14 @@ class OpenAICompatibleClient:
         api_key: str,
         model: str,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         client: httpx.Client | None = None,
     ) -> None:
         self._api_base = api_base.rstrip("/")
         self._api_key = api_key
         self._model_name = model
         self._timeout_seconds = timeout_seconds
+        self._max_tokens = max_tokens
         self._client = client
 
     @property
@@ -150,6 +157,7 @@ class OpenAICompatibleClient:
         payload: dict[str, Any] = {
             "model": self._model_name,
             "messages": [_encode_message(message) for message in messages],
+            "max_tokens": self._max_tokens,
         }
         if tools:
             payload["tools"] = [_encode_tool(tool) for tool in tools]
@@ -187,6 +195,16 @@ class OpenAICompatibleClient:
         first = choices[0]
         if not isinstance(first, dict):
             raise ModelClientError(MODEL_INVALID_RESPONSE, "model choice was not an object")
+        # A response cut off by the output ceiling (`finish_reason: "length"`) is an incomplete
+        # answer: a truncated JSON draft would otherwise reach the parser and fail downstream as
+        # "not a JSON object", hiding the real cause. Surface it here while it is still a
+        # transport-level fact.
+        finish_reason = first.get("finish_reason")
+        if finish_reason == "length":
+            raise ModelClientError(
+                MODEL_INVALID_RESPONSE,
+                "model response was truncated by the output limit",
+            )
         message = first.get("message")
         if not isinstance(message, dict):
             raise ModelClientError(MODEL_INVALID_RESPONSE, "model choice carried no message")
