@@ -86,9 +86,45 @@ def test_rejects_unknown_citation_type() -> None:
         )
 
 
-def test_rejects_non_json_output() -> None:
-    with pytest.raises(DraftPayloadError):
-        parse_draft_payload("I could not produce a draft.")
+def test_rejects_non_json_output_without_headings() -> None:
+    """A plain answer with no headings degrades to a single summary section."""
+    sections = parse_draft_payload("I could not produce a structured draft, so here is text.")
+    assert [section.section_key for section in sections] == ["summary"]
+
+
+def test_accepts_markdown_headings_as_a_fallback() -> None:
+    text = (
+        "## 本周摘要\n本周整体升温。\n\n"
+        "## 趋势观察\n主题级：升温，增速加快。\n\n"
+        "## 本周亮点\n- rea 增速最快\n\n"
+        "## 风险提示\n- 样本不足\n\n"
+        "## 建议\n- 继续观察\n\n"
+        "## 附录\n指标见上。\n"
+    )
+    sections = parse_draft_payload(text)
+    assert [section.section_key for section in sections] == list(REPORT_SECTION_KEYS)
+    assert all(not section.citations for section in sections)
+
+
+def test_markdown_fallback_maps_english_headings() -> None:
+    text = "## summary\nHeating up.\n\n## trend\nAccelerating."
+    sections = parse_draft_payload(text)
+    assert [section.section_key for section in sections] == ["summary", "trend"]
+
+
+def test_markdown_fallback_drops_unknown_headings_and_dedupes() -> None:
+    text = "## 本周摘要\nA.\n\n## 其他\nignored.\n\n## 本周摘要\nB."
+    sections = parse_draft_payload(text)
+    assert [section.section_key for section in sections] == ["summary"]
+    assert sections[0].content_markdown == "A."
+
+
+def test_json_tolerates_unknown_top_level_fields() -> None:
+    payload = json.loads(_payload())
+    payload["report_meta"] = {"title": "周报", "author": "张明"}
+    payload["sections"][0]["title"] = "extra"
+    sections = parse_draft_payload(json.dumps(payload, ensure_ascii=False))
+    assert len(sections) == len(REPORT_SECTION_KEYS)
 
 
 def test_rejects_empty_output() -> None:

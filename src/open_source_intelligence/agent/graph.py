@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from open_source_intelligence.agent.errors import (
     AGENT_BUDGET_EXCEEDED,
     AGENT_DRAFT_INVALID,
+    AGENT_EVIDENCE_INCOMPLETE,
     AGENT_MODEL_UNAVAILABLE,
     AGENT_NO_CANDIDATES,
     AGENT_PROMPT_INJECTION,
@@ -52,7 +53,11 @@ from open_source_intelligence.agent.state import (
     VerificationResult,
 )
 from open_source_intelligence.agent.tools.context import ToolContext
-from open_source_intelligence.agent.tools.contracts import SectionRef, ToolResult
+from open_source_intelligence.agent.tools.contracts import (
+    REPORT_SECTION_KEYS,
+    SectionRef,
+    ToolResult,
+)
 from open_source_intelligence.agent.tools.registry import ToolRegistry
 from open_source_intelligence.agent.writing import DraftPayloadError, parse_draft_payload
 from open_source_intelligence.core.text import content_digest
@@ -556,6 +561,14 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "guard_triggered": guard_triggered,
         }
 
+    # A Markdown fallback (the model ignored the JSON contract) can come back with fewer than
+    # the six template sections. That is recoverable content, not a crash: save what arrived and
+    # flag the run for review, instead of treating a partially-drafted report as a clean
+    # completion.
+    present_keys = {section.section_key for section in sections}
+    missing_keys = [key for key in REPORT_SECTION_KEYS if key not in present_keys]
+    draft_incomplete = bool(missing_keys)
+
     # Chapter writes are deterministic and bounded by the report template, so they run
     # against their own budget and never compete with the research-call cap. That keeps
     # `max_tool_calls` meaning "how much the model may explore", not "how big a report is".
@@ -599,6 +612,11 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     if failures:
         write_error_code: str | None = AGENT_WRITE_FAILED
         write_error_message: str | None = f"{failures} section(s) could not be saved"
+    elif draft_incomplete:
+        write_error_code = AGENT_EVIDENCE_INCOMPLETE
+        write_error_message = (
+            f"{len(missing_keys)} report section(s) missing: {', '.join(missing_keys)}"
+        )
     elif guard_triggered:
         write_error_code = AGENT_PROMPT_INJECTION
         write_error_message = "untrusted content contained instruction-like text"
@@ -617,10 +635,16 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         "completion_tokens": next_completion_tokens,
         "budget_degraded": budget_degraded or budget_exceeded,
         "guard_triggered": guard_triggered,
-        "incomplete": bool(failures) or not sufficient or guard_triggered or budget_exceeded,
+        "incomplete": bool(failures)
+        or draft_incomplete
+        or not sufficient
+        or guard_triggered
+        or budget_exceeded,
         "status": (
             "needs_review"
-            if (failures or not sufficient or guard_triggered or budget_exceeded)
+            if (
+                failures or draft_incomplete or not sufficient or guard_triggered or budget_exceeded
+            )
             else "completed"
         ),
         "error_code": write_error_code,
