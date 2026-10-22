@@ -598,6 +598,26 @@ def _research_trace_context(session: Session, report: Report) -> dict[str, Any]:
     return {"trace": trace}
 
 
+def _runtime_mode(settings: Settings) -> dict[str, Any]:
+    """Describe how the deployment is wired, so a page can say "offline demo" vs "real".
+
+    The three facts that decide whether the platform is running for real — the model provider,
+    the delivery transport, and whether research auto-dispatches — are surfaced together so a
+    reader cannot mistake an offline stub product for a real one. `provider` is "offline" only
+    for the deterministic stub; any remote provider counts as real.
+    """
+    provider_real = settings.agent_provider != "offline"
+    delivery_real = settings.push_delivery == "live"
+    return {
+        "provider": settings.agent_provider,
+        "provider_real": provider_real,
+        "delivery": settings.push_delivery,
+        "delivery_real": delivery_real,
+        "auto_research": settings.agent_auto_research_enabled,
+        "fully_real": provider_real and delivery_real,
+    }
+
+
 def _delivery_mode(settings: Settings) -> dict[str, Any]:
     """Describe how delivery is configured so the ledger page can say it out loud.
 
@@ -756,6 +776,7 @@ def dashboard_page(
             "recent_runs": recent_runs,
             "window_days": overview.window.days,
             "window_options": WINDOW_OPTIONS,
+            "runtime_mode": _runtime_mode(_settings(request)),
             "active": "dashboard",
         },
     )

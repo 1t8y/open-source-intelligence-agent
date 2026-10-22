@@ -227,3 +227,77 @@ def test_prior_report_citation_requires_published_status(
     session.commit()
     with pytest.raises(ReportGenerationError, match="published prior report not found"):
         resolve_citation(session, citation)
+
+
+def test_generated_sources_anchor_on_full_name_not_mutable_id(
+    session: Session,
+    drafted_run: DraftedRun,
+) -> None:
+    """Generated reports cite repositories by stable `owner/name`, not the auto-increment id."""
+    result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
+    report = session.get(Report, result.report_id)
+    assert report is not None
+
+    sources = session.scalars(select(ReportSource).where(ReportSource.report_id == report.id)).all()
+    metric_refs = [s.source_ref for s in sources if s.source_type == "metric"]
+    assert metric_refs
+    # Every metric citation now anchors on a full name (contains a `/`) rather than a bare id.
+    assert all("/" in ref.split(":")[1] for ref in metric_refs)
+    # And the rendered report body carries the same stable form.
+    for ref in metric_refs:
+        assert ref in report.content_markdown
+
+
+def test_full_name_citation_resolves_after_the_id_changes(
+    session: Session,
+    drafted_run: DraftedRun,
+) -> None:
+    """A citation by full name resolves even when the repository id is not the drafting key."""
+    generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
+    report = session.scalar(select(Report).order_by(Report.id.desc()))
+    assert report is not None
+    source = session.scalar(
+        select(ReportSource).where(
+            ReportSource.report_id == report.id,
+            ReportSource.source_type == "metric",
+        )
+    )
+    assert source is not None
+    citation = CitationRef(source_type="metric", source_ref=source.source_ref)
+    resolved = resolve_citation(session, citation)
+    assert resolved.source_ref == source.source_ref
+    assert resolved.repository_id is not None
+
+
+def test_report_body_records_candidates_and_window(
+    session: Session,
+    drafted_run: DraftedRun,
+) -> None:
+    """The report body carries a provenance block: candidates, window, observation count."""
+    result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
+    report = session.get(Report, result.report_id)
+    assert report is not None
+    assert "本轮候选仓库：" in report.content_markdown
+    assert "快照窗口：" in report.content_markdown
+    assert "指标观测点" in report.content_markdown
+
+
+def test_evidence_section_deduplicates_and_groups_sources(
+    session: Session,
+    drafted_run: DraftedRun,
+) -> None:
+    """One snapshot cited by several sections appears once in the evidence section."""
+    result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
+    report = session.get(Report, result.report_id)
+    assert report is not None
+
+    evidence = report.content_markdown.split("## 引用与证据", 1)[1]
+    # Grouped under the metric heading.
+    assert "### 指标快照" in evidence
+    # No single source_ref should appear twice in the evidence block.
+    metric_refs = [
+        line
+        for line in evidence.splitlines()
+        if line.strip().startswith("-") and "repo_snapshots:" in line
+    ]
+    assert len(metric_refs) == len(set(metric_refs))

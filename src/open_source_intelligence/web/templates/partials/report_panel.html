@@ -61,7 +61,22 @@
 </section>
 
 <section class="card">
-  <h2>验证结论</h2>
+  <h2>报告正文</h2>
+  <pre class="content">{{ report.content_markdown }}</pre>
+</section>
+
+<details class="card research-trace">
+  <summary>
+    <span>验证结论</span>
+    {% if detail.verification %}
+    <span class="meta">
+      第 {{ detail.verification.version }} 版 ·
+      <strong class="{{ 'ok-text' if detail.verification.verdict == 'passed' else 'error-text' }}">
+        {{ detail.verification.verdict }}
+      </strong>
+    </span>
+    {% endif %}
+  </summary>
   {% if detail.verification %}
   <p class="meta">
     第 {{ detail.verification.version }} 版 /
@@ -86,10 +101,13 @@
   {% else %}
   <p class="hint">当前版本还没有验证结论，发布前必须先通过验证。</p>
   {% endif %}
-</section>
+</details>
 
-<section class="card">
-  <h2>引用与证据（第 {{ report.current_version }} 版）</h2>
+<details class="card research-trace">
+  <summary>
+    <span>引用与证据（第 {{ report.current_version }} 版）</span>
+    {% if detail.sources %}<span class="meta">{{ detail.sources | length }} 条</span>{% endif %}
+  </summary>
   {% if detail.sources %}
   <table class="grid">
     <thead><tr><th>章节</th><th>类型</th><th>引用</th><th>来源链接</th></tr></thead>
@@ -111,7 +129,7 @@
   {% else %}
   <p class="hint">当前版本没有引用行，引用覆盖率检查会失败。</p>
   {% endif %}
-</section>
+</details>
 
 <section class="card">
   <h2>版本历史</h2>
@@ -320,11 +338,6 @@
 {% elif can_write %}
 <p class="hint">报告处于 {{ report.status }}，不能直接编辑正文；请先退回修改，或回滚到历史版本。</p>
 {% endif %}
-
-<section class="card">
-  <h2>报告正文</h2>
-  <pre class="content">{{ report.content_markdown }}</pre>
-</section>
 
 {% if trace %}
 <details class="card research-trace">

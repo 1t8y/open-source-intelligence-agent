@@ -48,6 +48,24 @@
   <p class="hint">数据全部来自平台已写下的运行账本，未行使的指标显示为「—」而不是 0。</p>
 </section>
 
+<section class="card mode-card">
+  <h2>运行模式</h2>
+  <div class="row start">
+    <span class="mode-chip {% if runtime_mode.provider_real %}mode-real{% else %}mode-offline{% endif %}">
+      模型：{{ "真实 " ~ runtime_mode.provider if runtime_mode.provider_real else "离线桩 " ~ runtime_mode.provider }}
+    </span>
+    <span class="mode-chip {% if runtime_mode.delivery_real %}mode-real{% else %}mode-offline{% endif %}">
+      投递：{{ "真实" if runtime_mode.delivery_real else "离线" }}（{{ runtime_mode.delivery }}）
+    </span>
+    <span class="mode-chip {% if runtime_mode.auto_research %}mode-real{% else %}mode-offline{% endif %}">
+      自动研究：{{ "开启" if runtime_mode.auto_research else "关闭" }}
+    </span>
+  </div>
+  {% if not runtime_mode.fully_real %}
+  <p class="hint">当前处于<strong>离线演示模式</strong>：产物可能由确定性桩生成、投递为模拟摘要。接真实链路需在 <code>.env</code> 填好模型凭据（AGENT_PROVIDER/AGENT_API_BASE/AGENT_API_KEY）与投递凭据（PUSH_DELIVERY=live + SMTP/签名密钥）后重建。</p>
+  {% endif %}
+</section>
+
 <section class="card">
   <h2>任务执行</h2>
   <dl class="facts">

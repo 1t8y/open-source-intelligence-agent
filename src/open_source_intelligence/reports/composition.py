@@ -89,23 +89,78 @@ def _compose_from_resolved(
     title: str,
     sections: dict[str, ReportSection],
     resolved_sources: dict[tuple[str, str], ResolvedCitation],
+    *,
+    window_start: datetime,
+    window_end: datetime,
 ) -> str:
-    """Render the fixed report template in deterministic section order."""
+    """Render the fixed report template in deterministic section order.
+
+    A short provenance block follows the title so a reader can see, without digging into the
+    database, exactly which candidate set and snapshot window produced this report. That is
+    what makes two consecutive reports with different conclusions explainable: the input
+    (candidates + window) is printed next to the output (conclusions).
+    """
     lines = [f"# {title}", ""]
+
+    # Provenance: candidates (by stable full name), the snapshot window, and the observation
+    # count, all derived from the resolved sources rather than stored separately.
+    candidates: dict[int, str] = {}
+    for (_, _), citation in resolved_sources.items():
+        if citation.repository_id is not None and citation.source_url is not None:
+            candidates.setdefault(citation.repository_id, _full_name_from_url(citation))
+    observation_points = sum(
+        1 for (_, _), citation in resolved_sources.items() if citation.source_type == "metric"
+    )
+    if candidates:
+        lines.append("> 本轮候选仓库：" + "、".join(sorted(candidates.values())))
+        lines.append(
+            f"> 快照窗口：{window_start.date().isoformat()} 至 {window_end.date().isoformat()}；"
+            f"指标观测点 {observation_points} 个"
+        )
+        lines.append("")
+
     for key in REPORT_SECTION_KEYS:
         section = sections[key]
         lines.extend([f"## {SECTION_TITLES[key]}", "", section.content_markdown.strip(), ""])
 
     if resolved_sources:
         lines.extend(["## 引用与证据", ""])
-        for index, (_, citation) in enumerate(resolved_sources.items(), start=1):
-            label = citation.source_ref
-            if citation.source_url:
-                lines.append(f"{index}. [{label}]({citation.source_url})")
-            else:
-                lines.append(f"{index}. `{label}`")
+        # De-duplicate by source_ref across sections: one snapshot cited by three sections is
+        # one piece of evidence, not three. Group by type so a reader sees the metric snapshots
+        # first, then README and prior-report references.
+        unique: dict[str, ResolvedCitation] = {}
+        for (_, _), citation in resolved_sources.items():
+            unique.setdefault(citation.source_ref, citation)
+        for type_key, label in (
+            ("metric", "指标快照"),
+            ("readme", "README"),
+            ("prior_report", "历史报告"),
+        ):
+            typed = [c for c in unique.values() if c.source_type == type_key]
+            if not typed:
+                continue
+            lines.extend([f"### {label}", ""])
+            for citation in typed:
+                if citation.source_url:
+                    lines.append(f"- [{citation.source_ref}]({citation.source_url})")
+                else:
+                    lines.append(f"- `{citation.source_ref}`")
+            lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _full_name_from_url(citation: ResolvedCitation) -> str:
+    """Return a human-readable repository label for the provenance block.
+
+    The stable `source_ref` already carries the full name (`repo_snapshots:owner/name:date`),
+    so the label is read back out of it rather than fetched again; the URL is only a fallback.
+    """
+    parts = citation.source_ref.split(":")
+    if len(parts) >= 2 and "/" in parts[1]:
+        return parts[1]
+    url = citation.source_url or ""
+    return url.rsplit("/", 1)[-1] or citation.source_ref
 
 
 def generate_report(
@@ -149,7 +204,13 @@ def generate_report(
     resolved_title = title or (
         f"{topic.name} 开源技术情报周报（{agent_run.window_end.date().isoformat()}）"
     )
-    markdown = _compose_from_resolved(resolved_title, sections, resolved_sources)
+    markdown = _compose_from_resolved(
+        resolved_title,
+        sections,
+        resolved_sources,
+        window_start=agent_run.window_start,
+        window_end=agent_run.window_end,
+    )
 
     report = session.scalar(
         select(Report)

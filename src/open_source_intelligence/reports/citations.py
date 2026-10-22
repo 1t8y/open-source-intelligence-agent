@@ -19,9 +19,23 @@ from open_source_intelligence.persistence.models.reporting import Report
 
 from .errors import ReportGenerationError
 
-_METRIC_REF = re.compile(r"repo_snapshots:(?P<repository_id>\d+):(?P<date>\d{4}-\d{2}-\d{2})")
-_README_REF = re.compile(r"repository_contents:(?P<repository_id>\d+):readme")
+#: A metric citation points at one repository's snapshot on one date. The repository part is
+#: either a database `repository_id` (a mutable auto-increment key, used while drafting) or the
+#: stable `owner/name` full name (what a generated report records, so a citation survives a
+#: database rebuild). The full name is the durable anchor; the numeric id is the internal key.
+_METRIC_REF = re.compile(r"repo_snapshots:(?P<repo>[^:]+):(?P<date>\d{4}-\d{2}-\d{2})")
+_README_REF = re.compile(r"repository_contents:(?P<repo>[^:]+):readme")
 _PRIOR_REPORT_REF = re.compile(r"reports:(?P<report_id>\d+)")
+
+
+def _metric_ref(full_name: str, snapshot_date: date) -> str:
+    """Return the stable metric citation string for one repository snapshot."""
+    return f"repo_snapshots:{full_name}:{snapshot_date.isoformat()}"
+
+
+def _readme_ref(full_name: str) -> str:
+    """Return the stable readme citation string for one repository."""
+    return f"repository_contents:{full_name}:readme"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +58,19 @@ def _validated_url(source_url: str | None) -> str | None:
     return source_url
 
 
+def _resolve_repository(session: Session, repo_token: str) -> Repository | None:
+    """Resolve a citation's repository token to a live repository row, or None.
+
+    The token is either a numeric `repository_id` (the drafting-time key) or a stable
+    `owner/name` full name (what a generated report records). A full name is matched by
+    exact equality; it is the durable anchor that survives a rebuild, while the numeric id is
+    only ever an internal key that a rebuild reassigns.
+    """
+    if repo_token.isdigit():
+        return session.get(Repository, int(repo_token))
+    return session.scalar(select(Repository).where(Repository.full_name == repo_token).limit(1))
+
+
 def resolve_citation(session: Session, citation: CitationRef) -> ResolvedCitation:
     """Resolve one citation reference to an existing database source."""
     source_url = _validated_url(citation.source_url)
@@ -51,21 +78,22 @@ def resolve_citation(session: Session, citation: CitationRef) -> ResolvedCitatio
         match = _METRIC_REF.fullmatch(citation.source_ref)
         if match is None:
             raise ReportGenerationError(f"invalid metric citation: {citation.source_ref}")
-        repository_id = int(match.group("repository_id"))
+        repository = _resolve_repository(session, match.group("repo"))
+        if repository is None:
+            raise ReportGenerationError(f"metric source not found: {citation.source_ref}")
         snapshot_date = date.fromisoformat(match.group("date"))
         snapshot = session.scalar(
             select(RepoSnapshot).where(
-                RepoSnapshot.repository_id == repository_id,
+                RepoSnapshot.repository_id == repository.id,
                 RepoSnapshot.snapshot_date == snapshot_date,
             )
         )
-        repository = session.get(Repository, repository_id)
-        if snapshot is None or repository is None:
+        if snapshot is None:
             raise ReportGenerationError(f"metric source not found: {citation.source_ref}")
         return ResolvedCitation(
             source_type=citation.source_type,
-            source_ref=citation.source_ref,
-            repository_id=repository_id,
+            source_ref=_metric_ref(repository.full_name, snapshot_date),
+            repository_id=repository.id,
             source_url=source_url or repository.html_url,
             metric_snapshot_id=snapshot.id,
         )
@@ -74,10 +102,12 @@ def resolve_citation(session: Session, citation: CitationRef) -> ResolvedCitatio
         match = _README_REF.fullmatch(citation.source_ref)
         if match is None:
             raise ReportGenerationError(f"invalid readme citation: {citation.source_ref}")
-        repository_id = int(match.group("repository_id"))
+        repository = _resolve_repository(session, match.group("repo"))
+        if repository is None:
+            raise ReportGenerationError(f"readme source not found: {citation.source_ref}")
         content = session.scalar(
             select(RepositoryContent).where(
-                RepositoryContent.repository_id == repository_id,
+                RepositoryContent.repository_id == repository.id,
                 RepositoryContent.content_type == "readme",
             )
         )
@@ -85,8 +115,8 @@ def resolve_citation(session: Session, citation: CitationRef) -> ResolvedCitatio
             raise ReportGenerationError(f"readme source not found: {citation.source_ref}")
         return ResolvedCitation(
             source_type=citation.source_type,
-            source_ref=citation.source_ref,
-            repository_id=repository_id,
+            source_ref=_readme_ref(repository.full_name),
+            repository_id=repository.id,
             source_url=source_url or content.source_url,
             metric_snapshot_id=None,
         )
