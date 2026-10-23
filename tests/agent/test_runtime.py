@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
@@ -14,6 +15,7 @@ from support import NOW, Workspace, build_settings
 
 from open_source_intelligence.agent.errors import (
     AGENT_BUDGET_EXCEEDED,
+    AGENT_DRAFT_INVALID,
     AGENT_INTERNAL_ERROR,
     AGENT_MODEL_UNAVAILABLE,
     AGENT_NO_CANDIDATES,
@@ -672,3 +674,187 @@ def test_the_cost_budget_stops_research(
     assert result.error_code == AGENT_BUDGET_EXCEEDED
     assert result.estimated_cost >= Decimal("0.005")
     assert result.budget_degraded is True
+
+
+class RudeDraftClient:
+    """Offline client whose first draft answer is wrong in a specified way.
+
+    `mode="sections"` returns a legal payload with one of six sections; `mode="schema"` returns an
+    object the payload model rejects. Both are things a real model does, and both used to end the
+    run on the first try.
+    """
+
+    def __init__(self, mode: str) -> None:
+        self._offline = OfflineModelClient()
+        self._mode = mode
+        self.draft_calls = 0
+        self.repair_notes: list[str] = []
+
+    @property
+    def provider(self) -> str:
+        return "rude"
+
+    @property
+    def model(self) -> str:
+        return "rude-v1"
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSchema],
+    ) -> ModelTurn:
+        if tools:
+            return self._offline.complete(messages, tools)
+        self.draft_calls += 1
+        if self.draft_calls == 1:
+            if self._mode == "markdown":
+                # A model that ignored the JSON contract and wrote one heading only.
+                return ModelTurn(
+                    text="## 本周摘要\n只有摘要。",
+                    model="rude-v1",
+                    prompt_tokens=100,
+                    completion_tokens=20,
+                    cost=Decimal("0.001"),
+                )
+            if self._mode == "sections":
+                payload: Any = {
+                    "sections": [
+                        {
+                            "section_key": "summary",
+                            "content_markdown": "只有摘要。",
+                            "citations": [
+                                {
+                                    "source_type": "metric",
+                                    "source_ref": "repo_snapshots:1:2026-10-11",
+                                    "source_url": None,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            else:
+                payload = {"sections": {"summary": "章节写成了字典，不是数组"}}
+            return ModelTurn(
+                text=json.dumps(payload, ensure_ascii=False),
+                model="rude-v1",
+                prompt_tokens=100,
+                completion_tokens=20,
+                cost=Decimal("0.001"),
+            )
+        self.repair_notes.append(messages[-1].content or "")
+        return self._offline.complete(messages, tools)
+
+
+def test_a_draft_missing_sections_is_asked_again(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A model that returns one of six sections gets a second attempt, told what was missing.
+
+    On a real provider this was a coin flip: the answer parses, so the old code accepted it as a
+    partial draft and parked the run in `needs_review` — after paying for the call. Re-asking with
+    the missing keys named is cheaper than a human finishing the report.
+    """
+    seeded = seed_topic(workspace, repo_count=1)
+    client = RudeDraftClient("sections")
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        client=client,
+        now=NOW,
+    )
+
+    assert result.status == "completed"
+    assert client.draft_calls == 2
+    note = client.repair_notes[0]
+    assert "上一份草稿未被接受" in note
+    # The note names what arrived, so the model can see which five sections it dropped.
+    assert "summary" in note
+    assert "trend" in note
+    # The rejected attempt was billed, so its cost has to be on the run.
+    assert result.estimated_cost >= Decimal("0.001")
+
+
+def test_a_draft_that_fails_validation_is_asked_again(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """The schema path gets the same second chance, with the failure named."""
+    seeded = seed_topic(workspace, repo_count=1)
+    client = RudeDraftClient("schema")
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        client=client,
+        now=NOW,
+    )
+
+    assert result.status == "completed"
+    assert client.draft_calls == 2
+    assert "failed validation" in client.repair_notes[0]
+
+
+def test_the_draft_attempt_budget_is_finite(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A model that can never satisfy the contract must not spend the run on retries."""
+    seeded = seed_topic(workspace, repo_count=1)
+
+    class AlwaysWrongClient(RudeDraftClient):
+        def complete(self, messages, tools):
+            if tools:
+                return super().complete(messages, tools)
+            self.draft_calls += 1
+            return ModelTurn(
+                text='{"sections": {"summary": "still a dict"}}',
+                model="rude-v1",
+                prompt_tokens=10,
+                completion_tokens=2,
+                cost=Decimal("0.001"),
+            )
+
+    client = AlwaysWrongClient("schema")
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        client=client,
+        now=NOW,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == AGENT_DRAFT_INVALID
+    assert client.draft_calls == 2, "the retry loop must stop after DRAFT_ATTEMPTS"
+
+
+def test_a_markdown_answer_with_one_heading_is_asked_again(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """The Markdown fallback can also arrive short, and that path is retried too.
+
+    A Markdown answer never fails validation — it is split on its headings — so the only way to
+    notice it covered one section of six is to compare the keys afterwards. The retry then names
+    the missing keys, which the parse error cannot do for this path.
+    """
+    seeded = seed_topic(workspace, repo_count=1)
+    client = RudeDraftClient("markdown")
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        client=client,
+        now=NOW,
+    )
+
+    assert result.status == "completed"
+    assert client.draft_calls == 2
+    assert "缺少章节" in client.repair_notes[0]
+    assert "trend" in client.repair_notes[0]

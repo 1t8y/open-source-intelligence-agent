@@ -17,6 +17,7 @@ from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.agent import AgentRun
 from open_source_intelligence.persistence.models.intelligence import (
     Repository,
+    RepoSnapshot,
     Topic,
     TopicRepository,
 )
@@ -109,6 +110,51 @@ def _candidate_full_names(session: Session, topic_id: int) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def _movement_rows(
+    session: Session,
+    *,
+    topic_id: int,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[tuple[str, int]]:
+    """Return each research candidate's net star movement over the report window.
+
+    Computed here rather than asked of the model. A language model asked to divide two numbers it
+    read a paragraph apart gets it wrong often enough to matter — one live run reported 84,713 out
+    of 92,667 as "64.8%". Percentages are arithmetic, they are already derivable from the rows
+    this report is built on, and a reader cannot tell a wrong percentage from a right one without
+    doing the division themselves.
+    """
+    rows = session.execute(
+        select(Repository.id, Repository.full_name, TopicRepository.rank)
+        .join(TopicRepository, TopicRepository.repository_id == Repository.id)
+        .where(
+            TopicRepository.topic_id == topic_id,
+            TopicRepository.selected_for_agent.is_(True),
+        )
+        .order_by(TopicRepository.rank.asc())
+    ).all()
+    movements: list[tuple[str, int]] = []
+    for repository_id, full_name, _rank in rows:
+        series = (
+            session.execute(
+                select(RepoSnapshot.stars)
+                .where(
+                    RepoSnapshot.repository_id == repository_id,
+                    RepoSnapshot.snapshot_date >= window_start.date(),
+                    RepoSnapshot.snapshot_date <= window_end.date(),
+                )
+                .order_by(RepoSnapshot.snapshot_date.asc())
+            )
+            .scalars()
+            .all()
+        )
+        if len(series) < 2:
+            continue
+        movements.append((str(full_name), int(series[-1]) - int(series[0])))
+    return movements
+
+
 def _compose_from_resolved(
     title: str,
     sections: dict[str, ReportSection],
@@ -117,6 +163,7 @@ def _compose_from_resolved(
     window_start: datetime,
     window_end: datetime,
     candidate_full_names: Sequence[str] = (),
+    movements: Sequence[tuple[str, int]] = (),
 ) -> str:
     """Render the fixed report template in deterministic section order.
 
@@ -146,6 +193,20 @@ def _compose_from_resolved(
         f"引用快照 {cited_snapshots} 个"
     )
     lines.append("")
+
+    # The numbers a reader checks first, computed rather than drafted. Placing them above the
+    # prose means a wrong figure in a section stands out against the table instead of standing
+    # alone as the only number on the page.
+    if movements:
+        total = sum(delta for _, delta in movements)
+        lines.extend(
+            ["**关键数字（系统统计）**", "", "| 仓库 | 净增 stars | 占合计 |", "|---|---:|---:|"]
+        )
+        for full_name, delta in movements:
+            share = f"{delta * 100.0 / total:.1f}%" if total > 0 else "—"
+            lines.append(f"| {full_name} | {delta:+,} | {share} |")
+        total_share = "100%" if total > 0 else "—"
+        lines.extend([f"| **合计** | **{total:+,}** | {total_share} |", ""])
 
     for key in REPORT_SECTION_KEYS:
         section = sections[key]
@@ -226,6 +287,12 @@ def generate_report(
         window_start=agent_run.window_start,
         window_end=agent_run.window_end,
         candidate_full_names=_candidate_full_names(session, draft.topic_id),
+        movements=_movement_rows(
+            session,
+            topic_id=draft.topic_id,
+            window_start=agent_run.window_start,
+            window_end=agent_run.window_end,
+        ),
     )
 
     report = session.scalar(

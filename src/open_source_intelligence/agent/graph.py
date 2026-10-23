@@ -60,13 +60,21 @@ from open_source_intelligence.agent.tools.contracts import (
     ToolResult,
 )
 from open_source_intelligence.agent.tools.registry import ToolRegistry
-from open_source_intelligence.agent.writing import DraftPayloadError, parse_draft_payload
+from open_source_intelligence.agent.writing import (
+    DraftPayloadError,
+    DraftSection,
+    parse_draft_payload,
+)
 from open_source_intelligence.core.text import content_digest
 
 #: The draft-writing tool. `profile.WRITE_TOOL` is the single definition; this alias keeps the
 #: name the graph has always exported for tests and documentation.
 SAVE_SECTION_TOOL = WRITE_TOOL
 TOKEN_DEGRADE_PERCENT = 80
+#: How many times the write stage may ask the model for a draft. Two attempts is the point where a
+#: schema mistake or a dropped section stops being a coin flip without letting a run that cannot
+#: follow the contract spend the whole budget on retries.
+DRAFT_ATTEMPTS = 2
 
 _INTENT_BY_TOOL: dict[str, ResearchIntent] = {
     "get_repository_profile": "profile",
@@ -95,20 +103,40 @@ def _elapsed_ms(started: float) -> int:
     return max(0, int((time.perf_counter() - started) * 1000))
 
 
-def _draft_messages(messages: list[ChatMessage], draft_prompt: str) -> list[ChatMessage]:
+def _draft_messages(
+    messages: list[ChatMessage],
+    draft_prompt: str,
+    rejection: str | None = None,
+) -> list[ChatMessage]:
     """Swap the research system prompt for the drafting prompt.
 
     The plan stage and the write stage are different tasks with different output
     contracts, and `prompts/` versions them separately. Replacing the system message keeps
     the recorded user context and tool trail intact while giving the model the draft
     instructions (section keys, citation format, JSON shape) it is actually being asked for.
+
+    `rejection` carries the reason the previous attempt was not accepted. Retrying without it
+    mostly reproduces the same mistake — the model has no way to know which of the six sections
+    it dropped or which field failed validation.
     """
     if not draft_prompt:
         return list(messages)
-    return [
+    prepared = [
         ChatMessage(role="system", content=draft_prompt),
         *(message for message in messages if message.role != "system"),
     ]
+    if rejection:
+        prepared.append(
+            ChatMessage(
+                role="user",
+                content=(
+                    f"上一份草稿未被接受，原因是：{rejection}\n"
+                    "请重新输出完整的 JSON 对象：sections 是数组，六个 section_key 各出现一次，"
+                    "每节都带至少一条 citations；除了这个 JSON 对象不要输出任何其它文字。"
+                ),
+            )
+        )
+    return prepared
 
 
 def _as_repo_id(value: Any) -> int | None:
@@ -588,46 +616,79 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         }
 
     messages = list(state.get("messages") or [])
-    try:
-        turn = deps.client.complete(_draft_messages(messages, deps.draft_prompt), ())
-    except ModelClientError as exc:
-        deps.recorder.record(
-            step_type="write",
-            status="failed",
-            summary=f"draft model call failed with {exc.code}",
-            latency_ms=_elapsed_ms(started),
-        )
-        return {
-            "incomplete": True,
-            "status": "failed",
-            "error_code": AGENT_MODEL_UNAVAILABLE,
-            "error_message": exc.message,
-            "model_call_count": model_call_count + 1,
-            "prompt_tokens": prompt_tokens + exc.prompt_tokens,
-            "completion_tokens": completion_tokens + exc.completion_tokens,
-            "estimated_cost": state.get("estimated_cost", Decimal("0")) + exc.cost,
-            "budget_degraded": budget_degraded,
-            "guard_triggered": guard_triggered,
-        }
+    # One draft call is a coin flip on a real model: the answer can fail the schema, or come back
+    # with one of the six sections. Both are worth asking again about, because the second attempt
+    # is told exactly what was wrong — but neither is worth asking about forever, so the loop is
+    # capped and every attempt is charged against the same model-call, token, and cost budgets.
+    sections: list[DraftSection] = []
+    rejection: str | None = None
+    cost = state.get("estimated_cost", Decimal("0"))
+    max_cost = state.get("max_cost", Decimal("0"))
+    attempts = 0
+    turn = None
+    while attempts < DRAFT_ATTEMPTS:
+        if max_model_calls > 0 and model_call_count + attempts >= max_model_calls:
+            break
+        if max_tokens > 0 and prompt_tokens + completion_tokens >= max_tokens:
+            break
+        if max_cost > 0 and cost >= max_cost:
+            break
+        attempts += 1
+        try:
+            turn = deps.client.complete(_draft_messages(messages, deps.draft_prompt, rejection), ())
+        except ModelClientError as exc:
+            deps.recorder.record(
+                step_type="write",
+                status="failed",
+                summary=f"draft model call failed with {exc.code}",
+                latency_ms=_elapsed_ms(started),
+            )
+            return {
+                "incomplete": True,
+                "status": "failed",
+                "error_code": AGENT_MODEL_UNAVAILABLE,
+                "error_message": exc.message,
+                "model_call_count": model_call_count + attempts,
+                "prompt_tokens": prompt_tokens + exc.prompt_tokens,
+                "completion_tokens": completion_tokens + exc.completion_tokens,
+                "estimated_cost": cost + exc.cost,
+                "budget_degraded": budget_degraded,
+                "guard_triggered": guard_triggered,
+            }
+        prompt_tokens += turn.prompt_tokens
+        completion_tokens += turn.completion_tokens
+        cost += turn.cost
+        try:
+            sections = parse_draft_payload(turn.text)
+        except DraftPayloadError as exc:
+            rejection = str(exc)
+            continue
+        absent = [
+            key for key in REPORT_SECTION_KEYS if key not in {s.section_key for s in sections}
+        ]
+        if absent:
+            rejection = f"缺少章节 {', '.join(absent)}"
+            continue
+        rejection = None
+        break
 
-    try:
-        sections = parse_draft_payload(turn.text)
-    except DraftPayloadError as exc:
+    if turn is None or (rejection is not None and not sections):
+        message = rejection or "no draft attempt could be made within the remaining budget"
         deps.recorder.record(
             step_type="write",
             status="failed",
-            summary=f"draft payload rejected: {exc}",
+            summary=f"draft payload rejected: {message}",
             latency_ms=_elapsed_ms(started),
         )
         return {
             "incomplete": True,
             "status": "failed",
             "error_code": AGENT_DRAFT_INVALID,
-            "error_message": str(exc),
-            "model_call_count": model_call_count + 1,
-            "prompt_tokens": prompt_tokens + turn.prompt_tokens,
-            "completion_tokens": completion_tokens + turn.completion_tokens,
-            "estimated_cost": state.get("estimated_cost", Decimal("0")) + turn.cost,
+            "error_message": message,
+            "model_call_count": model_call_count + attempts,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "estimated_cost": cost,
             "budget_degraded": budget_degraded,
             "guard_triggered": guard_triggered,
         }
@@ -675,9 +736,9 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     )
     # A partially stored draft is not a finished draft: report it as needing a human instead
     # of letting the run look complete with fewer sections than the template requires.
-    next_prompt_tokens = prompt_tokens + turn.prompt_tokens
-    next_completion_tokens = completion_tokens + turn.completion_tokens
-    next_cost = state.get("estimated_cost", Decimal("0")) + turn.cost
+    next_prompt_tokens = prompt_tokens
+    next_completion_tokens = completion_tokens
+    next_cost = cost
     token_total = next_prompt_tokens + next_completion_tokens
     max_cost = state.get("max_cost", Decimal("0"))
     # The draft call is billed like any other, so its cost has to be added here as well: a run
@@ -708,7 +769,7 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         "messages": [ChatMessage(role="assistant", content=turn.text)],
         "draft_sections": saved,
         "tool_call_count": tool_call_count,
-        "model_call_count": model_call_count + 1,
+        "model_call_count": model_call_count + attempts,
         "prompt_tokens": next_prompt_tokens,
         "completion_tokens": next_completion_tokens,
         "estimated_cost": next_cost,

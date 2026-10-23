@@ -28,7 +28,7 @@ from open_source_intelligence.persistence.models.reporting import (
     ReportVersion,
 )
 from open_source_intelligence.reports.citations import resolve_citation
-from open_source_intelligence.reports.composition import generate_report
+from open_source_intelligence.reports.composition import _compose_from_resolved, generate_report
 from open_source_intelligence.reports.errors import ReportGenerationError
 
 
@@ -391,3 +391,32 @@ def test_a_duplicate_full_name_resolves_through_the_snapshot(
     )
 
     assert resolved.repository_id == later.id
+
+
+def test_the_key_numbers_table_is_computed_not_drafted() -> None:
+    """The share column is arithmetic, so it is rendered from rows rather than asked for.
+
+    A live run reported 84,713 of 92,667 as "64.8%". A reader cannot tell a wrong percentage from
+    a right one without redoing the division, which is exactly the kind of number a report should
+    not take from a language model.
+    """
+
+    @dataclass
+    class _Section:
+        content_markdown: str
+
+    sections = {key: _Section(content_markdown="正文") for key in REPORT_SECTION_KEYS}
+    markdown = _compose_from_resolved(
+        "标题",
+        sections,  # type: ignore[arg-type]
+        {},
+        window_start=NOW,
+        window_end=NOW,
+        candidate_full_names=("example/a", "example/b"),
+        movements=(("example/a", 300), ("example/b", 3)),
+    )
+
+    assert "关键数字（系统统计）" in markdown
+    assert "| example/a | +300 | 99.0% |" in markdown
+    assert "| example/b | +3 | 1.0% |" in markdown
+    assert "| **合计** | **+303** | 100% |" in markdown
