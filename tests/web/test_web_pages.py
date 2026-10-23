@@ -514,3 +514,26 @@ def test_the_create_form_offers_exactly_the_publish_modes_the_table_accepts(
     assert page.status_code == 200
     offered = set(re.findall(r'<option value="([A-Z_]+)"[^>]*>', page.text))
     assert set(TOPIC_PUBLISH_MODES) <= offered
+
+
+def test_a_tampered_publish_mode_is_re_reported_instead_of_crashing(
+    client: TestClient,
+    session: Session,
+    actors: dict[str, Actor],
+) -> None:
+    """An unknown `publish_mode` must re-render the form, not reach the table's CHECK constraint.
+
+    The API types this field as a `Literal`; the form did not, so a tampered value fell through to
+    the database, raised `IntegrityError`, and surfaced as a 500 for what is a user-input problem.
+    """
+    web_login(client, actors["ADMIN"])
+    client.get(TOPICS)
+    response = client.post(
+        TOPICS,
+        data={**_topic_form(publish_mode="WHENEVER"), "csrf_token": csrf_value(client)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400, response.text
+    assert "发布模式" in response.text
+    assert session.scalar(select(Topic).where(Topic.name == "topic-from-ui")) is None

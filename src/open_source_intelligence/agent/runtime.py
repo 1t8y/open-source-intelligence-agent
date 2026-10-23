@@ -18,12 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.agent.errors import (
-    AGENT_BUDGET_EXCEEDED,
     AGENT_EVIDENCE_INCOMPLETE,
     AGENT_INTERNAL_ERROR,
-    AGENT_NO_CANDIDATES,
-    AGENT_PROMPT_INJECTION,
-    AGENT_WRITE_FAILED,
+    REVIEW_REQUIRED_CODES,
 )
 from open_source_intelligence.agent.graph import GraphDependencies, build_research_graph
 from open_source_intelligence.agent.llm.base import ModelClient
@@ -58,17 +55,6 @@ from open_source_intelligence.persistence.models.intelligence import (
 
 #: Name of the Agent configuration row the runtime creates when none exists yet.
 DEFAULT_AGENT_CONFIG_NAME = "default-research-agent"
-
-#: Error codes that mean "a human should look at this" rather than "the run broke".
-REVIEW_REQUIRED_CODES = frozenset(
-    {
-        AGENT_BUDGET_EXCEEDED,
-        AGENT_EVIDENCE_INCOMPLETE,
-        AGENT_NO_CANDIDATES,
-        AGENT_PROMPT_INJECTION,
-        AGENT_WRITE_FAILED,
-    }
-)
 
 #: Upper bound on the failure detail kept on `pipeline_runs.metrics_json`.
 MAX_FAILURE_DETAIL_CHARS = 2000
@@ -398,6 +384,7 @@ def run_research_agent(
         "max_model_calls": config.max_model_calls,
         "max_tool_calls": config.max_tool_calls,
         "max_tokens": config.max_tokens,
+        "max_cost": config.max_cost,
         "research_plan": [],
         "evidence": [],
         "draft_sections": [],

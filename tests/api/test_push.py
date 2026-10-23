@@ -527,3 +527,35 @@ def test_an_editor_can_push_a_report_it_can_read(
 
     assert response.status_code == 200, response.text
     assert response.json()["delivered"] is True
+
+
+def test_the_delivery_ledger_is_filtered_by_the_report_acl(
+    session: Session,
+    workspace: Workspace,
+    client: TestClient,
+) -> None:
+    """A delivery row is report metadata, so it needs the report ACL, not only a role check.
+
+    The row names a report's title, version, destination and error text. Filtering by role alone
+    let an editor read all of that for a PRIVATE report they could not open — and the retry driver
+    would even re-send it for them.
+    """
+    owner = create_actor(session, username="push-owner", role="EDITOR", data_scope="team")
+    other = create_actor(session, username="push-other", role="EDITOR", data_scope="team")
+    report = seed_pushable_report(session, workspace, status=PUBLISHED)
+    report.visibility = "PRIVATE"
+    report.owner_id = owner.user_id
+    session.commit()
+    _seed_failed_push(
+        session,
+        report_id=report.id,
+        target_id=workspace.add_push_target(name="acl-ledger", allow_private=True).id,
+    )
+
+    stranger = client.get(f"{PUSH}/records", headers=auth_headers(client, other))
+    assert stranger.status_code == 200, stranger.text
+    assert stranger.json()["items"] == []
+
+    insider = client.get(f"{PUSH}/records", headers=auth_headers(client, owner))
+    assert insider.status_code == 200, insider.text
+    assert [item["report_id"] for item in insider.json()["items"]] == [report.id]

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.core.config import Settings, get_settings
@@ -605,6 +605,7 @@ def publish_due_reports(
     *,
     now: datetime | None = None,
     limit: int = PUBLISH_BATCH_LIMIT,
+    access_filter: ColumnElement[bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Release everything that is due, promoting human-approved reports on the way.
 
@@ -613,22 +614,26 @@ def publish_due_reports(
     `publish_at` has elapsed. One blocked report never stops the rest of the sweep: it is
     marked `failed` with its stable error code and the sweep continues, mirroring how a
     single failing topic cannot abort the daily pipeline.
+
+    `access_filter` scopes the sweep to the reports the triggering user may read. The manual
+    endpoint passes it, because "release everything due" is authority over reports the caller can
+    see, not over the whole database; the scheduled beat task passes `None`, since it acts for
+    the system rather than for one person.
     """
     moment = now or utc_now()
     if limit < 1:
         raise ValueError("limit must be at least 1")
-    approved = session.scalars(
-        select(Report).where(Report.status == "approved").order_by(Report.id).limit(limit)
-    ).all()
+    approved_statement = select(Report).where(Report.status == "approved")
+    if access_filter is not None:
+        approved_statement = approved_statement.where(access_filter)
+    approved = session.scalars(approved_statement.order_by(Report.id).limit(limit)).all()
     for report in approved:
         schedule_report(session, report_id=report.id, now=moment)
 
-    due = session.scalars(
-        select(Report)
-        .where(Report.status == "scheduled", Report.publish_at <= moment)
-        .order_by(Report.publish_at, Report.id)
-        .limit(limit)
-    ).all()
+    due_statement = select(Report).where(Report.status == "scheduled", Report.publish_at <= moment)
+    if access_filter is not None:
+        due_statement = due_statement.where(access_filter)
+    due = session.scalars(due_statement.order_by(Report.publish_at, Report.id).limit(limit)).all()
     released: list[dict[str, Any]] = []
     for report in due:
         try:

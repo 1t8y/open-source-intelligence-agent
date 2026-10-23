@@ -22,8 +22,12 @@ from open_source_intelligence.notifications.service import (
     retry_failed_pushes,
 )
 from open_source_intelligence.persistence.models.identity import User
-from open_source_intelligence.security.authorization import REPORT_WRITE_ROLES
+from open_source_intelligence.security.authorization import (
+    REPORT_WRITE_ROLES,
+    readable_reports_filter,
+)
 from open_source_intelligence.security.dependencies import get_db_session, require_roles
+from open_source_intelligence.security.service import get_role_codes
 
 router = APIRouter(prefix="/api/v1/push", tags=["push"])
 
@@ -134,8 +138,19 @@ def get_push_records(
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> PushRecordListResponse:
-    """Return delivery records so an operator can see what went out and what still needs a retry."""
-    rows = list_pushes(session, report_id=report_id, status=status_filter, limit=limit)
+    """Return delivery records so an operator can see what went out and what still needs a retry.
+
+    The ledger is filtered by the report ACL, not just by role: a delivery row names a report
+    title, version, destination and error text, which is enough metadata to leak a report the
+    caller may not open.
+    """
+    rows = list_pushes(
+        session,
+        report_id=report_id,
+        status=status_filter,
+        limit=limit,
+        access_filter=readable_reports_filter(user, get_role_codes(user)),
+    )
     counts: dict[str, int] = {}
     for row in rows:
         counts[row.status] = counts.get(row.status, 0) + 1
@@ -170,9 +185,16 @@ def retry_pushes(
     """Retry the failed deliveries that still have retry budget left.
 
     This is the same sweep the Celery beat task runs, exposed so an operator does not have to
-    wait for the next tick. One unusable row never stops the batch.
+    wait for the next tick. One unusable row never stops the batch. The sweep is limited to the
+    reports the caller may read, so pressing "retry" cannot re-send a report that is invisible to
+    them.
     """
-    outcomes = retry_failed_pushes(session, limit=limit, actor_id=user.id)
+    outcomes = retry_failed_pushes(
+        session,
+        limit=limit,
+        actor_id=user.id,
+        access_filter=readable_reports_filter(user, get_role_codes(user)),
+    )
     delivered = [item for item in outcomes if item.delivered]
     return RetryPushResponse(
         attempted_count=len(outcomes),

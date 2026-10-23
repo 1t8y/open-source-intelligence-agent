@@ -570,3 +570,105 @@ def test_runtime_leaves_no_run_stuck_in_running_when_a_node_crashes(
     assert pipeline_run.finished_at is not None
     assert pipeline_run.error_code == AGENT_INTERNAL_ERROR
     assert (pipeline_run.metrics_json or {}).get("error_code") == AGENT_INTERNAL_ERROR
+
+
+class CountingClient:
+    """Wrap a client and count how many completions were actually requested."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.calls = 0
+
+    @property
+    def provider(self) -> str:
+        return "counting"
+
+    @property
+    def model(self) -> str:
+        return "counting-v1"
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSchema],
+    ) -> ModelTurn:
+        self.calls += 1
+        return self._inner.complete(messages, tools)
+
+
+class PricedClient:
+    """Delegate to a client and bill every turn at a fixed cost."""
+
+    def __init__(self, inner: Any, cost: Decimal) -> None:
+        self._inner = inner
+        self._cost = cost
+
+    @property
+    def provider(self) -> str:
+        return "priced"
+
+    @property
+    def model(self) -> str:
+        return "priced-v1"
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSchema],
+    ) -> ModelTurn:
+        turn = self._inner.complete(messages, tools)
+        return turn.model_copy(update={"cost": self._cost})
+
+
+def test_a_failed_plan_is_not_overwritten_by_the_write_stage(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A plan-stage transport failure ends the run; the write stage must not paper over it.
+
+    The graph flows plan -> write unconditionally. Before the guard in `_write_node`, the write
+    stage produced `error_code=None` for whatever it salvaged, so the terminal status was decided
+    from that value: the run was recorded as `needs_review`, the retry rule keyed on
+    AGENT_MODEL_UNAVAILABLE never fired, and a second call went to an endpoint that had just
+    failed.
+    """
+    seeded = seed_topic(workspace, repo_count=1)
+    client = CountingClient(FailingClient())
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        client=client,
+        now=NOW,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == AGENT_MODEL_UNAVAILABLE
+    assert client.calls == 1, "the write stage must not retry a provider that just failed"
+
+
+def test_the_cost_budget_stops_research(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """`agent_configs.max_cost` is a budget like tokens and loops, not a column nobody reads.
+
+    A price table means a few expensive calls can cost more than many cheap ones, so a run that
+    only counts tokens can overrun a spend limit without ever tripping a cap.
+    """
+    seeded = seed_topic(workspace, repo_count=2)
+    client = PricedClient(OfflineModelClient(), Decimal("0.01"))
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(agent_max_cost=Decimal("0.005")),
+        client=client,
+        now=NOW,
+    )
+
+    assert result.status == "needs_review"
+    assert result.error_code == AGENT_BUDGET_EXCEEDED
+    assert result.estimated_cost >= Decimal("0.005")
+    assert result.budget_degraded is True

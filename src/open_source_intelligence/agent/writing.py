@@ -139,6 +139,14 @@ def _split_markdown_sections(text: str) -> list[DraftSection]:
         if not body:
             continue
         sections.append(DraftSection(section_key=key, content_markdown=body[:MAX_SECTION_CHARS]))
+    if not sections:
+        # Headings, but none of them is a report section: the model answered about something else
+        # (a plan, an apology, a tool trace). Returning an empty list would be recorded as "0
+        # sections saved, recoverable content" and sent to a human for review, when the honest
+        # reading is that no draft arrived at all.
+        raise DraftPayloadError(
+            "model response contained headings but no recognised report section"
+        )
     return sections
 
 

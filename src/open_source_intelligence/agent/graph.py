@@ -33,6 +33,7 @@ from open_source_intelligence.agent.errors import (
     AGENT_NO_CANDIDATES,
     AGENT_PROMPT_INJECTION,
     AGENT_WRITE_FAILED,
+    REVIEW_REQUIRED_CODES,
 )
 from open_source_intelligence.agent.guards import GuardDecision, guard_tool_payload
 from open_source_intelligence.agent.llm.base import ModelClient
@@ -158,6 +159,19 @@ def _token_budget_at_or_above(state: AgentState, percent: int) -> bool:
     return max_tokens > 0 and _total_tokens(state) * 100 >= max_tokens * percent
 
 
+def _cost_budget_exhausted(state: AgentState) -> bool:
+    """Return whether the run has already spent its configured cost budget.
+
+    Cost is a budget dimension of its own: token caps bound how much text flows through the
+    model, while a price table can make a modest number of expensive calls cost more than a
+    large number of cheap ones. `agent_configs.max_cost` is therefore enforced here, next to
+    the token gate, instead of being written to the config and never read again.
+    """
+    max_cost = state.get("max_cost", Decimal("0"))
+    spent = state.get("estimated_cost", Decimal("0"))
+    return max_cost > 0 and spent >= max_cost
+
+
 def _observation_summary(observation: ToolObservation) -> str:
     """Return a compact human-readable line for one observation."""
     if not observation.ok:
@@ -223,6 +237,19 @@ def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "budget_degraded": True,
         }
 
+    if _cost_budget_exhausted(state):
+        deps.recorder.record(
+            step_type="plan",
+            status="skipped",
+            summary="cost budget exhausted; stopping research",
+            latency_ms=_elapsed_ms(started),
+        )
+        return {
+            "pending_tool_calls": [],
+            "loop_count": loop_count + 1,
+            "budget_degraded": True,
+        }
+
     messages = list(state.get("messages") or [])
     try:
         turn = deps.client.complete(messages, deps.tool_schemas)
@@ -233,10 +260,16 @@ def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             summary=f"model call failed with {exc.code}",
             latency_ms=_elapsed_ms(started),
         )
+        # A failed call can still have been billed (an answer truncated by the output ceiling
+        # arrives, is unusable, and is charged for). Those tokens and that cost are added here
+        # so the budget moves forward instead of letting one run retry for free.
         return {
             "pending_tool_calls": [],
             "loop_count": loop_count + 1,
             "model_call_count": model_call_count + 1,
+            "prompt_tokens": prompt_tokens + exc.prompt_tokens,
+            "completion_tokens": completion_tokens + exc.completion_tokens,
+            "estimated_cost": state.get("estimated_cost", Decimal("0")) + exc.cost,
             "status": "failed",
             "error_code": AGENT_MODEL_UNAVAILABLE,
             "error_message": exc.message,
@@ -461,6 +494,27 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     budget_degraded = bool(state.get("budget_degraded"))
     guard_triggered = bool(state.get("guard_triggered"))
 
+    # A fatal upstream failure (the provider was unreachable during planning, a call was
+    # rejected) must end the run as that failure. Without this gate the graph flows plan -> write
+    # unconditionally, the write stage returns `error_code=None` for a clean draft, and the
+    # terminal status is decided from that last value: the run would be recorded as
+    # "needs_review" and the retry rule keyed on AGENT_MODEL_UNAVAILABLE would never fire, while
+    # a second call went out to an endpoint that had just failed.
+    carried_error = state.get("error_code")
+    if carried_error is not None and carried_error not in REVIEW_REQUIRED_CODES:
+        deps.recorder.record(
+            step_type="write",
+            status="skipped",
+            summary=f"upstream failure {carried_error}; draft writing skipped",
+            latency_ms=_elapsed_ms(started),
+        )
+        return {
+            "incomplete": True,
+            "status": "failed",
+            "error_code": carried_error,
+            "error_message": state.get("error_message"),
+        }
+
     if not state.get("candidate_repo_ids"):
         deps.recorder.record(
             step_type="write",
@@ -518,6 +572,21 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "budget_degraded": True,
         }
 
+    if _cost_budget_exhausted(state):
+        deps.recorder.record(
+            step_type="write",
+            status="skipped",
+            summary="cost budget exhausted before drafting",
+            latency_ms=_elapsed_ms(started),
+        )
+        return {
+            "incomplete": True,
+            "status": "needs_review",
+            "error_code": AGENT_BUDGET_EXCEEDED,
+            "error_message": "cost budget exhausted before drafting",
+            "budget_degraded": True,
+        }
+
     messages = list(state.get("messages") or [])
     try:
         turn = deps.client.complete(_draft_messages(messages, deps.draft_prompt), ())
@@ -534,8 +603,9 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "error_code": AGENT_MODEL_UNAVAILABLE,
             "error_message": exc.message,
             "model_call_count": model_call_count + 1,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
+            "prompt_tokens": prompt_tokens + exc.prompt_tokens,
+            "completion_tokens": completion_tokens + exc.completion_tokens,
+            "estimated_cost": state.get("estimated_cost", Decimal("0")) + exc.cost,
             "budget_degraded": budget_degraded,
             "guard_triggered": guard_triggered,
         }
@@ -557,6 +627,7 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "model_call_count": model_call_count + 1,
             "prompt_tokens": prompt_tokens + turn.prompt_tokens,
             "completion_tokens": completion_tokens + turn.completion_tokens,
+            "estimated_cost": state.get("estimated_cost", Decimal("0")) + turn.cost,
             "budget_degraded": budget_degraded,
             "guard_triggered": guard_triggered,
         }
@@ -606,8 +677,15 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     # of letting the run look complete with fewer sections than the template requires.
     next_prompt_tokens = prompt_tokens + turn.prompt_tokens
     next_completion_tokens = completion_tokens + turn.completion_tokens
+    next_cost = state.get("estimated_cost", Decimal("0")) + turn.cost
     token_total = next_prompt_tokens + next_completion_tokens
-    budget_exceeded = max_tokens > 0 and token_total >= max_tokens
+    max_cost = state.get("max_cost", Decimal("0"))
+    # The draft call is billed like any other, so its cost has to be added here as well: a run
+    # that planned cheaply and then wrote an expensive draft used to be recorded with only the
+    # planning cost.
+    budget_exceeded = (max_tokens > 0 and token_total >= max_tokens) or (
+        max_cost > 0 and next_cost >= max_cost
+    )
     budget_limited = budget_degraded and not sufficient
     if failures:
         write_error_code: str | None = AGENT_WRITE_FAILED
@@ -622,7 +700,7 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         write_error_message = "untrusted content contained instruction-like text"
     elif budget_exceeded or budget_limited:
         write_error_code = AGENT_BUDGET_EXCEEDED
-        write_error_message = "token budget stopped the research stage"
+        write_error_message = "budget stopped the research stage"
     else:
         write_error_code = None
         write_error_message = None
@@ -633,6 +711,7 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         "model_call_count": model_call_count + 1,
         "prompt_tokens": next_prompt_tokens,
         "completion_tokens": next_completion_tokens,
+        "estimated_cost": next_cost,
         "budget_degraded": budget_degraded or budget_exceeded,
         "guard_triggered": guard_triggered,
         "incomplete": bool(failures)
@@ -670,6 +749,8 @@ def _route_after_verify(state: AgentState) -> Literal["plan", "write"]:
     if state.get("tool_call_count", 0) >= state.get("max_tool_calls", 0):
         return "write"
     if _token_budget_at_or_above(state, 100):
+        return "write"
+    if _cost_budget_exhausted(state):
         return "write"
     return "plan"
 

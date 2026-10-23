@@ -80,6 +80,7 @@ class AgentState(TypedDict, total=False):
     max_model_calls: int
     max_tool_calls: int
     max_tokens: int
+    max_cost: Decimal
     research_plan: Annotated[list[ResearchTask], operator.add]
     evidence: Annotated[list[EvidenceRef], operator.add]
     draft_sections: Annotated[list[SectionRef], operator.add]

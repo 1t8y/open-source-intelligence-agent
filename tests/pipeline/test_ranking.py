@@ -292,3 +292,90 @@ def test_negative_growth_is_clamped_to_nonnegative_score() -> None:
 
     assert len(ranked) == 1
     assert ranked[0].score == Decimal("0.000000")
+
+
+def test_a_pinned_candidate_survives_a_ranking_pass() -> None:
+    """Ranking refreshes the pool; it does not get to delete a link a human pinned.
+
+    An evaluation topic holds exactly one candidate chosen for the shape it exercises, and that
+    candidate usually does not win the star/fork ranking. Rebuilding the list from scratch dropped
+    it, so one daily pass over a curated topic silently emptied the case it exists to measure.
+    """
+    session_factory = build_session_factory()
+    with session_factory() as session:
+        topic = add_topic(session, max_candidates=1)
+        add_repository(
+            session,
+            repository_id=1,
+            full_name="example/first",
+            language="Python",
+            description="Agent framework",
+            topics=["agent"],
+            first_stars=100,
+            latest_stars=500,
+            first_forks=10,
+            latest_forks=40,
+        )
+        add_repository(
+            session,
+            repository_id=2,
+            full_name="example/second",
+            language="Python",
+            description="Another agent framework",
+            topics=["agent"],
+            first_stars=100,
+            latest_stars=200,
+            first_forks=10,
+            latest_forks=20,
+        )
+        # A curated, non-matching repository: it can never win the ranking, which is exactly why
+        # the pin has to protect it.
+        add_repository(
+            session,
+            repository_id=3,
+            full_name="example/fixture",
+            language="Rust",
+            description="Boundary fixture",
+            topics=["fixture"],
+            first_stars=100,
+            latest_stars=110,
+            first_forks=10,
+            latest_forks=11,
+        )
+        session.add(
+            TopicRepository(
+                topic_id=topic.id,
+                repository_id=3,
+                score=Decimal("0"),
+                rank=99,
+                selected_for_agent=True,
+                manually_pinned=True,
+            )
+        )
+        # A stale, unpinned link for a repository the ranker will not select.
+        session.add(
+            TopicRepository(
+                topic_id=topic.id,
+                repository_id=2,
+                score=Decimal("0"),
+                rank=50,
+                selected_for_agent=True,
+                manually_pinned=False,
+            )
+        )
+        session.commit()
+
+        rank_topic_candidates(session, topic, as_of_date=date(2026, 10, 7))
+
+        links = {
+            link.repository_id: link
+            for link in session.scalars(
+                select(TopicRepository).where(TopicRepository.topic_id == topic.id)
+            ).all()
+        }
+        assert links[3].selected_for_agent is True
+        assert links[3].manually_pinned is True
+        assert links[1].selected_for_agent is True
+        # Repo 2 was ranked and lost the cut-off, so its automatic selection is refreshed to False
+        # and the link survives as a scored-but-unselected candidate.
+        assert links[2].selected_for_agent is False

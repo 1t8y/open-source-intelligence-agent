@@ -200,6 +200,22 @@ class OpenAICompatibleClient:
         first = choices[0]
         if not isinstance(first, dict):
             raise ModelClientError(MODEL_INVALID_RESPONSE, "model choice was not an object")
+        # The usage block is read before any shape check, because a response that is unusable
+        # as a draft is still a response the provider billed for. Every raise below carries it,
+        # so a truncated call cannot vanish from the run's token and cost accounting.
+        usage = body.get("usage")
+        prompt_tokens = _usage_field(usage, "prompt_tokens")
+        completion_tokens = _usage_field(usage, "completion_tokens")
+        billed_cost = self._price_turn(prompt_tokens, completion_tokens)
+        message = first.get("message")
+        if not isinstance(message, dict):
+            raise ModelClientError(
+                MODEL_INVALID_RESPONSE,
+                "model choice carried no message",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost=billed_cost,
+            )
         # A response cut off by the output ceiling (`finish_reason: "length"`) is an incomplete
         # answer: a truncated JSON draft would otherwise reach the parser and fail downstream as
         # "not a JSON object", hiding the real cause. Surface it here while it is still a
@@ -209,21 +225,18 @@ class OpenAICompatibleClient:
             raise ModelClientError(
                 MODEL_INVALID_RESPONSE,
                 "model response was truncated by the output limit",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost=billed_cost,
             )
-        message = first.get("message")
-        if not isinstance(message, dict):
-            raise ModelClientError(MODEL_INVALID_RESPONSE, "model choice carried no message")
         text = message.get("content")
-        usage = body.get("usage")
-        prompt_tokens = _usage_field(usage, "prompt_tokens")
-        completion_tokens = _usage_field(usage, "completion_tokens")
         return ModelTurn(
             text=text if isinstance(text, str) else "",
             tool_calls=self._parse_tool_calls(message.get("tool_calls")),
             model=self._model_name,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            cost=self._price_turn(prompt_tokens, completion_tokens),
+            cost=billed_cost,
         )
 
     def _price_turn(self, prompt_tokens: int, completion_tokens: int) -> Decimal:

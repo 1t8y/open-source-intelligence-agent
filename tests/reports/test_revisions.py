@@ -32,6 +32,7 @@ from open_source_intelligence.reports.revisions import (
     rollback_report,
 )
 from open_source_intelligence.reports.state import ALLOWED_TRANSITIONS, transition_report
+from open_source_intelligence.reports.verification import verify_report
 
 #: Statuses a report can be parked in that must refuse a rollback, with the legal path to
 #: reach each one. `failed` is covered separately because it is the terminal branch.
@@ -305,8 +306,26 @@ def test_edit_refuses_a_title_that_cannot_render_as_one_heading(
 def test_edit_trims_a_title(session: Session, workspace: Workspace) -> None:
     """Surrounding whitespace is normalized rather than persisted."""
     case = build_report(session, workspace, publish_mode=AUTO)
+    before_version = case.reload(session).current_version
 
     outcome = revise_report(session, report_id=case.report_id, title="  新标题  ", now=NOW)
 
-    assert outcome.changed_fields == ("title",)
-    assert case.reload(session).title == "新标题"
+    report = case.reload(session)
+    assert report.title == "新标题"
+    # The title is the body's first heading, so a rename is also a content change: leaving the
+    # old `# ...` line behind would make the structure check reject this report forever.
+    assert outcome.changed_fields == ("title", "content_markdown")
+    assert report.content_markdown.splitlines()[0] == "# 新标题"
+    assert outcome.version == before_version + 1
+
+
+def test_rename_keeps_the_report_verifiable(session: Session, workspace: Workspace) -> None:
+    """A renamed report still passes the structure check, so it can still be published."""
+    case = build_report(session, workspace, publish_mode=AUTO)
+    revise_report(session, report_id=case.report_id, title="改过的标题", now=NOW)
+
+    report = case.reload(session)
+    verdict = verify_report(session, report_id=report.id, now=NOW + timedelta(minutes=1))
+
+    assert verdict.structure_ok is True
+    assert report.content_markdown.splitlines()[0] == "# 改过的标题"

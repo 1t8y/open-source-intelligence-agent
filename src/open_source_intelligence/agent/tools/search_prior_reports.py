@@ -100,8 +100,10 @@ def search_prior_reports(
             [f"{summary.title}\n{summary.summary}" for summary in summaries],
             top_k=payload.limit,
         )
-        by_text = {f"{summary.title}\n{summary.summary}": summary for summary in summaries}
-        ordered = [by_text[item.text] for item in ranked if item.text in by_text]
+        # Map back by position, not by text: two reports can carry the same title and the same
+        # opening paragraph, and a text-keyed lookup would then return the first one twice while
+        # dropping the other — a silently missing baseline that nothing reports as missing.
+        ordered = [summaries[item.index] for item in ranked]
     else:
         ordered = summaries[: payload.limit]
 

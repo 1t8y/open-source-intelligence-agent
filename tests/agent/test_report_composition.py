@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import date
 
 import pytest
 from agent_support import seed_topic
@@ -14,7 +15,11 @@ from support import NOW, Workspace, build_settings
 from open_source_intelligence.agent.runtime import run_research_agent
 from open_source_intelligence.agent.tools.contracts import REPORT_SECTION_KEYS, CitationRef
 from open_source_intelligence.core.text import content_digest
-from open_source_intelligence.persistence.models.intelligence import Topic
+from open_source_intelligence.persistence.models.intelligence import (
+    Repository,
+    Topic,
+    TopicRepository,
+)
 from open_source_intelligence.persistence.models.reporting import (
     Report,
     ReportDraft,
@@ -301,3 +306,83 @@ def test_evidence_section_deduplicates_and_groups_sources(
         if line.strip().startswith("-") and "repo_snapshots:" in line
     ]
     assert len(metric_refs) == len(set(metric_refs))
+
+
+def test_provenance_counts_evidence_not_citations(
+    session: Session,
+    drafted_run: DraftedRun,
+) -> None:
+    """The provenance line describes the run's input, not the citation list.
+
+    Two numbers were wrong in the same direction: "指标观测点" counted `(section, ref)` pairs, so
+    one snapshot quoted by three sections read as three observations, and "本轮候选仓库" was derived
+    from the cited repositories, so a candidate that was researched but not quoted disappeared
+    from the list of what the run could see.
+    """
+    result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
+    report = session.get(Report, result.report_id)
+    assert report is not None
+
+    metric_refs = {
+        row.source_ref
+        for row in session.scalars(
+            select(ReportSource).where(
+                ReportSource.report_id == report.id,
+                ReportSource.source_type == "metric",
+            )
+        ).all()
+    }
+    body = report.content_markdown
+    assert f"指标观测点 {len(metric_refs)} 个" in body
+
+    # Candidate links are the run's input; the block must name them all, cited or not.
+    candidate_names = {
+        row[0]
+        for row in session.execute(
+            select(Repository.full_name)
+            .join(TopicRepository, TopicRepository.repository_id == Repository.id)
+            .where(TopicRepository.selected_for_agent.is_(True))
+        ).all()
+    }
+    provenance_line = next(
+        line for line in body.splitlines() if line.startswith("> 本轮候选仓库：")
+    )
+    for full_name in candidate_names:
+        assert full_name in provenance_line
+
+
+def test_a_duplicate_full_name_resolves_through_the_snapshot(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A full name is not unique on its own, so the date decides which source the citation means.
+
+    `repositories` is unique on `(source_id, provider_repo_id)`, so two data sources can hold the
+    same `owner/name`. Resolving the name first and then hoping that row owns the snapshot made the
+    answer depend on insertion order: a citation that clearly named the second source's snapshot
+    failed as "not found".
+    """
+    first_source = workspace.add_source()
+    second_source = workspace.add_source(source_type="huggingface")
+    earlier = workspace.add_repository(
+        source_id=first_source.id,
+        provider_repo_id="dup-a",
+        full_name="acme/duplicated",
+    )
+    later = workspace.add_repository(
+        source_id=second_source.id,
+        provider_repo_id="dup-b",
+        full_name="acme/duplicated",
+    )
+    workspace.add_snapshot(earlier.id, date(2026, 10, 5), stars=100, forks=10)
+    workspace.add_snapshot(later.id, date(2026, 10, 11), stars=200, forks=20)
+
+    resolved = resolve_citation(
+        session,
+        CitationRef(
+            source_type="metric",
+            source_ref="repo_snapshots:acme/duplicated:2026-10-11",
+        ),
+    )
+
+    assert resolved.repository_id == later.id

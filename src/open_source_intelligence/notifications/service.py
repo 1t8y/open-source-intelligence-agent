@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.core.config import Settings, get_settings
@@ -220,11 +220,20 @@ def list_pushes(
     report_id: int | None = None,
     status: str | None = None,
     limit: int = 50,
+    access_filter: ColumnElement[bool] | None = None,
 ) -> list[ReportPush]:
-    """Return delivery records, newest first, optionally filtered."""
+    """Return delivery records, newest first, optionally filtered.
+
+    `access_filter` is the report ACL as a SQL predicate. The ledger names report titles, versions,
+    destinations and error text, so a role check alone is not enough: it has to be filtered in the
+    query, exactly like the report list, or a caller can read the metadata of a report it may not
+    open. `None` means "system scope" and is only correct for a background sweep.
+    """
     if limit < 1:
         raise ValueError("limit must be at least 1")
     statement = select(ReportPush)
+    if access_filter is not None:
+        statement = statement.join(Report, Report.id == ReportPush.report_id).where(access_filter)
     if report_id is not None:
         statement = statement.where(ReportPush.report_id == report_id)
     if status is not None:
@@ -491,22 +500,30 @@ def retry_failed_pushes(
     settings: Settings | None = None,
     notifier: NotificationChannel | None = None,
     now: datetime | None = None,
+    access_filter: ColumnElement[bool] | None = None,
 ) -> list[PushOutcome]:
     """Retry every failed push that still has retry budget left.
 
     One unusable row never stops the sweep: mirroring `publish_due_reports`, a failed retry is
     skipped and the rest of the batch continues.
+
+    `access_filter` narrows the sweep to the reports the caller may read. An operator pressing
+    "retry" is acting on their own reports, not silently re-sending material they cannot open;
+    the scheduled sweep leaves it `None` because the beat task belongs to no single user.
     """
     resolved = settings or get_settings()
     if limit < 1:
         raise ValueError("limit must be at least 1")
     if not resolved.push_enabled:
         return []
+    statement = select(ReportPush).where(
+        ReportPush.status == "failed",
+        ReportPush.attempt < resolved.push_max_attempts,
+    )
+    if access_filter is not None:
+        statement = statement.join(Report, Report.id == ReportPush.report_id).where(access_filter)
     candidates = session.scalars(
-        select(ReportPush)
-        .where(ReportPush.status == "failed", ReportPush.attempt < resolved.push_max_attempts)
-        .order_by(ReportPush.updated_at, ReportPush.id)
-        .limit(limit)
+        statement.order_by(ReportPush.updated_at, ReportPush.id).limit(limit)
     ).all()
     outcomes: list[PushOutcome] = []
     for row in candidates:

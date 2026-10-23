@@ -378,6 +378,11 @@ def _ensure_repositories(session: Session, source: DataSource, topic: Topic) -> 
         # Boundary shapes stay `selected_for_agent=False` so the research run only reads the
         # three normal candidates and reaches `completed` instead of tripping a guard. The link
         # is upserted, not only inserted, so a prior run's rank/selection is corrected.
+        #
+        # The link is also pinned: these five repositories and their ranks are the demo's
+        # fixture, and a daily ranking pass would re-derive the list from whatever snapshots the
+        # environment happens to hold. `manually_pinned` is what stops that pass from replacing
+        # the fixture out from under a demonstration.
         link = session.get(TopicRepository, (topic.id, repo.id))
         if link is None:
             session.add(
@@ -387,11 +392,13 @@ def _ensure_repositories(session: Session, source: DataSource, topic: Topic) -> 
                     score=Decimal("100.0") - Decimal(index),
                     rank=index,
                     selected_for_agent=spec["selected"],
+                    manually_pinned=True,
                 )
             )
         else:
             link.rank = index
             link.selected_for_agent = spec["selected"]
+            link.manually_pinned = True
         seeded_ids.add(repo.id)
         created.append(repo)
 

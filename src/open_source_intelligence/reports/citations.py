@@ -58,17 +58,75 @@ def _validated_url(source_url: str | None) -> str | None:
     return source_url
 
 
-def _resolve_repository(session: Session, repo_token: str) -> Repository | None:
-    """Resolve a citation's repository token to a live repository row, or None.
+def _metric_source(
+    session: Session,
+    *,
+    repo_token: str,
+    snapshot_date: date,
+) -> tuple[Repository, RepoSnapshot] | None:
+    """Return the repository and snapshot a metric reference names, or None.
 
-    The token is either a numeric `repository_id` (the drafting-time key) or a stable
-    `owner/name` full name (what a generated report records). A full name is matched by
-    exact equality; it is the durable anchor that survives a rebuild, while the numeric id is
-    only ever an internal key that a rebuild reassigns.
+    A full name is resolved together with the date rather than on its own. `repositories` is
+    unique on `(source_id, provider_repo_id)`, so the same `owner/name` can exist once per data
+    source; resolving the name first and hoping the first row owns the snapshot would make a
+    citation point at whichever source happened to sort first.
     """
     if repo_token.isdigit():
-        return session.get(Repository, int(repo_token))
-    return session.scalar(select(Repository).where(Repository.full_name == repo_token).limit(1))
+        repository = session.get(Repository, int(repo_token))
+        if repository is None:
+            return None
+        snapshot = session.scalar(
+            select(RepoSnapshot).where(
+                RepoSnapshot.repository_id == repository.id,
+                RepoSnapshot.snapshot_date == snapshot_date,
+            )
+        )
+        return None if snapshot is None else (repository, snapshot)
+    row = session.execute(
+        select(RepoSnapshot, Repository)
+        .join(Repository, Repository.id == RepoSnapshot.repository_id)
+        .where(
+            Repository.full_name == repo_token,
+            RepoSnapshot.snapshot_date == snapshot_date,
+        )
+        .order_by(Repository.id.asc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    return row[1], row[0]
+
+
+def _readme_source(
+    session: Session,
+    *,
+    repo_token: str,
+) -> tuple[Repository, RepositoryContent] | None:
+    """Return the repository and cached README a readme reference names, or None."""
+    if repo_token.isdigit():
+        repository = session.get(Repository, int(repo_token))
+        if repository is None:
+            return None
+        content = session.scalar(
+            select(RepositoryContent).where(
+                RepositoryContent.repository_id == repository.id,
+                RepositoryContent.content_type == "readme",
+            )
+        )
+        return None if content is None else (repository, content)
+    row = session.execute(
+        select(RepositoryContent, Repository)
+        .join(Repository, Repository.id == RepositoryContent.repository_id)
+        .where(
+            Repository.full_name == repo_token,
+            RepositoryContent.content_type == "readme",
+        )
+        .order_by(Repository.id.asc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    return row[1], row[0]
 
 
 def resolve_citation(session: Session, citation: CitationRef) -> ResolvedCitation:
@@ -78,18 +136,15 @@ def resolve_citation(session: Session, citation: CitationRef) -> ResolvedCitatio
         match = _METRIC_REF.fullmatch(citation.source_ref)
         if match is None:
             raise ReportGenerationError(f"invalid metric citation: {citation.source_ref}")
-        repository = _resolve_repository(session, match.group("repo"))
-        if repository is None:
-            raise ReportGenerationError(f"metric source not found: {citation.source_ref}")
         snapshot_date = date.fromisoformat(match.group("date"))
-        snapshot = session.scalar(
-            select(RepoSnapshot).where(
-                RepoSnapshot.repository_id == repository.id,
-                RepoSnapshot.snapshot_date == snapshot_date,
-            )
+        metric_source = _metric_source(
+            session,
+            repo_token=match.group("repo"),
+            snapshot_date=snapshot_date,
         )
-        if snapshot is None:
+        if metric_source is None:
             raise ReportGenerationError(f"metric source not found: {citation.source_ref}")
+        repository, snapshot = metric_source
         return ResolvedCitation(
             source_type=citation.source_type,
             source_ref=_metric_ref(repository.full_name, snapshot_date),
@@ -102,17 +157,10 @@ def resolve_citation(session: Session, citation: CitationRef) -> ResolvedCitatio
         match = _README_REF.fullmatch(citation.source_ref)
         if match is None:
             raise ReportGenerationError(f"invalid readme citation: {citation.source_ref}")
-        repository = _resolve_repository(session, match.group("repo"))
-        if repository is None:
+        readme_source = _readme_source(session, repo_token=match.group("repo"))
+        if readme_source is None:
             raise ReportGenerationError(f"readme source not found: {citation.source_ref}")
-        content = session.scalar(
-            select(RepositoryContent).where(
-                RepositoryContent.repository_id == repository.id,
-                RepositoryContent.content_type == "readme",
-            )
-        )
-        if content is None:
-            raise ReportGenerationError(f"readme source not found: {citation.source_ref}")
+        repository, content = readme_source
         return ResolvedCitation(
             source_type=citation.source_type,
             source_ref=_readme_ref(repository.full_name),

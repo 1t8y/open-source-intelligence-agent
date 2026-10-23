@@ -348,3 +348,35 @@ def test_the_contents_stage_is_opt_in_and_caches_the_ranked_candidates() -> None
     assert len(source.calls) == 1
     assert len(cached) == 1
     assert cached[0].content == "# README"
+
+
+def test_an_unexpected_collect_failure_still_closes_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An error the collector did not classify must not leave the run row `running`.
+
+    Every other stage wraps its work and writes a terminal state; collect only re-raised its own
+    `CollectorError`. A database error (or a bad `limit`) therefore left the row in `running`
+    forever, which is the one state that makes a dead batch look like a live one.
+    """
+    session_factory = build_session_factory()
+    with session_factory() as session:
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("collector crashed outside its own error type")
+
+        monkeypatch.setattr(daily, "collect_repositories", boom)
+
+        with pytest.raises(PipelineStageError):
+            run_daily_pipeline(
+                session,
+                business_date=BUSINESS_DATE,
+                collectors=[StubCollector([build_item(1)])],
+                limit=10,
+            )
+
+        run = session.scalars(select(PipelineRun).order_by(PipelineRun.id.desc())).first()
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error_code == "COLLECTOR_FAILED"
+        assert run.finished_at is not None

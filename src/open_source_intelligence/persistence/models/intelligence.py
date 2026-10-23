@@ -224,6 +224,7 @@ class TopicRepository(Base):
     score: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=0)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
     selected_for_agent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    manually_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         nullable=False,

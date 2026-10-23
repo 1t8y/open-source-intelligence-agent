@@ -195,11 +195,32 @@ def test_factual_consistency_is_not_applicable_without_facts(
 
 
 def test_an_unsupported_fact_field_is_ignored(session: Session, workspace: Workspace) -> None:
-    """A fact about a field the schema does not track must not be silently scored as pass."""
+    """A fact the schema cannot check is not applicable, not a miss.
+
+    The metric has to answer "of the facts that could be checked, how many agree". A dataset entry
+    naming a field this schema does not track says nothing about the report, so folding it into
+    the denominator would report a correct report as a quality regression.
+    """
     seed_eval_world(session, workspace)
     repository = _repository(session, "acme/rocket")
     case = _stored_case(session, facts=[{"repo": "acme/rocket", "field": "watts", "value": 1}])
     sections = (_section("summary", "1", _metric_citation(repository.id)),)
+    assert score_factual_consistency(session, case=case, sections=sections) is None
+
+
+def test_an_unknown_repository_is_not_a_miss(session: Session, workspace: Workspace) -> None:
+    """A fact about a repository that no longer exists is unverifiable, so it is not a miss."""
+    seed_eval_world(session, workspace)
+    repository = _repository(session, "acme/rocket")
+    case = _stored_case(
+        session,
+        facts=[
+            {"repo": "acme/rocket", "field": "stars", "value": 999},
+            {"repo": "gone/missing", "field": "stars", "value": 1},
+        ],
+    )
+    sections = (_section("summary", "1", _metric_citation(repository.id)),)
+    # One checkable fact, and the report disagrees with it: 0 of 1, not 0 of 2.
     assert score_factual_consistency(session, case=case, sections=sections) == Decimal("0.0000")
 
 
@@ -331,3 +352,51 @@ def test_a_timezone_aware_window_is_preserved(session: Session, workspace: Works
     start = datetime.fromisoformat(case.input_json["window"]["start"])
     assert start.tzinfo is not None
     assert start.astimezone(UTC).isoformat() == "2026-10-05T00:00:00+00:00"
+
+
+def test_a_full_name_citation_counts_as_citing_the_repository(
+    session: Session, workspace: Workspace
+) -> None:
+    """A reference in the durable `owner/name` form has to be understood, not scored as absent.
+
+    Generated reports anchor citations on the stable full name so they survive a database rebuild.
+    A scorer that only decoded the drafting-time numeric id read that as "cited nothing" and
+    marked the report's facts inconsistent — punishing the more correct form of the same claim.
+    """
+    seed_eval_world(session, workspace)
+    repository = _repository(session, "acme/rocket")
+    case = _stored_case(
+        session,
+        facts=[{"repo": "acme/rocket", "field": "stars", "value": repository.stars}],
+    )
+    citation = CitationRef(
+        source_type="metric",
+        source_ref=f"repo_snapshots:acme/rocket:{SNAPSHOT_DATE.isoformat()}",
+    )
+    sections = (_section("summary", "1", citation),)
+
+    assert score_factual_consistency(session, case=case, sections=sections) == Decimal("1.0000")
+
+
+def test_a_fact_is_checked_against_the_case_window_not_the_newest_row(
+    session: Session, workspace: Workspace
+) -> None:
+    """Facts describe a window, so a later snapshot must not turn a correct report into a wrong one.
+
+    Reading `ORDER BY snapshot_date DESC LIMIT 1` made the same report score 1.0 and then 0.0 as
+    soon as the collector ran again — the drift the case exists to be immune to.
+    """
+    seed_eval_world(session, workspace)
+    repository = workspace.add_repository(
+        source_id=_source_id(session), provider_repo_id="win", full_name="a/window"
+    )
+    workspace.add_snapshot(repository.id, SNAPSHOT_DATE, stars=10, forks=1)
+    # A snapshot after the case window: the report was written before this existed.
+    workspace.add_snapshot(repository.id, date(2026, 10, 20), stars=999, forks=99)
+    case = _stored_case(
+        session,
+        facts=[{"repo": "a/window", "field": "stars", "value": 10}],
+    )
+    sections = (_section("summary", "1", _metric_citation(repository.id)),)
+
+    assert score_factual_consistency(session, case=case, sections=sections) == Decimal("1.0000")

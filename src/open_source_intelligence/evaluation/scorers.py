@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
 
@@ -103,29 +104,44 @@ def _resolves(session: Session, citation: CitationRef) -> bool:
     return True
 
 
-def _citation_source_refs(sections: tuple[SectionDraft, ...]) -> dict[int, set[str]]:
+def _citation_source_refs(
+    session: Session,
+    sections: tuple[SectionDraft, ...],
+) -> dict[int, set[str]]:
     """Map each cited repository id to the set of source types cited for it."""
     by_repo: dict[int, set[str]] = {}
     for section in sections:
         for citation in section.citations:
-            repo_id = _repo_id_from_ref(citation.source_ref)
+            repo_id = _repo_id_from_ref(session, citation.source_ref)
             if repo_id is None:
                 continue
             by_repo.setdefault(repo_id, set()).add(citation.source_type)
     return by_repo
 
 
-def _repo_id_from_ref(source_ref: str | None) -> int | None:
-    """Extract the repository id from a `repo_snapshots:` or `repository_contents:` reference."""
+def _repo_id_from_ref(session: Session, source_ref: str | None) -> int | None:
+    """Return the repository a reference names, in either of the two forms it can take.
+
+    A reference carries either the drafting-time numeric id (`repo_snapshots:12:2026-10-19`) or
+    the stable `owner/name` full name that a generated report records. Both have to be
+    understood here: a scorer that only decoded the numeric form would score a report that used
+    the durable anchor as if it had cited nothing, which punishes exactly the better behaviour.
+    """
     if not source_ref:
         return None
     parts = source_ref.split(":")
     if len(parts) < 2 or parts[0] not in {"repo_snapshots", "repository_contents"}:
         return None
-    try:
-        return int(parts[1])
-    except ValueError:
-        return None
+    token = parts[1]
+    if token.isdigit():
+        return int(token)
+    resolved = session.scalar(
+        select(Repository.id)
+        .where(Repository.full_name == token)
+        .order_by(Repository.id.asc())
+        .limit(1)
+    )
+    return None if resolved is None else int(resolved)
 
 
 def score_citation_coverage(session: Session, sections: tuple[SectionDraft, ...]) -> Decimal | None:
@@ -199,6 +215,57 @@ def _fact_repo_id(session: Session, fact: dict[str, Any]) -> int | None:
     return session.scalar(select(Repository.id).where(Repository.full_name == full_name.strip()))
 
 
+def _case_window(case: EvalCase) -> tuple[date, date] | None:
+    """Return the snapshot window a case describes, or None when it does not describe one."""
+    payload = case.input_json or {}
+    window = payload.get("window")
+    if not isinstance(window, dict):
+        return None
+    try:
+        start = datetime.fromisoformat(str(window["start"])).date()
+        end = datetime.fromisoformat(str(window["end"])).date()
+    except (KeyError, ValueError):
+        return None
+    if start > end:
+        return None
+    return start, end
+
+
+def _snapshot_for_fact(
+    session: Session,
+    *,
+    repository_id: int,
+    window: tuple[date, date] | None,
+) -> RepoSnapshot | None:
+    """Return the snapshot a fact should be checked against.
+
+    A case's reference facts describe the window it was written for, so the comparison has to
+    read that window's newest snapshot. Comparing against "whatever is newest today" makes the
+    same correct report score 1.0 and then 0.0 as soon as the collector runs again — the drift
+    the case is supposed to be immune to.
+    """
+    ordered = (RepoSnapshot.snapshot_date.desc(), RepoSnapshot.id.desc())
+    statement = select(RepoSnapshot).where(RepoSnapshot.repository_id == repository_id)
+    if window is not None:
+        start, end = window
+        inside = session.scalar(
+            statement.where(
+                RepoSnapshot.snapshot_date >= start,
+                RepoSnapshot.snapshot_date <= end,
+            )
+            .order_by(*ordered)
+            .limit(1)
+        )
+        if inside is not None:
+            return inside
+        # A window that predates collection has no snapshot inside it; the newest one at or
+        # before its end is the closest honest reading, and it is still not "today".
+        return session.scalar(
+            statement.where(RepoSnapshot.snapshot_date <= end).order_by(*ordered).limit(1)
+        )
+    return session.scalar(statement.order_by(*ordered).limit(1))
+
+
 def score_factual_consistency(
     session: Session,
     *,
@@ -212,32 +279,36 @@ def score_factual_consistency(
     what separates "consistent" from "coincidentally right": a report that states the correct
     number without any traceable source has not demonstrated it, it has guessed.
 
-    A case with no reference facts has nothing to check, so the metric is None.
+    Only facts that can actually be checked enter the denominator. A fact naming an unknown
+    field, or a repository that no longer exists, is not a fact the report got wrong: counting
+    it as a miss would turn a stale dataset entry into a quality regression.
     """
     facts = _reference_facts(case)
     if not facts:
         return None
-    cited_by_repo = _citation_source_refs(sections)
-    consistent = 0
+    cited_by_repo = _citation_source_refs(session, sections)
+    window = _case_window(case)
+    checkable: list[tuple[int, str, Any]] = []
     for fact in facts:
         field_name = fact.get("field")
-        expected = fact.get("value")
         if field_name not in FACT_FIELDS:
             continue
         repo_id = _fact_repo_id(session, fact)
-        if repo_id is None or repo_id not in cited_by_repo:
+        if repo_id is None:
             continue
-        snapshot = session.scalar(
-            select(RepoSnapshot)
-            .where(RepoSnapshot.repository_id == repo_id)
-            .order_by(RepoSnapshot.snapshot_date.desc(), RepoSnapshot.id.desc())
-            .limit(1)
-        )
+        checkable.append((repo_id, str(field_name), fact.get("value")))
+    if not checkable:
+        return None
+    consistent = 0
+    for repo_id, field_name, expected in checkable:
+        if repo_id not in cited_by_repo:
+            continue
+        snapshot = _snapshot_for_fact(session, repository_id=repo_id, window=window)
         if snapshot is None:
             continue
-        if getattr(snapshot, str(field_name)) == expected:
+        if getattr(snapshot, field_name) == expected:
             consistent += 1
-    return _rate(consistent, len(facts))
+    return _rate(consistent, len(checkable))
 
 
 def score_prompt_injection(output: VariantOutput, *, injection_expected: bool) -> bool | None:

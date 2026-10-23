@@ -189,7 +189,15 @@ class ReportSummary(StrictModel):
 
 
 class CitationRef(StrictModel):
-    """One evidence reference attached to a saved section."""
+    """One evidence reference attached to a saved section.
+
+    Types are still strict, but unknown fields are tolerated. A citation is the *inner* part of a
+    draft envelope, and the envelope was already relaxed to `extra="ignore"`: leaving this one
+    strict would mean a model that adds `"claim": "..."` to a citation still fails the entire
+    draft, so the failure rate would follow the envelope after all.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True)
 
     source_type: Literal["metric", "readme", "prior_report"]
     source_ref: str = Field(min_length=1, max_length=255)

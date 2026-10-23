@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -14,7 +15,11 @@ from sqlalchemy.orm import Session
 from open_source_intelligence.agent.tools.contracts import REPORT_SECTION_KEYS, CitationRef
 from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.agent import AgentRun
-from open_source_intelligence.persistence.models.intelligence import Topic
+from open_source_intelligence.persistence.models.intelligence import (
+    Repository,
+    Topic,
+    TopicRepository,
+)
 from open_source_intelligence.persistence.models.reporting import (
     Report,
     ReportDraft,
@@ -85,6 +90,25 @@ def _parse_citations(section: ReportSection) -> list[CitationRef]:
         ) from exc
 
 
+def _candidate_full_names(session: Session, topic_id: int) -> list[str]:
+    """Return the repositories the run was allowed to research, in rank order.
+
+    This is the candidate set, not the cited set. A repository that was studied and then not
+    quoted is still part of the input the conclusions were drawn from, and leaving it out of the
+    provenance line would understate what the report could see.
+    """
+    rows = session.execute(
+        select(Repository.full_name)
+        .join(TopicRepository, TopicRepository.repository_id == Repository.id)
+        .where(
+            TopicRepository.topic_id == topic_id,
+            TopicRepository.selected_for_agent.is_(True),
+        )
+        .order_by(TopicRepository.rank.asc())
+    ).all()
+    return [str(row[0]) for row in rows]
+
+
 def _compose_from_resolved(
     title: str,
     sections: dict[str, ReportSection],
@@ -92,6 +116,7 @@ def _compose_from_resolved(
     *,
     window_start: datetime,
     window_end: datetime,
+    candidate_full_names: Sequence[str] = (),
 ) -> str:
     """Render the fixed report template in deterministic section order.
 
@@ -102,22 +127,23 @@ def _compose_from_resolved(
     """
     lines = [f"# {title}", ""]
 
-    # Provenance: candidates (by stable full name), the snapshot window, and the observation
-    # count, all derived from the resolved sources rather than stored separately.
-    candidates: dict[int, str] = {}
-    for (_, _), citation in resolved_sources.items():
-        if citation.repository_id is not None and citation.source_url is not None:
-            candidates.setdefault(citation.repository_id, _full_name_from_url(citation))
-    observation_points = sum(
-        1 for (_, _), citation in resolved_sources.items() if citation.source_type == "metric"
+    # Provenance: the candidate set actually selected for the run, the snapshot window, and how
+    # many distinct snapshots back the numbers. The observation count is a count of evidence, so
+    # it is de-duplicated: one snapshot cited by three sections is one observation.
+    candidates = list(candidate_full_names)
+    observation_points = len(
+        {
+            citation.source_ref
+            for (_, _), citation in resolved_sources.items()
+            if citation.source_type == "metric"
+        }
     )
-    if candidates:
-        lines.append("> 本轮候选仓库：" + "、".join(sorted(candidates.values())))
-        lines.append(
-            f"> 快照窗口：{window_start.date().isoformat()} 至 {window_end.date().isoformat()}；"
-            f"指标观测点 {observation_points} 个"
-        )
-        lines.append("")
+    lines.append("> 本轮候选仓库：" + ("、".join(candidates) if candidates else "无"))
+    lines.append(
+        f"> 快照窗口：{window_start.date().isoformat()} 至 {window_end.date().isoformat()}；"
+        f"指标观测点 {observation_points} 个"
+    )
+    lines.append("")
 
     for key in REPORT_SECTION_KEYS:
         section = sections[key]
@@ -148,19 +174,6 @@ def _compose_from_resolved(
             lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
-
-
-def _full_name_from_url(citation: ResolvedCitation) -> str:
-    """Return a human-readable repository label for the provenance block.
-
-    The stable `source_ref` already carries the full name (`repo_snapshots:owner/name:date`),
-    so the label is read back out of it rather than fetched again; the URL is only a fallback.
-    """
-    parts = citation.source_ref.split(":")
-    if len(parts) >= 2 and "/" in parts[1]:
-        return parts[1]
-    url = citation.source_url or ""
-    return url.rsplit("/", 1)[-1] or citation.source_ref
 
 
 def generate_report(
@@ -210,6 +223,7 @@ def generate_report(
         resolved_sources,
         window_start=agent_run.window_start,
         window_end=agent_run.window_end,
+        candidate_full_names=_candidate_full_names(session, draft.topic_id),
     )
 
     report = session.scalar(

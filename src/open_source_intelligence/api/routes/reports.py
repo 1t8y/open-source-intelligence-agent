@@ -344,8 +344,15 @@ def release_due_reports(
     This is the same `publish_due_reports` sweep the Celery beat task runs, exposed so the
     admin UI can complete a publishing flow without waiting for the next tick. It is declared
     before the `/{report_id}` routes so the literal path is not read as an id.
+
+    The sweep is scoped to the reports the caller may read. Without that scope, "release what is
+    due" would let an editor publish a PRIVATE report they cannot even open.
     """
-    released = publish_due_reports(session, limit=limit)
+    released = publish_due_reports(
+        session,
+        limit=limit,
+        access_filter=readable_reports_filter(user, get_role_codes(user)),
+    )
     blocked = [entry for entry in released if entry["status"] == "failed"]
     return PublishDueResponse(
         released=released,

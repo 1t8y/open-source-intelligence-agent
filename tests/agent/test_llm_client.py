@@ -385,3 +385,30 @@ def test_openai_client_leaves_cost_at_zero_without_prices() -> None:
 
     turn = _client(handler).complete([], ())
     assert turn.cost == Decimal("0")
+
+
+def test_a_truncated_response_still_reports_what_it_cost() -> None:
+    """A cut-off answer is unusable, but it was billed, so its usage has to come back with it.
+
+    Dropping the usage block when `finish_reason == "length"` made the tokens vanish from
+    `agent_runs` and the budget walk backwards: a run could truncate repeatedly and never spend
+    any of its allowance.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "length", "message": {"content": '{"sections": ['}}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+            },
+        )
+
+    with pytest.raises(ModelClientError) as error:
+        _priced_client(handler).complete([], ())
+
+    assert error.value.code == MODEL_INVALID_RESPONSE
+    assert error.value.prompt_tokens == 1000
+    assert error.value.completion_tokens == 500
+    assert error.value.cost == Decimal("0.000280")

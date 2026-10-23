@@ -1047,11 +1047,18 @@ def publish_due_action(
     web: WebSessionDep,
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Run the release driver once, mirroring the scheduled sweep."""
+    """Run the release driver once, mirroring the scheduled sweep.
+
+    Scoped to the reports this user may read: the scheduled sweep belongs to the system, a button
+    pressed by a person does not.
+    """
     with _audited_action(request, session, web, resource_type="report"):
         verify_csrf(request, csrf)
         _require_write_role(web)
-    released = publish_due_reports(session)
+    released = publish_due_reports(
+        session,
+        access_filter=readable_reports_filter(web.user, get_role_codes(web.user)),
+    )
     blocked = [entry for entry in released if entry["status"] == "failed"]
     message = f"释放 {len(released) - len(blocked)} 条，被拦截 {len(blocked)} 条"
     return render(
@@ -1273,7 +1280,15 @@ def pushes_page(
         resource_type="push",
         message="推送记录仅对管理员和编辑者开放",
     )
-    pushes = list_pushes(session, status=status_filter, limit=RECENT_LIMIT)
+    pushes = list_pushes(
+        session,
+        status=status_filter,
+        limit=RECENT_LIMIT,
+        # Role alone is not enough here: a delivery row carries a report title, version,
+        # destination and error text, so the ledger is filtered by the same report ACL the report
+        # list uses. Otherwise an editor reads the metadata of a PRIVATE report they cannot open.
+        access_filter=readable_reports_filter(web.user, get_role_codes(web.user)),
+    )
     # The allowlist is loaded only when its card will be drawn. The rendering rule and this one read
     # the same constant, so a viewer who is not shown the card does not have its contents in the
     # payload either — a display rule that leaves the data in place is a leak waiting for the next
@@ -1639,9 +1654,17 @@ def _topic_form_fields(topic: Topic | None, form: Mapping[str, str] | None) -> d
 
 
 def _topic_values(raw: Mapping[str, str]) -> dict[str, Any]:
-    """Translate the create/update form into the service's field values."""
+    """Translate the create/update form into the service's field values.
+
+    `publish_mode` is validated here rather than passed through: the API path types it as a
+    `Literal`, the form does not, and letting an unknown value reach the table turns a bad form
+    into a `CHECK` violation, which surfaces as a 500 instead of a re-rendered form with a message.
+    """
+    publish_mode = (raw.get("publish_mode") or "").strip()
+    if publish_mode not in TOPIC_PUBLISH_MODES:
+        raise _FormInvalid(f"发布模式必须是 {'、'.join(TOPIC_PUBLISH_MODES)} 之一")
     values: dict[str, Any] = {
-        "publish_mode": (raw.get("publish_mode") or "").strip(),
+        "publish_mode": publish_mode,
         "description": (raw.get("description") or "").strip() or None,
         "languages": _split_terms(raw.get("languages") or ""),
         "keywords": _split_terms(raw.get("keywords") or ""),

@@ -165,3 +165,35 @@ def test_repository_filter_and_limit(workspace: Workspace) -> None:
     assert result.meta.result_count == 2
     assert result.meta.truncated is True
     assert all("Unrelated" != summary.title for summary in result.data)
+
+
+def test_two_reports_with_the_same_text_are_both_returned(workspace: Workspace) -> None:
+    """Relevance ranking must key on position, not on the text it ranked.
+
+    Two reports can share a title and an identical opening paragraph. A `{text: summary}` lookup
+    collapsed them into one entry and then emitted it twice, so a baseline silently went missing
+    while the result count still looked right.
+    """
+    topic, repository, run = _seed(workspace)
+    for offset in (7, 14):
+        workspace.add_report(
+            topic_id=topic.id,
+            agent_run_id=run.id,
+            title="Weekly wrap",
+            content="Stars grew strongly across the tracked agents.",
+            generated_at=NOW - timedelta(days=offset),
+            repository_id=repository.id,
+            source_refs=["repo:1#stars"],
+        )
+    registry = build_default_registry()
+
+    result = registry.invoke(
+        "search_prior_reports",
+        workspace.context(topic.id, agent_run_id=run.id),
+        workspace.session,
+        {"topic_id": topic.id, "before": BEFORE, "query": "stars growth"},
+    )
+
+    assert result.ok is True
+    assert result.meta.result_count == 2
+    assert len({summary.report_id for summary in result.data}) == 2

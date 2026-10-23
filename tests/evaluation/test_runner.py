@@ -577,3 +577,32 @@ def test_a_wholly_failed_run_cannot_pass(session: Session, workspace: Workspace)
     assert candidate.scored_case_count == 0
     assert candidate.gate_failures == []
     assert report.passed is False
+
+
+def test_comparing_is_a_read_and_does_not_rewrite_history(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A GET that builds a comparison must not re-decide `eval_runs.status`.
+
+    The dashboard calls `compare_latest` on every render. While that path committed the frozen
+    summary and terminal status, each page refresh rewrote the row and re-adjudicated a historical
+    verdict against whatever the data looked like at that moment.
+    """
+    dataset_id = _seeded(session, workspace)
+    run_evaluation(session, dataset_id=dataset_id, settings=SETTINGS, now=WINDOW_END)
+
+    target = list_runs(session, dataset_id=dataset_id)[0]
+    target.status = "running"
+    target.summary_json = None
+    target.finished_at = None
+    session.commit()
+
+    compare_latest(session, dataset_id=dataset_id, settings=SETTINGS)
+
+    session.expire_all()
+    reloaded = session.get(type(target), target.id)
+    assert reloaded is not None
+    assert reloaded.status == "running"
+    assert reloaded.summary_json is None
+    assert reloaded.finished_at is None

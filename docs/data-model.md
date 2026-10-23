@@ -167,7 +167,7 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 
 ### `topic_repositories`
 
-主题与候选仓库的关系表，字段：`topic_id`、`repository_id`、`score`、`rank`、`selected_for_agent`、`created_at`。主键为 `(topic_id, repository_id)`，索引 `(topic_id, rank)`。
+主题与候选仓库的关系表，字段：`topic_id`、`repository_id`、`score`、`rank`、`selected_for_agent`、`manually_pinned`、`created_at`。主键为 `(topic_id, repository_id)`，索引 `(topic_id, rank)`。`manually_pinned` 标记"这条候选是人放的，不是排序器算出来的"：排序只刷新它自己算得出的行，手工/评测主题的那一条不会被下一轮日报抹掉。
 
 ## 5. Pipeline 与 Agent
 

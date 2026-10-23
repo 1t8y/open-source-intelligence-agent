@@ -36,10 +36,17 @@ DEFAULT_TOP_K = 3
 
 @dataclass(frozen=True, slots=True)
 class RankedSnippet:
-    """One ranked slice of source text plus its similarity to the query."""
+    """One ranked slice of source text plus its similarity to the query.
+
+    `index` is the position the text had in the input sequence. Callers need it to map a ranked
+    result back to the row it came from: two documents can share the same text (two reports with
+    the same title and the same opening paragraph), and a text-keyed lookup would then return one
+    row twice and drop the other.
+    """
 
     text: str
     score: float
+    index: int = 0
 
 
 def _cjk_bigrams(run: str) -> list[str]:
@@ -162,10 +169,16 @@ def rank_snippets(
     if not snippets:
         return []
     if not query.strip():
-        return [RankedSnippet(text=snippet, score=1.0) for snippet in snippets[:top_k]]
+        return [
+            RankedSnippet(text=snippet, score=1.0, index=index)
+            for index, snippet in enumerate(snippets[:top_k])
+        ]
     query_tokens = tokenize(query)
     if not query_tokens:
-        return [RankedSnippet(text=snippet, score=0.0) for snippet in snippets[:top_k]]
+        return [
+            RankedSnippet(text=snippet, score=0.0, index=index)
+            for index, snippet in enumerate(snippets[:top_k])
+        ]
 
     document_tokens = [tokenize(snippet) for snippet in snippets]
     document_frequencies: Counter[str] = Counter()
@@ -175,12 +188,15 @@ def rank_snippets(
 
     query_vector = _tfidf_vector(query_tokens, document_frequencies, document_count)
     if not query_vector:
-        return [RankedSnippet(text=snippet, score=0.0) for snippet in snippets[:top_k]]
+        return [
+            RankedSnippet(text=snippet, score=0.0, index=index)
+            for index, snippet in enumerate(snippets[:top_k])
+        ]
 
     scored: list[RankedSnippet] = []
-    for snippet, tokens in zip(snippets, document_tokens, strict=True):
+    for index, (snippet, tokens) in enumerate(zip(snippets, document_tokens, strict=True)):
         vector = _tfidf_vector(tokens, document_frequencies, document_count)
-        scored.append(RankedSnippet(text=snippet, score=_cosine(query_vector, vector)))
+        scored.append(RankedSnippet(text=snippet, score=_cosine(query_vector, vector), index=index))
     scored.sort(key=lambda item: item.score, reverse=True)
     return scored[:top_k]
 

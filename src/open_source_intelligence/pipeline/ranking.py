@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.persistence.models.intelligence import (
@@ -100,19 +100,48 @@ def rank_topic_candidates(
         candidates.append((repository, score))
 
     candidates.sort(key=lambda item: (-item[1], -item[0].stars, item[0].full_name))
-    session.execute(delete(TopicRepository).where(TopicRepository.topic_id == topic.id))
+
+    # Refresh in place instead of rebuilding the topic's candidate list. A blind
+    # delete-then-insert loses two things the ranker cannot know about: links whose repository
+    # has no snapshot inside this window (nothing to score, but still a deliberate candidate)
+    # and links a human pinned by hand — an evaluation topic holds exactly one of those, so one
+    # daily pass over an empty ranking would empty the case it exists to exercise.
+    existing = {
+        link.repository_id: link
+        for link in session.scalars(
+            select(TopicRepository).where(TopicRepository.topic_id == topic.id)
+        ).all()
+    }
+    ranked_ids = {repository.id for repository, _ in candidates}
+    for repository_id, existing_link in existing.items():
+        if repository_id in ranked_ids or existing_link.manually_pinned:
+            continue
+        # The repository was scored and no longer qualifies, so the link goes away. A pinned
+        # link is exempt: it was not the ranker's to remove.
+        session.delete(existing_link)
+
     ranked: list[RankedCandidate] = []
     for rank, (repository, score) in enumerate(candidates, start=1):
         selected = rank <= topic.max_candidates
-        session.add(
-            TopicRepository(
-                topic_id=topic.id,
-                repository_id=repository.id,
-                score=score,
-                rank=rank,
-                selected_for_agent=selected,
+        link = existing.get(repository.id)
+        if link is None:
+            session.add(
+                TopicRepository(
+                    topic_id=topic.id,
+                    repository_id=repository.id,
+                    score=score,
+                    rank=rank,
+                    selected_for_agent=selected,
+                    manually_pinned=False,
+                )
             )
-        )
+        else:
+            link.score = score
+            link.rank = rank
+            # A pinned candidate stays selected wherever it lands in the ranking, which is what
+            # "pinned" means; an unpinned one follows the cut-off as before.
+            link.selected_for_agent = True if link.manually_pinned else selected
+            selected = link.selected_for_agent
         ranked.append(
             RankedCandidate(
                 repository_id=repository.id,

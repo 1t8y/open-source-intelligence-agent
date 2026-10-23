@@ -21,3 +21,18 @@ AGENT_ERROR_CODES = (
     AGENT_INTERNAL_ERROR,
     AGENT_PROMPT_INJECTION,
 )
+
+#: Error codes that mean "a human should look at this" rather than "the run broke".
+#:
+#: This lives next to the codes rather than in `agent/runtime.py` because both the runtime (to
+#: decide the terminal status) and the graph (to stop after a fatal upstream failure) need it,
+#: and the graph cannot import the runtime: the runtime is what builds the graph.
+REVIEW_REQUIRED_CODES = frozenset(
+    {
+        AGENT_BUDGET_EXCEEDED,
+        AGENT_EVIDENCE_INCOMPLETE,
+        AGENT_NO_CANDIDATES,
+        AGENT_PROMPT_INJECTION,
+        AGENT_WRITE_FAILED,
+    }
+)

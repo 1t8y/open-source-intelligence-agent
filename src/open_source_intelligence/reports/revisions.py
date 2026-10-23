@@ -108,6 +108,27 @@ def _normalize_title(title: str) -> str:
     return normalized
 
 
+def _with_title_heading(content: str, title: str) -> str:
+    """Return `content` with its leading `# ` heading set to `title`.
+
+    `verification._check_structure` compares the first body line against `# <title>`, so the
+    title and the body heading are one value stored in two places. Any edit path that changes
+    one of them has to change the other, or it produces a report whose structure check can never
+    pass again — a content problem that looks like a bad draft rather than a bad edit.
+    """
+    desired = f"# {title}"
+    lines = content.splitlines()
+    if lines and lines[0].startswith("# "):
+        if lines[0].rstrip() == desired:
+            return content
+        lines[0] = desired
+        return "\n".join(lines)
+    stripped = content.lstrip()
+    if not stripped:
+        return desired + "\n"
+    return f"{desired}\n\n{stripped}"
+
+
 def _copy_sources(
     session: Session,
     report: Report,
@@ -233,6 +254,16 @@ def revise_report(
         report.publish_at = publish_at
         changed.append("publish_at")
 
+    # The title is rendered as the body's first heading, so the two move together. A title-only
+    # edit therefore becomes a content edit (and appends a version), and an edit that rewrites
+    # the body under a new title gets its heading normalized instead of failing the structure
+    # check later. Both paths keep `report.title` and `content_markdown` describing the same
+    # document.
+    if content_markdown is None and "title" in changed:
+        content_markdown = _with_title_heading(report.content_markdown, report.title)
+    elif content_markdown is not None:
+        content_markdown = _with_title_heading(content_markdown, report.title)
+
     content_changed = content_markdown is not None and content_markdown != report.content_markdown
     version = report.current_version
     if content_changed:
@@ -330,7 +361,10 @@ def rollback_report(
     new_version = _append_version(
         session,
         report,
-        content=target.content_markdown,
+        # `reports.title` is not versioned, so a restored body is re-headed to the title the
+        # report carries now. Without this a rollback across a rename would restore content the
+        # structure check rejects on the very next verification.
+        content=_with_title_heading(target.content_markdown, report.title),
         actor_id=actor_id,
         change_reason=f"rollback_to_v{version}",
         moment=moment,

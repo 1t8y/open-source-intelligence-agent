@@ -520,8 +520,15 @@ def build_comparison(
     run_ids: Sequence[int],
     settings: Settings | None = None,
     dataset: EvalDataset | None = None,
+    persist: bool = True,
 ) -> ComparisonReport:
-    """Assemble the unified comparison over the given runs and persist each run's summary."""
+    """Assemble the unified comparison over the given runs.
+
+    With `persist` (the default, used by `run_evaluation`) each run's frozen summary and terminal
+    status are written back to its row. Read paths pass `persist=False`: computing a comparison
+    is a query, and a query that rewrites `eval_runs.status` turns every dashboard refresh into a
+    write that can re-decide a historical verdict.
+    """
     resolved_settings = settings or get_settings()
     tolerance = _tolerance(resolved_settings)
     runs = [run for run in (session.get(EvalRun, run_id) for run_id in run_ids) if run is not None]
@@ -575,10 +582,12 @@ def build_comparison(
         # The summary lives on the row so the API can answer "what did this run conclude" without
         # re-executing anything, and so an operator reading one row sees the same numbers the
         # comparison report shows.
-        run.status = status
-        run.summary_json = final.to_dict()
-        run.finished_at = _closed_at(run.started_at or utc_now(), run.finished_at)
-    session.commit()
+        if persist:
+            run.status = status
+            run.summary_json = final.to_dict()
+            run.finished_at = _closed_at(run.started_at or utc_now(), run.finished_at)
+    if persist:
+        session.commit()
     return ComparisonReport(
         dataset_id=resolved_dataset.id,
         dataset_name=resolved_dataset.name,
@@ -623,7 +632,12 @@ def compare_latest(
     dataset_id: int,
     settings: Settings | None = None,
 ) -> ComparisonReport:
-    """Build the comparison over the newest run of each target without re-running anything."""
+    """Build the comparison over the newest run of each target without writing anything.
+
+    This is what the dashboard and the read-only comparison endpoint call, so it must not persist:
+    a page refresh that re-decided `eval_runs.status` would make "what did last week's run
+    conclude" answer differently depending on who looked at it, and when.
+    """
     runs = latest_runs_per_target(session, dataset_id=dataset_id)
     if not runs:
         raise EvaluationNotFound(f"eval dataset {dataset_id} has no run yet")
@@ -631,6 +645,7 @@ def compare_latest(
         session,
         run_ids=[run.id for run in runs],
         settings=settings,
+        persist=False,
     )
 
 

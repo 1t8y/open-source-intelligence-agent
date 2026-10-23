@@ -187,17 +187,54 @@ def _latest_snapshot(session: Session, repository_id: int) -> RepoSnapshot | Non
     )
 
 
+def _window_points(
+    session: Session,
+    *,
+    repository_id: int,
+    window_start: datetime | None,
+    window_end: datetime | None,
+) -> list[RepoSnapshot]:
+    """Return a repository's snapshots inside a window, oldest first."""
+    statement = select(RepoSnapshot).where(RepoSnapshot.repository_id == repository_id)
+    if window_start is not None:
+        statement = statement.where(RepoSnapshot.snapshot_date >= window_start.date())
+    if window_end is not None:
+        statement = statement.where(RepoSnapshot.snapshot_date <= window_end.date())
+    return list(session.scalars(statement.order_by(RepoSnapshot.snapshot_date.asc())).all())
+
+
+def _describe_series(points: list[RepoSnapshot]) -> str:
+    """Render one repository's window series the way `query_repo_metrics` reports it."""
+    if not points:
+        return "no snapshot"
+    first = points[0]
+    latest = points[-1]
+    if len(points) == 1:
+        return f"stars={latest.stars}, forks={latest.forks}, 观测点 1 个（{latest.snapshot_date}）"
+    return (
+        f"stars {first.stars}→{latest.stars}（净增 {latest.stars - first.stars}），"
+        f"forks {first.forks}→{latest.forks}，"
+        f"{first.snapshot_date} 至 {latest.snapshot_date} 共 {len(points)} 个观测点"
+    )
+
+
 def build_candidate_digest(
     session: Session,
     *,
     topic_id: int,
     limit: int,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
 ) -> tuple[str, list[int]]:
     """Render the candidate repositories as the prose a single-prompt baseline reads.
 
     This is the whole input a baseline gets: no tools, no prior reports, no cached README. It
     makes the baseline a real single-prompt attempt while keeping the comparison honest about
     what it cannot know.
+
+    The metrics are read over the same window the Agent queries. Handing the baseline "the
+    latest snapshot" while the Agent reads a closed historical window would compare two
+    different datasets and call the difference a capability gap.
     """
     candidate_ids = load_candidate_repo_ids(session, topic_id=topic_id, limit=limit)
     lines: list[str] = []
@@ -205,12 +242,22 @@ def build_candidate_digest(
         repository = session.get(Repository, repo_id)
         if repository is None:
             continue
-        snapshot = _latest_snapshot(session, repo_id)
-        metrics = (
-            f"stars={snapshot.stars}, forks={snapshot.forks}, open_issues={snapshot.open_issues}"
-            if snapshot is not None
-            else "no snapshot"
-        )
+        if window_start is None and window_end is None:
+            latest = _latest_snapshot(session, repo_id)
+            metrics = (
+                f"stars={latest.stars}, forks={latest.forks}, open_issues={latest.open_issues}"
+                if latest is not None
+                else "no snapshot"
+            )
+        else:
+            metrics = _describe_series(
+                _window_points(
+                    session,
+                    repository_id=repo_id,
+                    window_start=window_start,
+                    window_end=window_end,
+                )
+            )
         language = repository.language or "unknown"
         lines.append(
             f"- {repository.full_name}（{language}，{metrics}）"
@@ -290,6 +337,8 @@ def run_baseline(
         session,
         topic_id=topic.id,
         limit=settings.agent_max_candidates,
+        window_start=context.window_start,
+        window_end=context.window_end,
     )
     resolved_client = client or build_model_client(settings)
     draft_prompt = load_prompt(

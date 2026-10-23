@@ -105,7 +105,22 @@ def run_collect_stage(
         raise ValueError("at least one collector is required")
     run = start_pipeline_run(session, run_type="collect", topic_id=None, attempt=attempt)
     mark_pipeline_run_running(session, run)
-    summary = collect_repositories(session, collectors, limit=limit)
+    try:
+        summary = collect_repositories(session, collectors, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - recorded and re-raised as a stage error
+        # A provider-level failure is a `CollectorError` and is already summarized per provider.
+        # Anything else (a bad `limit`, a database error while upserting) escapes the service, and
+        # without this branch the run row would stay `running` forever — the one state that makes
+        # a dead batch indistinguishable from a live one.
+        error_code = classify_error("collect", exc)
+        message = describe_error(exc)
+        fail_pipeline_run(session, run, error_code=error_code, error_message=message)
+        raise PipelineStageError(
+            message,
+            run_id=run.id,
+            run_type="collect",
+            error_code=error_code,
+        ) from exc
     provider_counts = dict(summary.provider_counts)
     provider_errors = dict(summary.errors)
     metrics: dict[str, Any] = {
