@@ -278,13 +278,13 @@ def test_report_body_records_candidates_and_window(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """The report body carries a provenance block: candidates, window, observation count."""
+    """The report body carries a provenance block: candidates, window, cited snapshot count."""
     result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     report = session.get(Report, result.report_id)
     assert report is not None
     assert "本轮候选仓库：" in report.content_markdown
     assert "快照窗口：" in report.content_markdown
-    assert "指标观测点" in report.content_markdown
+    assert "引用快照" in report.content_markdown
 
 
 def test_evidence_section_deduplicates_and_groups_sources(
@@ -318,6 +318,11 @@ def test_provenance_counts_evidence_not_citations(
     one snapshot quoted by three sections read as three observations, and "本轮候选仓库" was derived
     from the cited repositories, so a candidate that was researched but not quoted disappeared
     from the list of what the run could see.
+
+    The line also had to stop being called an observation count: the body reports how many
+    snapshots each *series covers* (four, say), so one word carried two totals and the report
+    contradicted itself — "引用快照 3 个" beside "覆盖 4 个快照" is two different, both-correct
+    quantities.
     """
     result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     report = session.get(Report, result.report_id)
@@ -333,7 +338,7 @@ def test_provenance_counts_evidence_not_citations(
         ).all()
     }
     body = report.content_markdown
-    assert f"指标观测点 {len(metric_refs)} 个" in body
+    assert f"引用快照 {len(metric_refs)} 个" in body
 
     # Candidate links are the run's input; the block must name them all, cited or not.
     candidate_names = {

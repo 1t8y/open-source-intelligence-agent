@@ -113,12 +113,14 @@ def rank_topic_candidates(
         ).all()
     }
     ranked_ids = {repository.id for repository, _ in candidates}
+    dropped: set[int] = set()
     for repository_id, existing_link in existing.items():
         if repository_id in ranked_ids or existing_link.manually_pinned:
             continue
         # The repository was scored and no longer qualifies, so the link goes away. A pinned
         # link is exempt: it was not the ranker's to remove.
         session.delete(existing_link)
+        dropped.add(repository_id)
 
     ranked: list[RankedCandidate] = []
     for rank, (repository, score) in enumerate(candidates, start=1):
@@ -150,6 +152,24 @@ def rank_topic_candidates(
                 selected_for_agent=selected,
             )
         )
+
+    # Pinned links outside this window's scoring kept their old `rank`, which now collides with a
+    # scored candidate's: two rows share position 4, and every reader that orders by rank
+    # (candidate list, report provenance, the Agent's candidate loader) gets an arbitrary order
+    # between them. Park them after the scored ones, keeping their relative order, so positions
+    # stay distinct and the ranking still says what it means — pinned means *included*, not
+    # *promoted*.
+    tail = sorted(
+        (
+            (link.rank, repository_id)
+            for repository_id, link in existing.items()
+            if repository_id not in ranked_ids and repository_id not in dropped
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    for offset, (_, repository_id) in enumerate(tail, start=1):
+        existing[repository_id].rank = len(candidates) + offset
+
     record_audit_event(
         session,
         action="candidate.rank",

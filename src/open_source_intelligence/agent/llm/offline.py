@@ -361,12 +361,28 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
         for report_id in [report["report_id"]]
     ]
 
+    # The summary states the conclusion, not the census: the total movement, the split between
+    # rising / flat / falling, and how concentrated the movement is. Naming the top two movers
+    # here (as it used to) said the same thing as the highlights section in different words.
+    # Only the non-zero buckets are named. "3 个升温、0 个平稳、0 个回落" spends a third of the
+    # opening sentence on categories that do not exist.
+    buckets = (
+        (len(growing), "升温"),
+        (len(steady), "平稳"),
+        (len(declining), "回落"),
+    )
+    split = [f"{count} 个{label}" for count, label in buckets if count]
     summary_lines = [
-        f"本期研究窗口覆盖 {len(repo_ids)} 个候选仓库，合计净增 {total_delta} stars。",
+        f"本期 {len(repo_ids)} 个候选仓库合计净增 {total_delta} stars，"
+        + ("、".join(split) if split else "无有效观测")
+        + "。",
     ]
-    if growing:
-        top = "、".join(_repository_label(evidence, repo_id) for repo_id in growing[:2])
-        summary_lines.append(f"增长最明显的仓库为 {top}。")
+    if growing and total_delta > 0:
+        leader = growing[0]
+        share = deltas[leader] * 100.0 / total_delta
+        summary_lines.append(
+            f"增长高度集中：{_repository_label(evidence, leader)} 一家占本期净增的 {share:.0f}%。"
+        )
     if declining:
         cooling = "、".join(_repository_label(evidence, repo_id) for repo_id in declining[:2])
         summary_lines.append(f"{cooling} 本期出现回落。")
@@ -385,7 +401,9 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
     else:
         trend_lines.append("本期主题整体**平稳**，各候选仓库热度未见明显方向性变化。")
     trend_lines.append("")
-    for repo_id in repo_ids:
+    # Ranked by net movement, not by repository id: the reader wants the mover that decided the
+    # week first, and id order put a 2,068-star repository above an 84,713-star one.
+    for repo_id in ranked:
         trend = trends[repo_id]
         points = evidence.metrics.get(repo_id, [])
         if trend.point_count < 2:
@@ -395,16 +413,22 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
         else:
             trend_lines.append(
                 f"- {_repository_label(evidence, repo_id)}：{trend.label}，"
-                f"净增 {trend.net_delta} stars（{trend.point_count} 个观测点）。"
+                f"净增 {trend.net_delta} stars（覆盖 {trend.point_count} 个快照）。"
             )
     if not repo_ids:
         trend_lines.append("- 本期没有可用的时间序列观测点。")
 
+    # `highlights` ranks the same repositories the trend section describes, so it has to add
+    # something the trend section does not: each mover's *share* of the topic's movement, which
+    # is what says who is actually carrying the topic. Restating the labels and deltas verbatim
+    # (as it used to) left two of six sections saying one sentence twice.
     highlight_lines = [
-        f"- {_repository_label(evidence, repo_id)}：{trends[repo_id].label}，"
-        f"净增 {deltas[repo_id]} stars。"
-        for repo_id in growing[:3]
-    ] or ["- 本期没有观察到升温的仓库。"]
+        f"- {_repository_label(evidence, repo_id)}：净增 {deltas[repo_id]} stars，"
+        f"占本期合计净增的 {deltas[repo_id] * 100.0 / total_delta:.0f}%，"
+        f"{trends[repo_id].label}。"
+        for repo_id in ranked
+        if deltas[repo_id] > 0 and total_delta > 0
+    ][:3] or ["- 本期没有净增为正的仓库。"]
 
     risk_lines = []
     for repo_id in (declining + steady)[:3]:
@@ -419,7 +443,10 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
     if repo_ids and len(evidence.contents) < len(repo_ids):
         missing = [repo_id for repo_id in repo_ids if repo_id not in evidence.contents]
         labels = "、".join(_repository_label(evidence, repo_id) for repo_id in missing[:3])
-        risk_lines.append(f"- {labels}：本期没有缓存到 README，结论仅基于指标数据。")
+        # "未读取" is the fact; "没有缓存到" was an assertion about the content store that this
+        # code never checks — the README can be cached and simply not read, which is exactly what
+        # the offline planner does past its content budget.
+        risk_lines.append(f"- {labels}：本期未读取 README，结论仅基于指标数据。")
     if not risk_lines:
         risk_lines.append("- 本期未发现需要特别提示的风险项。")
 
@@ -451,7 +478,9 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
 
     appendix_lines = [
         "数据来源：",
-        f"- 指标观测点：{len(metric_citations)} 组（repo_snapshots）。",
+        f"- 指标序列：{len(metric_citations)} 组，"
+        f"共覆盖 {sum(len(evidence.metrics.get(repo_id, [])) for repo_id in repo_ids)} 个快照"
+        "（repo_snapshots）。",
         f"- 缓存 README：{len(evidence.contents)} 个（repository_contents，标记为不可信输入）。",
         f"- 历史报告：{len(evidence.prior_reports)} 篇（reports）。",
         "仓库 README 属于外部不可信文本，仅用于交叉核对，不直接引用其原文。",

@@ -13,9 +13,13 @@ What it writes, in dependency order:
    than a duplicate.
 2. One GitHub data source (repositories hang off it; `source_type` is unique).
 3. One topic (`sweep-llm-agent-topic`) with keywords, a candidate budget, and `AUTO_WITH_DELAY`.
-4. Five candidate repositories ranked under the topic, each with two daily snapshots and a
-   cached README — the exact shape `rank`, the research Agent's read tools, and `generate_report`
-   all consume. Two of them are deliberately *boundary* shapes that the T25 evaluation dataset
+4. Five candidate repositories ranked under the topic, each with a seven-day snapshot series and
+   a cached README — the exact shape `rank`, the research Agent's read tools, and
+   `generate_report` all consume. A repository the collector already owns is *bound*, not
+   rewritten: its counters and history belong to the provider, and fabricating over them is how
+   the console ends up showing two different star counts for one project. Only a repository
+   nobody has collected gets the fixture series, which keeps the demo runnable on an empty
+   database. Two of them are deliberately *boundary* shapes that the T25 evaluation dataset
    documents as currently disabled:
        - `example/readme-missing` has no `repository_contents` row (the "missing-readme" case);
        - `example/prompt-injection` carries an instruction-shaped README (the "injection-readme"
@@ -276,6 +280,43 @@ def _ensure_topic(session: Session, admin: User) -> Topic:
     return topic
 
 
+def _bind_candidate(
+    session: Session,
+    *,
+    topic: Topic,
+    repo: Repository,
+    rank: int,
+    selected: bool,
+) -> None:
+    """Rank one repository under the topic and pin the link.
+
+    Boundary shapes stay `selected_for_agent=False` so the research run only reads the normal
+    candidates and reaches `completed` instead of tripping a guard. The link is upserted, not only
+    inserted, so a prior run's rank and selection are corrected.
+
+    The link is pinned because these repositories and their ranks are the demo's fixture, and a
+    daily ranking pass would otherwise re-derive the list from whatever snapshots the environment
+    happens to hold. `manually_pinned` is what stops that pass from replacing the fixture out
+    from under a demonstration.
+    """
+    link = session.get(TopicRepository, (topic.id, repo.id))
+    if link is None:
+        session.add(
+            TopicRepository(
+                topic_id=topic.id,
+                repository_id=repo.id,
+                score=Decimal("100.0") - Decimal(rank),
+                rank=rank,
+                selected_for_agent=selected,
+                manually_pinned=True,
+            )
+        )
+        return
+    link.rank = rank
+    link.selected_for_agent = selected
+    link.manually_pinned = True
+
+
 def _ensure_repositories(session: Session, source: DataSource, topic: Topic) -> list[Repository]:
     """Create the candidate repositories, snapshots, README cache, and topic links.
 
@@ -289,6 +330,47 @@ def _ensure_repositories(session: Session, source: DataSource, topic: Topic) -> 
     created: list[Repository] = []
     seeded_ids: set[int] = set()
     for index, spec in enumerate(REPOSITORIES, start=1):
+        # A repository the collector already owns is authoritative. It carries the provider's own
+        # counters and its own snapshot history, and overwriting those with this file's fixture
+        # series is how a demonstration ends up showing two different star counts for one project
+        # — the seeded 285,395 beside the collected 370,108 for `morluto/rea`. Such a row is bound
+        # to the topic and left with its evidence untouched; only a repository nobody has collected
+        # gets the fabricated series, which is what keeps the demo runnable on an empty database.
+        #
+        # `provider_repo_id != full_name` is what marks a collector-owned GitHub row: the GitHub
+        # API always answers with a numeric id, so a name-shaped id can only have been written by
+        # this script (or by ingestion from before the id was available).
+        collected = session.scalar(
+            select(Repository).where(
+                Repository.source_id == source.id,
+                Repository.full_name == spec["full_name"],
+                Repository.provider_repo_id != spec["full_name"],
+            )
+        )
+        if collected is not None:
+            # Selected only if the Agent can actually read it: a collected repository with no
+            # cached README would make the research run trip `AGENT_EVIDENCE_INCOMPLETE` and park
+            # the demo report in `needs_review`.
+            has_readme = (
+                session.scalar(
+                    select(RepositoryContent.id).where(
+                        RepositoryContent.repository_id == collected.id,
+                        RepositoryContent.content_type == "readme",
+                    )
+                )
+                is not None
+            )
+            _bind_candidate(
+                session,
+                topic=topic,
+                repo=collected,
+                rank=index,
+                selected=spec["selected"] and has_readme,
+            )
+            seeded_ids.add(collected.id)
+            created.append(collected)
+            continue
+
         repo = session.scalar(
             select(Repository).where(
                 Repository.source_id == source.id,
@@ -374,31 +456,7 @@ def _ensure_repositories(session: Session, source: DataSource, topic: Topic) -> 
                     )
                 )
 
-        # Candidate link: rank + Agent selection, the shape `load_candidate_repo_ids` reads.
-        # Boundary shapes stay `selected_for_agent=False` so the research run only reads the
-        # three normal candidates and reaches `completed` instead of tripping a guard. The link
-        # is upserted, not only inserted, so a prior run's rank/selection is corrected.
-        #
-        # The link is also pinned: these five repositories and their ranks are the demo's
-        # fixture, and a daily ranking pass would re-derive the list from whatever snapshots the
-        # environment happens to hold. `manually_pinned` is what stops that pass from replacing
-        # the fixture out from under a demonstration.
-        link = session.get(TopicRepository, (topic.id, repo.id))
-        if link is None:
-            session.add(
-                TopicRepository(
-                    topic_id=topic.id,
-                    repository_id=repo.id,
-                    score=Decimal("100.0") - Decimal(index),
-                    rank=index,
-                    selected_for_agent=spec["selected"],
-                    manually_pinned=True,
-                )
-            )
-        else:
-            link.rank = index
-            link.selected_for_agent = spec["selected"]
-            link.manually_pinned = True
+        _bind_candidate(session, topic=topic, repo=repo, rank=index, selected=spec["selected"])
         seeded_ids.add(repo.id)
         created.append(repo)
 
@@ -413,6 +471,20 @@ def _ensure_repositories(session: Session, source: DataSource, topic: Topic) -> 
         )
     ).all():
         stale.selected_for_agent = False
+
+    # A rank is a position in one list, so two links must not hold the same one — and a ranking
+    # pass leaves leftovers holding 1..N. Parking them after the fixture keeps positions unique and
+    # keeps the fixture at the top, which is where the report's provenance block expects it.
+    others = session.scalars(
+        select(TopicRepository)
+        .where(
+            TopicRepository.topic_id == topic.id,
+            TopicRepository.repository_id.notin_(seeded_ids),
+        )
+        .order_by(TopicRepository.rank, TopicRepository.repository_id)
+    ).all()
+    for offset, link in enumerate(others, start=len(seeded_ids) + 1):
+        link.rank = offset
 
     session.commit()
     return created
@@ -464,9 +536,13 @@ def main() -> int:
                 readme = session.scalar(
                     select(RepositoryContent).where(RepositoryContent.repository_id == repo.id)
                 )
+                # `bound` means a collected row was reused and its own counters/history kept;
+                # `fixture` means this script wrote the series because nobody had collected it.
+                origin = "bound" if repo.provider_repo_id != repo.full_name else "fixture"
                 print(
                     f"repository: {repo.full_name} id={repo.id} "
-                    f"stars={repo.stars} readme={'yes' if readme else 'NO (boundary)'}"
+                    f"stars={repo.stars} origin={origin} "
+                    f"readme={'yes' if readme else 'NO (boundary)'}"
                 )
             targets = session.scalars(select(PushTarget).order_by(PushTarget.id)).all()
             for target in targets:

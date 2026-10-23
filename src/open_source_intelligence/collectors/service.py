@@ -99,6 +99,35 @@ def upsert_repository(
         "first_seen_at": item.observed_at,
         "last_seen_at": item.observed_at,
     }
+
+    # The same repository can already be on file under its *name* while carrying a different
+    # provider id. GitHub hands out a numeric id, but a row written before that id was available
+    # — the demo seeder writes `provider_repo_id = full_name`, and so did early ingestion — keys
+    # on `owner/name`. Matching only on the provider id would then insert a second row for one
+    # repository: two star counts, two snapshot series, and a topic ranking the same project
+    # twice. The unique key cannot prevent it, because the two provider ids genuinely differ.
+    # So adopt the row that already carries the name and correct its provider id.
+    known = session.scalar(
+        select(Repository).where(
+            Repository.source_id == source.id,
+            Repository.provider_repo_id == item.provider_repo_id,
+        )
+    )
+    if known is None:
+        adopted = session.scalar(
+            select(Repository).where(
+                Repository.source_id == source.id,
+                Repository.full_name == item.full_name,
+            )
+        )
+        if adopted is not None:
+            # `first_seen_at` stays as it was: the repository was first seen then, not now.
+            for column, value in values.items():
+                if column in {"source_id", "first_seen_at"}:
+                    continue
+                setattr(adopted, column, value)
+            return adopted
+
     if session.get_bind().dialect.name == "mysql":
         statement = mysql_insert(Repository).values(**values)
         statement = statement.on_duplicate_key_update(

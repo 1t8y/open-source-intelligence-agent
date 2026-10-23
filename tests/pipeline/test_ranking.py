@@ -294,6 +294,78 @@ def test_negative_growth_is_clamped_to_nonnegative_score() -> None:
     assert ranked[0].score == Decimal("0.000000")
 
 
+def test_a_pinned_link_never_shares_a_position() -> None:
+    """Keeping a pinned link must not leave it holding another candidate's rank.
+
+    The in-place refresh gives every scored candidate a fresh position and leaves the pinned,
+    unscored ones alone — including their old `rank`. When the pinned link happened to hold, say,
+    4 and the new pass also produced a 4, two rows shared a position. Everything that orders by
+    rank (the candidate list, the report's provenance line, the Agent's candidate loader) then got
+    an arbitrary order between them, so two reports over the same data could list the pool
+    differently.
+    """
+    session_factory = build_session_factory()
+    with session_factory() as session:
+        topic = add_topic(session, max_candidates=2)
+        for repository_id, (name, stars) in enumerate(
+            (("example/first", 900), ("example/second", 700)), start=1
+        ):
+            add_repository(
+                session,
+                repository_id=repository_id,
+                full_name=name,
+                language="Python",
+                description="Agent framework",
+                topics=["agent"],
+                first_stars=100,
+                latest_stars=stars,
+                first_forks=10,
+                latest_forks=30,
+            )
+        add_repository(
+            session,
+            repository_id=3,
+            full_name="example/fixture",
+            language="Rust",
+            description="Boundary fixture",
+            topics=["fixture"],
+            first_stars=100,
+            latest_stars=110,
+            first_forks=10,
+            latest_forks=11,
+            with_snapshots=False,
+        )
+        # `rank=1` collides with the winner of any pass: a fixture parked at the top of the list.
+        session.add(
+            TopicRepository(
+                topic_id=topic.id,
+                repository_id=3,
+                score=Decimal("0"),
+                rank=1,
+                selected_for_agent=False,
+                manually_pinned=True,
+            )
+        )
+        session.commit()
+
+        rank_topic_candidates(session, topic, as_of_date=date(2026, 10, 7))
+        ranks = session.scalars(
+            select(TopicRepository.rank)
+            .where(TopicRepository.topic_id == topic.id)
+            .order_by(TopicRepository.rank)
+        ).all()
+        fixture = session.scalar(
+            select(TopicRepository).where(
+                TopicRepository.topic_id == topic.id, TopicRepository.repository_id == 3
+            )
+        )
+
+    assert len(ranks) == len(set(ranks)), f"two candidates share a position: {ranks}"
+    assert fixture is not None
+    # Parked after the scored pool, not promoted over it.
+    assert fixture.rank == 3
+
+
 def test_a_pinned_candidate_survives_a_ranking_pass() -> None:
     """Ranking refreshes the pool; it does not get to delete a link a human pinned.
 

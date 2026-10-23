@@ -128,10 +128,12 @@ def _compose_from_resolved(
     lines = [f"# {title}", ""]
 
     # Provenance: the candidate set actually selected for the run, the snapshot window, and how
-    # many distinct snapshots back the numbers. The observation count is a count of evidence, so
-    # it is de-duplicated: one snapshot cited by three sections is one observation.
+    # many distinct snapshots back the numbers. The count is de-duplicated — one snapshot cited
+    # by three sections is one snapshot — and it is labelled "引用快照" rather than "观测点":
+    # the body also reports how many snapshots each series *covers*, and calling both of those
+    # an observation made a single report state two different totals for the same word.
     candidates = list(candidate_full_names)
-    observation_points = len(
+    cited_snapshots = len(
         {
             citation.source_ref
             for (_, _), citation in resolved_sources.items()
@@ -141,7 +143,7 @@ def _compose_from_resolved(
     lines.append("> 本轮候选仓库：" + ("、".join(candidates) if candidates else "无"))
     lines.append(
         f"> 快照窗口：{window_start.date().isoformat()} 至 {window_end.date().isoformat()}；"
-        f"指标观测点 {observation_points} 个"
+        f"引用快照 {cited_snapshots} 个"
     )
     lines.append("")
 
