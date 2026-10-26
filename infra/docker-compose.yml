@@ -1,5 +1,21 @@
 name: open-source-intelligence-agent
 
+# --- GitHub hosts override -----------------------------------------------------
+# Watt Toolkit (Steam++ Accelerator) writes `127.0.0.1 api.github.com` (and ~27 other github
+# hosts) into the Windows hosts file and answers them from a local 443 proxy. The host can then
+# "reach" GitHub, but a Docker container resolves those names to its *own* loopback, where no
+# such proxy exists, so collection gets `Connection refused`. Pinning `api.github.com` to its
+# real address in the container (an `extra_hosts` entry) bypasses the poisoned host DNS and
+# restores collection. GitHub's edge address rotates, so if collection starts failing with TLS or
+# connect errors again, refresh the IP below:
+#
+#     nslookup api.github.com 8.8.8.8        # or 114.114.114.114
+#
+# and update `x-github-hosts`. Only `api.github.com` is needed — the collector reads search
+# results and READMEs exclusively through the GitHub API (`collectors/github.py`).
+x-github-hosts: &github-hosts
+  - "api.github.com:20.205.243.168"
+
 x-app-environment: &app-environment
   APP_ENV: ${APP_ENV:-local}
   APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
@@ -97,6 +113,7 @@ services:
   api:
     <<: *app-image
     environment: *app-environment
+    extra_hosts: *github-hosts
     command: ["python", "-m", "uvicorn", "open_source_intelligence.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       mysql:
@@ -115,6 +132,7 @@ services:
   worker:
     <<: *app-image
     environment: *app-environment
+    extra_hosts: *github-hosts
     command: ["python", "-m", "celery", "-A", "open_source_intelligence.workers.celery_entry:app", "worker", "--loglevel=INFO", "--concurrency=2"]
     depends_on:
       mysql:
@@ -125,6 +143,7 @@ services:
   beat:
     <<: *app-image
     environment: *app-environment
+    extra_hosts: *github-hosts
     command: ["python", "-m", "celery", "-A", "open_source_intelligence.workers.celery_entry:app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
     depends_on:
       redis:
