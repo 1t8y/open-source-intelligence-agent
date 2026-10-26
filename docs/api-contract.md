@@ -677,6 +677,9 @@
 | 路由 | 准入角色 | 说明 |
 |---|---|---|
 | `GET /ui/login`、`POST /ui/login`、`POST /ui/logout` | 公开 / 已登录 | 登录表单与退出；会话存 `HttpOnly` Cookie |
+| `GET /ui/home` | 读角色 | 首页落地页：系统状态（运行模式 + 采集/研究/报告概览）、最近一期报告、一键触发卡片（仅写角色渲染触发按钮） |
+| `POST /ui/home/collect` | 写角色 | 排队一次完整每日流水线（采集→快照→排名→正文缓存）到 worker；异步执行，审计 `collector.run` |
+| `POST /ui/home/research` | 写角色 | 排队一次研究运行到 worker（`topic_id` 必填、须启用）；异步执行，审计 `agent.run` |
 | `GET /ui/reports` | 读角色 | 报告列表，支持 `status`、`visibility`、`page`，权限过滤同 API |
 | `GET /ui/reports/{report_id}` | 读角色 | 报告详情：验证结论、引用与证据、版本历史、审核记录、编辑表单、推送卡片与投递记录 |
 | `POST /ui/reports/{report_id}/{verify,review,publish,rollback,edit}` | 写角色 | 动作，返回刷新后的报告片段 |
@@ -701,7 +704,9 @@
 
 **UI 的角色集合与 API 同源**：上表每一行的准入角色就是该资源在 API 侧的同一个常量（`REPORT_READ_ROLES` / `REPORT_WRITE_ROLES` / `TOPIC_READ_ROLES` / `TOPIC_WRITE_ROLES` / `REPOSITORY_READ_ROLES` / `METRICS_ROLES` / `AUDIT_READ_ROLES`），侧栏条目也由同一组常量生成 —— 菜单里出现而打开被拒，和能打开却不在菜单里，都是缺陷。
 
-**运维配置不从界面管理**（T21）。推送目标白名单与用户账号都由**后端**拥有：账号只有 `bootstrap` CLI 一条路，目标直接写入 `push_targets`。界面不提供这两者的创建或修改入口 —— 这是取舍，不是缺口。做不到的事情上界面只在不可避免处提及它，并且**只对 `ADMIN` 渲染**：`/ui/pushes` 的白名单卡整块（含 `allow_private` / `allow_confidential` 两个开关与停用中的行），以及报告页在"还没有可用的推送目标"时给出的做法说明。非管理员在那两处看到的是「请联系管理员在运维侧添加并启用」：管理员能去做这件事，编辑者做不了，把表名念给做不了的人听，等于把一句执行不了的说明当成帮助。判定由 `OPS_CONFIG_ROLES = (ROLE_ADMIN,)` 给出，渲染面（`can_manage_ops`）与"这一页要不要加载那份 allowlist"共用同一个常量，所以"看不见"不只是不画 —— 数据也不在载荷里。触发评测与回填同理留在操作员 CLI，界面上只写明它在哪。
+**运维配置不从界面管理**（T21）。推送目标白名单与用户账号都由**后端**拥有：账号只有 `bootstrap` CLI 一条路，目标直接写入 `push_targets`。界面不提供这两者的创建或修改入口 —— 这是取舍，不是缺口。做不到的事情上界面只在不可避免处提及它，并且**只对 `ADMIN` 渲染**：`/ui/pushes` 的白名单卡整块（含 `allow_private` / `allow_confidential` 两个开关与停用中的行），以及报告页在"还没有可用的推送目标"时给出的做法说明。非管理员在那两处看到的是「请联系管理员在运维侧添加并启用」：管理员能去做这件事，编辑者做不了，把表名念给做不了的人听，等于把一句执行不了的说明当成帮助。判定由 `OPS_CONFIG_ROLES = (ROLE_ADMIN,)` 给出，渲染面（`can_manage_ops`）与"这一页要不要加载那份 allowlist"共用同一个常量，所以"看不见"不只是不画 —— 数据也不在载荷里。
+
+**采集与研究可在首页触发，评测与回填仍留在操作员 CLI**（D3）。`/ui/home` 的「一键触发」卡片只对写角色（`TRIGGER_ROLES = REPORT_WRITE_ROLES`）渲染：`POST /ui/home/collect` 排队完整每日流水线（消耗公共 API 配额）、`POST /ui/home/research` 排队一次研究运行（消耗真实模型预算），两者都异步派发到 worker、审计动作分别为 `collector.run` 与 `agent.run`。触发评测与回填仍留在操作员 CLI，界面上只写明它在哪。
 
 **失败原地重渲染，而不是带消息重定向**：写操作成功走 `303`（POST-重定向-GET，避免刷新重提交），消息码放在 URL 里（`?ok=created`）由服务端查表成句；失败则**用 `400`/`409` 直接渲染同一页**并回填用户填过的值。理由有两条：提示语出自我们自己的异常而不是链接作者（URL 里的自由文本等于让任何人替系统发言），以及九个字段的表单不该因为一个字段出错就让操作者重打一遍。
 

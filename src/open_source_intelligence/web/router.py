@@ -119,6 +119,11 @@ from open_source_intelligence.topics import (
     reference_counts,
     update_topic,
 )
+from open_source_intelligence.workers.celery_app import (
+    DAILY_PIPELINE_TASK,
+    RESEARCH_AGENT_TASK,
+    create_celery_app,
+)
 
 from .security import (
     CSRF_COOKIE,
@@ -168,6 +173,10 @@ OPS_CONFIG_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN,)
 #: Declared next to the routes on purpose — the `roles` of an entry are the same roles its route
 #: enforces, so a page cannot be listed for an identity that would then be refused when it opens.
 NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]], ...] = (
+    (
+        "总览",
+        (("home", "首页", "/ui/home", REPORT_READ_ROLES),),
+    ),
     (
         "报告",
         (
@@ -657,6 +666,255 @@ def _share_context(session: Session, report: Report) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------
+# Home
+# --------------------------------------------------------------------------------------
+
+#: Roles allowed to trigger a collect or a research run from the home page. A research run
+#: spends real model budget and a collect spends public-API quota, so both sit with the write
+#: roles rather than every reader; the cost is stated on the card next to the buttons.
+TRIGGER_ROLES: Final[tuple[str, ...]] = REPORT_WRITE_ROLES
+
+#: Audit action names for the two home triggers. `collector.run` already exists (the collector
+#: stage records it); a research dispatch from the UI is a new surface, so it gets its own
+#: `agent.run` action alongside the `report.*` and `topic.*` family.
+AUDIT_COLLECT: Final[str] = "collector.run"
+AUDIT_RESEARCH: Final[str] = "agent.run"
+
+
+@router.get("/home", response_class=HTMLResponse)
+def home_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    now: Annotated[datetime, Depends(utc_now)],
+) -> HTMLResponse:
+    """Render the landing page: system state, the newest report, and the trigger entry.
+
+    The page is the first thing a signed-in user sees, so it answers the three questions the
+    D3 acceptance names — what is the system doing, what is the newest report, how do I trigger
+    once — without sending the reader into the ledger. It reads through the same service layer
+    as every other page; nothing here issues SQL directly.
+    """
+    roles = get_role_codes(web.user)
+    overview = collect_metrics(
+        session,
+        now=now,
+        window_days=DEFAULT_WINDOW_DAYS,
+        settings=_settings(request),
+    )
+    reports = queries.list_reports(
+        session,
+        access_filter=readable_reports_filter(web.user, roles),
+        page=1,
+        page_size=1,
+    )
+    newest = reports.items[0] if reports.items else None
+    topic_names = _topic_names(session, {newest.topic_id} if newest is not None else set())
+    can_trigger = not roles.isdisjoint(TRIGGER_ROLES)
+    topics = list_topics(session, user=web.user, enabled=True, page_size=TOPIC_MAX_PAGE_SIZE)
+    return render(
+        request,
+        "home.html",
+        {
+            "current_user": _identity(web.user),
+            "overview": overview,
+            "newest": newest,
+            "newest_topic_name": topic_names.get(newest.topic_id) if newest is not None else None,
+            "can_trigger": can_trigger,
+            "topics": topics.items,
+            "runtime_mode": _runtime_mode(_settings(request)),
+            "active": "home",
+        },
+        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
+    )
+
+
+@router.post("/home/collect", response_class=HTMLResponse)
+def home_collect(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    csrf: CsrfField = "",
+) -> Response:
+    """Queue a full daily pipeline (collect → snapshot → rank → contents) on the worker.
+
+    The run is dispatched asynchronously: a collect hits the public API and can take minutes, so
+    the request returns a notice and the worker does the work. Only write roles may spend the
+    quota, and the dispatch is audited.
+    """
+    verify_csrf(request, csrf)
+    _require_roles(
+        request,
+        session,
+        web,
+        TRIGGER_ROLES,
+        resource_type="pipeline",
+        message="只有管理员或编辑可以触发采集",
+    )
+    settings = _settings(request)
+    task_id = _queue_collect(settings)
+    record_audit_event(
+        session,
+        action=AUDIT_COLLECT,
+        resource_type="pipeline",
+        result="success",
+        actor_id=web.user.id,
+        request_id=request_id(request),
+        ip_address=client_ip(request),
+        metadata_json={"task_id": task_id, "provider": "all", "source": "ui"},
+    )
+    session.commit()
+    return render(
+        request,
+        "home.html",
+        _home_notice_context(
+            session,
+            web,
+            request,
+            now=None,
+            notice=f"已排队采集任务 {task_id[:8]}…",
+        ),
+        status_code=status.HTTP_200_OK,
+        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
+    )
+
+
+@router.post("/home/research", response_class=HTMLResponse)
+def home_research(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    topic_id: Annotated[int, Form()],
+    csrf: CsrfField = "",
+) -> Response:
+    """Queue one research run for a topic on the worker.
+
+    A research run spends real model budget, so the endpoint enforces the write roles, validates
+    the topic exists and is enabled, and audited the dispatch. The run itself is asynchronous.
+    """
+    verify_csrf(request, csrf)
+    _require_roles(
+        request,
+        session,
+        web,
+        TRIGGER_ROLES,
+        resource_type="agent",
+        message="只有管理员或编辑可以触发研究",
+    )
+    topic = session.get(Topic, topic_id)
+    if topic is None or not topic.enabled:
+        record_audit_event(
+            session,
+            action=AUDIT_RESEARCH,
+            resource_type="agent",
+            resource_id=str(topic_id),
+            result="denied",
+            actor_id=web.user.id,
+            request_id=request_id(request),
+            ip_address=client_ip(request),
+            metadata_json={"reason": "topic missing or disabled"},
+        )
+        session.commit()
+        return render(
+            request,
+            "home.html",
+            _home_notice_context(
+                session,
+                web,
+                request,
+                now=None,
+                error=f"主题 {topic_id} 不存在或已停用",
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+            csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
+        )
+    task_id = _queue_research(_settings(request), topic_id=topic_id)
+    record_audit_event(
+        session,
+        action=AUDIT_RESEARCH,
+        resource_type="agent",
+        resource_id=str(topic_id),
+        result="success",
+        actor_id=web.user.id,
+        request_id=request_id(request),
+        ip_address=client_ip(request),
+        metadata_json={"task_id": task_id, "topic_id": topic_id, "source": "ui"},
+    )
+    session.commit()
+    return render(
+        request,
+        "home.html",
+        _home_notice_context(
+            session,
+            web,
+            request,
+            now=None,
+            notice=f"已排队主题 {topic_id} 的研究任务 {task_id[:8]}…",
+        ),
+        status_code=status.HTTP_200_OK,
+        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
+    )
+
+
+def _queue_collect(settings: Settings) -> str:
+    """Queue a full daily pipeline on the broker and return the Celery task id."""
+    app = create_celery_app(settings)
+    result = app.send_task(
+        DAILY_PIPELINE_TASK,
+        kwargs={"provider": "all", "limit": settings.pipeline_collect_limit},
+    )
+    return str(result.id)
+
+
+def _queue_research(settings: Settings, *, topic_id: int) -> str:
+    """Queue one research run on the broker and return the Celery task id."""
+    app = create_celery_app(settings)
+    result = app.send_task(RESEARCH_AGENT_TASK, kwargs={"topic_id": topic_id})
+    return str(result.id)
+
+
+def _home_notice_context(
+    session: Session,
+    web: WebSession,
+    request: Request,
+    *,
+    now: datetime | None,
+    notice: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Re-read the home page's data after a trigger, carrying a notice or an error back."""
+    roles = get_role_codes(web.user)
+    resolved_now = now or utc_now()
+    overview = collect_metrics(
+        session,
+        now=resolved_now,
+        window_days=DEFAULT_WINDOW_DAYS,
+        settings=_settings(request),
+    )
+    reports = queries.list_reports(
+        session,
+        access_filter=readable_reports_filter(web.user, roles),
+        page=1,
+        page_size=1,
+    )
+    newest = reports.items[0] if reports.items else None
+    topic_names = _topic_names(session, {newest.topic_id} if newest is not None else set())
+    topics = list_topics(session, user=web.user, enabled=True, page_size=TOPIC_MAX_PAGE_SIZE)
+    return {
+        "current_user": _identity(web.user),
+        "overview": overview,
+        "newest": newest,
+        "newest_topic_name": topic_names.get(newest.topic_id) if newest is not None else None,
+        "can_trigger": not roles.isdisjoint(TRIGGER_ROLES),
+        "topics": topics.items,
+        "runtime_mode": _runtime_mode(_settings(request)),
+        "active": "home",
+        "notice": notice,
+        "error": error,
+    }
+
+
+# --------------------------------------------------------------------------------------
 # Session
 # --------------------------------------------------------------------------------------
 
@@ -664,7 +922,7 @@ def _share_context(session: Session, report: Report) -> dict[str, Any]:
 @router.get("/login", response_class=HTMLResponse)
 def login_page(
     request: Request,
-    next_url: Annotated[str, Query(alias="next")] = "/ui/reports",
+    next_url: Annotated[str, Query(alias="next")] = "/ui/home",
 ) -> HTMLResponse:
     """Render the login form."""
     csrf = new_csrf_token()
@@ -682,7 +940,7 @@ def login_submit(
     session: DbSession,
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
-    next_url: Annotated[str, Form(alias="next")] = "/ui/reports",
+    next_url: Annotated[str, Form(alias="next")] = "/ui/home",
     csrf: CsrfField = "",
 ) -> Response:
     """Authenticate the form and store the access token in an HttpOnly cookie."""
@@ -716,7 +974,7 @@ def login_submit(
         ip_address=client_ip(request),
     )
     session.commit()
-    destination = next_url if next_url.startswith("/ui/") else "/ui/reports"
+    destination = next_url if next_url.startswith("/ui/") else "/ui/home"
     response = RedirectResponse(destination, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         SESSION_COOKIE,

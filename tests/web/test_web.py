@@ -675,3 +675,66 @@ def test_rollback_is_not_offered_on_the_publishing_path(
     assert report.status == status
     assert report.current_version == 2
     assert report.content_markdown.endswith("第二版内容。\n")
+
+
+# --------------------------------------------------------------------------------------
+# Home page
+# --------------------------------------------------------------------------------------
+
+
+def test_home_renders_system_state_and_newest_report(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+) -> None:
+    """The landing page answers "what is it doing / newest report / how to trigger"."""
+    case = _seed(session, workspace)
+    assert web_login(client, editor).status_code == 303
+
+    response = client.get("/ui/home")
+
+    assert response.status_code == 200
+    assert "系统状态" in response.text
+    assert "最近一期报告" in response.text
+    assert f"/ui/reports/{case.report_id}" in response.text
+    # The editor has the write roles, so the trigger card is offered.
+    assert "一键触发" in response.text
+    assert "立即采集" in response.text
+    assert "立即研究" in response.text
+
+
+def test_home_hides_triggers_from_a_viewer(
+    session: Session,
+    workspace: Workspace,
+    viewer: Actor,
+    client: TestClient,
+) -> None:
+    """A read-only viewer sees the state and the newest report, but no trigger buttons."""
+    _seed(session, workspace)
+    assert web_login(client, viewer).status_code == 303
+
+    response = client.get("/ui/home")
+
+    assert response.status_code == 200
+    assert "系统状态" in response.text
+    assert "最近一期报告" in response.text
+    assert "一键触发" not in response.text
+    assert "立即采集" not in response.text
+
+
+def test_login_without_next_lands_on_home(client: TestClient, editor: Actor) -> None:
+    """The default post-login destination is the landing page, not the report list."""
+    token = prime_csrf(client)
+    response = client.post(
+        "/ui/login",
+        data={
+            "csrf_token": token,
+            "username": editor.username,
+            "password": "correct horse battery staple",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/home"

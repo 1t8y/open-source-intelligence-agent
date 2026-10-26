@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}首页 · 开源情报周报平台{% endblock %}
+
+{#
+  首页 = 落地页，回答三件事：系统在干什么、最新一期报告是什么、怎么触发一次。
+  数据全走服务层（collect_metrics / list_reports / list_topics），不直连 SQL。
+  `can_trigger` 由服务端按 TRIGGER_ROLES（管理员/编辑）算好，按钮只在有权时渲染。
+#}
+
+{% macro status_badge(value, ok_class, warn_class) -%}
+  <span class="badge {{ ok_class if value else warn_class }}">{{ "是" if value else "否" }}</span>
+{%- endmacro %}
+
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>首页</h1>
+    <p class="sub">
+      一眼看清系统在干什么、最新一期报告是什么，以及怎么触发一次采集或研究。
+    </p>
+  </div>
+</header>
+
+{% if notice %}
+<p class="alert ok">{{ notice }}</p>
+{% endif %}
+{% if error %}
+<p class="alert error">{{ error }}</p>
+{% endif %}
+
+{# --- 1. 系统状态 ---------------------------------------------------- #}
+<section class="card">
+  <h2>系统状态</h2>
+  <div class="row start">
+    <span class="mode-chip {% if runtime_mode.provider_real %}mode-real{% else %}mode-offline{% endif %}">
+      模型：{{ "真实 " ~ runtime_mode.provider if runtime_mode.provider_real else "离线桩 " ~ runtime_mode.provider }}
+    </span>
+    <span class="mode-chip {% if runtime_mode.delivery_real %}mode-real{% else %}mode-offline{% endif %}">
+      投递：{{ "真实" if runtime_mode.delivery_real else "离线" }}（{{ runtime_mode.delivery }}）
+    </span>
+    <span class="mode-chip {% if runtime_mode.auto_research %}mode-real{% else %}mode-offline{% endif %}">
+      自动研究：{{ "开启" if runtime_mode.auto_research else "关闭" }}
+    </span>
+  </div>
+  {% if not runtime_mode.fully_real %}
+  <p class="hint">当前为<strong>离线演示模式</strong>：产物可能由确定性桩生成、投递为模拟摘要。</p>
+  {% endif %}
+
+  <dl class="facts">
+    <div><dt>窗口内任务</dt><dd class="metric-value">{{ overview.pipeline.total }}</dd></div>
+    <div><dt>采集成功率</dt><dd class="metric-value">
+      {%- if overview.pipeline.success_rate is none %}—{% else %}{{ "%.1f%%" | format(overview.pipeline.success_rate | float * 100) }}{% endif -%}
+    </dd></div>
+    <div><dt>Agent 运行</dt><dd class="metric-value">{{ overview.agent.total }}</dd></div>
+    <div><dt>窗口内报告</dt><dd class="metric-value">{{ overview.reports.total }}</dd></div>
+  </dl>
+</section>
+
+{# --- 2. 最近一期报告 ------------------------------------------------- #}
+<section class="card">
+  <h2>最近一期报告</h2>
+  {% if newest %}
+  <div class="row space-between">
+    <div>
+      <a href="/ui/reports/{{ newest.id }}"><strong>{{ newest.title }}</strong></a>
+      <p class="meta">
+        主题：{{ newest_topic_name or "—" }} ·
+        状态：<span class="badge status-{{ newest.status }}">{{ newest.status }}</span> ·
+        可见：{{ newest.visibility }} · 敏感：{{ newest.sensitivity }}
+      </p>
+    </div>
+    <a href="/ui/reports/{{ newest.id }}">打开报告 →</a>
+  </div>
+  {% else %}
+  <p class="hint">还没有任何报告。跑一次研究并发布，这里就会出现第一期周报。</p>
+  {% endif %}
+  <p class="meta"><a href="/ui/reports">查看全部报告 →</a></p>
+</section>
+
+{# --- 3. 一键触发 ---------------------------------------------------- #}
+{% if can_trigger %}
+<section class="card">
+  <h2>一键触发</h2>
+  <p class="hint">
+    采集会打公共 API、研究会消耗真实模型预算，请确认确实需要再点。
+    任务进入后台队列，完成后可在「采集与运行」与「运维看板」查看。
+  </p>
+  <div class="row start">
+    <form method="post" action="/ui/home/collect" hx-post="/ui/home/collect" hx-target="#home-trigger-result" hx-swap="innerHTML" style="margin:0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="primary">立即采集</button>
+    </form>
+
+    <form method="post" action="/ui/home/research" hx-post="/ui/home/research" hx-target="#home-trigger-result" hx-swap="innerHTML" style="margin:0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>
+        <span>主题</span>
+        <select name="topic_id" required>
+          {% for topic in topics %}
+          <option value="{{ topic.id }}">{{ topic.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="primary">立即研究</button>
+    </form>
+  </div>
+  <div id="home-trigger-result"></div>
+  {% if not topics %}
+  <p class="hint">当前没有启用的主题，无法触发研究。先去「主题管理」启用一个主题。</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

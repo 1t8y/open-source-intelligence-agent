@@ -30,6 +30,7 @@ from open_source_intelligence.persistence.models.intelligence import TOPIC_PUBLI
 #: Every page in the sidebar shell: `(nav key, path, roles the entry is listed under)`.
 #: The roles here are the contract the other assertions check both sides of.
 PAGES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("home", "/ui/home", ("ADMIN", "EDITOR", "VIEWER")),
     ("reports", "/ui/reports", ("ADMIN", "EDITOR", "VIEWER")),
     ("pushes", "/ui/pushes", ("ADMIN", "EDITOR")),
     ("topics", "/ui/topics", ("ADMIN", "EDITOR", "VIEWER")),
