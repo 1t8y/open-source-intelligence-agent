@@ -1,292 +1,195 @@
-# 企业开源技术情报 Agent 与自动周报平台
+# Open-Source Intelligence Agent
 
 > 项目状态：T1-T28 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
-> 文档版本：v0.12
-> 最后更新：2026-10-15
 
-## 最终版路径
+**自动采集开源项目动态 → 专用研究 Agent 分析、验证 → 生成带可追溯证据的周报 → 风险闸门决定自动发布或人工审核。**
 
-本项目所有代码、文档、配置和测试的最终版本统一存放于：
+一个把「每周人工搜 GitHub、看 README、比数据、写周报」自动化成一个**有证据锚点、有预算闸门、有质量门禁**的工程化 Agent 系统。
 
-```text
-D:\job-workspace\project_sources\open-source-intelligence-agent
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-1.0+-1C3C3C)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+---
+
+## 它解决什么问题
+
+研发战略和架构团队每周要回答「最近开源圈有什么值得跟进的动向」。手工做这件事意味着：搜仓库、翻 README、抄 stars 数、算环比、判断真假、写成周报——重复、耗时，而且**数字容易抄错、结论没有出处**。
+
+这个项目把这条链路自动化，并解决了三个「直接调 LLM 写周报」做不到的痛点：
+
+| 痛点 | 直接调 LLM 的问题 | 本项目的解法 |
+|---|---|---|
+| **数字不可信** | 模型会编造/算错数字（实测一次把 84,713 算成 "64.8%"） | 净增、百分比全部由代码对快照首末差计算，模型只写判断、不写数字 |
+| **结论无出处** | 报告说「涨了」但没有任何可核对的证据 | 每个含数字的章节都带引用锚点，能定位到 `repo_snapshots` 的具体快照行 |
+| **垃圾直接发布** | 没有质量门禁，幻觉内容一路发出去 | 验证器 + 发布策略闸门：证据不足转人工审核，只有「通过」才自动发布 |
+
+## 核心亮点
+
+1. **证据锚点可复现**——报告里每个数字都能点开核对，追溯到真实的采集快照（见 [真实报告样例](#真实运行证据)）。
+2. **真实模型计费与预算闸**——每次模型调用累计 token/cost，超预算即停，成本可查、可控。
+3. **数字由系统算，防模型编造**——`reports/composition.py` 对快照做首末差，派生数字不交给模型。
+4. **五容器编排**——api / worker / beat / mysql / redis，一条 `docker compose up` 起全套。
+5. **5 变体消融评测**——用真实模型证明每个组件（验证器、工具、历史）的必要性与增益。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    subgraph SRC["数据源"]
+        GH["GitHub API"]
+        HF["Hugging Face API"]
+    end
+    subgraph INGEST["确定性采集管线 pipeline/"]
+        C1["collect 采集"]
+        C2["snapshot 每日快照"]
+        C3["rank 候选排序"]
+        C4["contents README 缓存"]
+    end
+    subgraph AGENT["研究 Agent agent/（LangGraph）"]
+        P["plan 规划"]
+        T["tools 查画像/指标/README/历史"]
+        V["verify 验证器"]
+        W["write 写草稿"]
+    end
+    subgraph REP["报告链路 reports/"]
+        R1["compose 组合（数字由代码算）"]
+        R2["verify 引用覆盖+事实一致"]
+        R3{"publish policy 质量闸门"}
+    end
+    subgraph OUT["出口"]
+        PUB["发布 AUTO / DELAY / MANUAL"]
+        PSH["推送 webhook（HMAC 签名）"]
+    end
+
+    GH --> C1
+    HF --> C1
+    C1 --> C2 --> C3 --> C4
+    C4 --> T
+    P --> T --> V -->|证据不足回规划| P
+    V -->|充分| W
+    W --> R1 --> R2 --> R3
+    R3 -->|通过| PUB --> PSH
+    R3 -->|证据不足/敏感| MANUAL["转人工审核"]
+
+    MYSQL[("MySQL 8 持久化")] -.-> INGEST
+    MYSQL -.-> AGENT
+    MYSQL -.-> REP
+    REDIS[("Redis broker")] -.-> WKR["Celery worker"]
+    BEAT["Celery beat 每日 07:00"] -.-> WKR
 ```
 
-其他位置即使存在副本，也只作为临时工作副本，不作为最终交付或验收依据。
+完整分层架构图见 [docs/architecture-diagram.md](docs/architecture-diagram.md)，图中每个组件都能在 `src/open_source_intelligence/` 找到对应模块。
 
-## 项目定位
+## 技术栈
 
-面向研发战略、架构和产品团队，自动采集公开开源项目动态，使用专用研究 Agent 完成趋势分析、证据补齐、质量验证和周报生成，并通过风险策略决定自动发布或进入人工审核。
-
-本项目是老项目 `learning-planning-multi-agent` 的互补项目：
-
-| 项目 | 主要证明能力 |
+| 层 | 技术 |
 |---|---|
-| 多智能体学习规划助手 | LangGraph、多 Agent、RAG、交互式 AI 应用 |
-| 本项目 | 专用 Agent 工具调用、自动化 Pipeline、MySQL、工程化、评测与监控 |
+| API / 界面 | FastAPI + Jinja2 + HTMX（分组侧栏管理界面） |
+| 异步任务 | Celery + Celery Beat（每日定时 + 研究任务隔离重试） |
+| Agent 编排 | LangGraph（显式状态图，限制循环、记录轨迹） |
+| 模型适配 | OpenAI-compatible Provider Adapter（真实模型 / 离线确定性桩，不绑定供应商） |
+| 存储 | MySQL 8（多表快照、唯一约束、运行时不变量）+ Redis（broker） |
+| 检索 | TF-IDF 词法 RAG（零依赖、确定性、可复现） |
+| 部署 | Docker Compose（五服务一键起） |
+| 评测 | pytest + 自建 Runner（消融实验 + 版本回归） |
+
+## 快速开始
+
+```bash
+# 1. 准备环境（改掉占位口令与 SECRET_KEY）
+cp .env.example .env
+
+# 2. 起五服务栈
+docker compose --env-file .env -f infra/docker-compose.yml up -d --build
+
+# 3. 建表
+docker compose --env-file .env -f infra/docker-compose.yml exec -T api alembic upgrade head
+
+# 4. 种子数据 + 端到端演示（产出真实 published 报告）
+docker compose --env-file .env -f infra/docker-compose.yml exec -T api python /app/scripts/seed_demo.py
+docker compose --env-file .env -f infra/docker-compose.yml exec -T api python /app/scripts/init_demo.py
+
+# 5. 打开首屏
+# http://127.0.0.1:8000/ui/login  （admin / dev-admin-password-change-me）
+```
+
+> 详细启动、建号、采集/研究/评测触发、排查见 [docs/operations.md](docs/operations.md)。
+
+## 真实运行证据
+
+以下数据全部来自**真实模型 + 真实采集快照**，不是演示桩。
+
+### 真实报告样例（数字可复现）
+
+一份由系统生成的周报样例，[docs/samples/weekly-report-sample.md](docs/samples/weekly-report-sample.md)：
+
+| 仓库 | 净增 stars（10-22 → 10-26） |
+|---|---:|
+| morluto/rea | +29,855 |
+| DietrichGebert/ponytail | +4,764 |
+| Graphify-Labs/graphify | +3,948 |
+| affaan-m/ECC | +3,489 |
+| TauricResearch/TradingAgents | +2,805 |
+
+每个净增都是「窗口末快照 stars − 首快照 stars」，可直接核对。
+
+### 5 变体消融评测（真实模型 `deepseek-chat`）
+
+对同一数据集跑 5 个变体，量化每个组件的增益（完整报告见 [docs/ablation-report-c1.md](docs/ablation-report-c1.md)）：
+
+| 变体 | 引用覆盖率 | 事实一致性 | Token | 成本(USD) | 工具调用 |
+|---|---:|---:|---:|---:|---:|
+| baseline（单提示） | 0.6667 | 0.0000 | 11,256 | 0.0025 | 0 |
+| **agent_full（完整）** | **1.0000** | **1.0000** | 47,651 | 0.0083 | 48 |
+| no_verifier（去验证器） | 1.0000 | 1.0000 | 27,896 | 0.0050 | 33 |
+| no_tools（去工具） | 0.9444 | 1.0000 | 15,488 | 0.0030 | 18 |
+| no_history（去历史） | 1.0000 | 1.0000 | 46,147 | 0.0081 | 48 |
+
+**关键结论**：完整 Agent 相对单提示 baseline，事实一致性 **0 → 1.0**（从「无法证明任何事实」到「3/3 全部可核对」）——这是「调 prompt」和「造 Agent」的分水岭。`no_tools` 是唯一触发回归的变体（引用覆盖率跌破 0.95 门禁），证明「可追溯性是用真实工具调用换来的」。
+
+## 项目结构
+
+```text
+src/open_source_intelligence/
+├── api/            # FastAPI 路由、依赖注入、认证
+├── web/            # Jinja2/HTMX 管理界面（首页 + 七个功能页）
+├── collectors/     # GitHub / Hugging Face 数据源适配器
+├── pipeline/       # 采集、快照、候选筛选、README 预热（四阶段确定性管线）
+├── agent/          # LangGraph、工具、Prompt、守卫、验证器、计费
+├── reports/        # 组合、验证、版本、审核、发布策略、分享
+├── evaluation/     # 数据集、评分器、消融对比、成本统计
+├── security/       # RBAC、ACL、脱敏、审计、Prompt Injection 防护
+├── persistence/    # SQLAlchemy 模型、Repository、迁移
+├── workers/        # Celery 任务与调度定义
+└── core/           # 配置、日志、异常、共享类型
+```
 
 ## 文档索引
 
 | 文档 | 用途 |
 |---|---|
-| [REQUIREMENTS.md](REQUIREMENTS.md) | 根需求基线、范围与验收标准 |
-| [INTERFACES.md](INTERFACES.md) | 根接口基线，汇总 API、Tool 和跨模块对象 |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 唯一真理源，约束架构、接口、数据和实施计划 |
-| [docs/requirements.md](docs/requirements.md) | 详细产品需求、角色、功能与验收标准 |
-| [docs/api-contract.md](docs/api-contract.md) | REST API、请求响应对象和错误约定 |
-| [docs/agent-tool-contract.md](docs/agent-tool-contract.md) | Agent 内部工具、权限、错误码和测试契约 |
-| [docs/data-model.md](docs/data-model.md) | MySQL 表结构、关系和运行时不变量 |
-| [docs/security-and-privacy.md](docs/security-and-privacy.md) | 权限、数据保护、模型调用和审计边界 |
-| [docs/evaluation.md](docs/evaluation.md) | Agent、报告质量和成本评测方案 |
-| [docs/observability.md](docs/observability.md) | 监控指标口径、窗口语义、运行账本与看板 |
-| [docs/backfill.md](docs/backfill.md) | 历史回填：分页语义、限流语义、断点续传与并发守卫 |
-| [docs/operations.md](docs/operations.md) | **运维手册**：启动、建号、主题与白名单、采集/研究/报告/回填/评测的触发命令、排查与危险动作 |
-| [docs/development-process.md](docs/development-process.md) | 企业流程的个人开发精简执行版本 |
+| [docs/architecture-diagram.md](docs/architecture-diagram.md) | 系统架构图（Mermaid，逐组件对应代码模块） |
+| [docs/samples/weekly-report-sample.md](docs/samples/weekly-report-sample.md) | 真实报告样例（数字可复现） |
+| [docs/ablation-report-c1.md](docs/ablation-report-c1.md) | 消融评测报告：5 变体对比与量化结论 |
+| [docs/operations.md](docs/operations.md) | 运维手册：启动、建号、触发、排查 |
+| [docs/requirements.md](docs/requirements.md) | 详细产品需求、角色与功能验收 |
+| [docs/api-contract.md](docs/api-contract.md) | REST API、请求响应对象与错误约定 |
+| [docs/agent-tool-contract.md](docs/agent-tool-contract.md) | Agent 内部工具、权限与错误码契约 |
+| [docs/data-model.md](docs/data-model.md) | MySQL 表结构、关系与运行时不变量 |
+| [docs/security-and-privacy.md](docs/security-and-privacy.md) | 权限、数据保护、模型调用与审计边界 |
+| [docs/evaluation.md](docs/evaluation.md) | Agent、报告质量与成本评测方案 |
+| [docs/observability.md](docs/observability.md) | 监控指标口径、窗口语义与看板 |
+| [docs/backfill.md](docs/backfill.md) | 历史回填：分页、限流、断点续传与并发守卫 |
+| [docs/development-process.md](docs/development-process.md) | 企业流程的个人精简执行版本 |
+| [docs/readiness-and-startup-roadmap.md](docs/readiness-and-startup-roadmap.md) | 准备度检查与开工路线图 |
 | [docs/technology-learning-checklist.md](docs/technology-learning-checklist.md) | 按实施任务排列的技术学习清单 |
-| [docs/readiness-and-startup-roadmap.md](docs/readiness-and-startup-roadmap.md) | 准备度检查和正式开工路线图 |
-| [docs/adr](docs/adr) | 关键架构决策记录 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 架构唯一真理源（设计理由、决策与实施清单） |
+| [REQUIREMENTS.md](REQUIREMENTS.md) / [INTERFACES.md](INTERFACES.md) | 需求与接口基线 |
 
-## 当前阶段
+## License
 
-**T1–T28 全部完成**，`ARCHITECTURE.md` §14 的实施任务清单至此全部 `[x]`。最近八步：
-
-- **T28 一键初始化与种子数据**：全新部署启动后是空库，界面全空态，"验证核心功能"要手工十几步。新增 `scripts/seed_demo.py`（幂等种子：三账号、数据源、主题、五个候选仓库 + 快照 + README 缓存、推送目标）与 `scripts/init_demo.py`（端到端：离线研究 → 生成 → 发布 → 自动推送，产出真实 `published` 报告），一条命令把空库变成可验证状态。顺带落地 T25 停用的两个评测边界场景（`missing-readme` / `injection-readme` 的数据形态），且种子会清空主题下历史候选的 `selected_for_agent` 以纠正脏库。
-- **T27 让投递真的送出去**：投递链路（允许列表、守卫、幂等、重试、审计）自 T13 就存在，但 `PUSH_DELIVERY=offline` 是默认值、SMTP/Webhook 凭据全空，`report_pushes` 从未有过一次**真实网络投递**——离线通道写的是 `offline:` 前缀的摘要。补两个**仅测试**逃生口（`push_webhook_allow_private_targets` / `push_webhook_ca_bundle`，由配置校验锁死在 `local`/`test`，生产/staging 拒绝）放行私网接收器与自签 CA，用本地 HTTPS 接收器跑通真实投递并验证 HMAC 签名；`/ui/pushes` 页头新增「投递模式」卡片，一眼看清当前是真发还是假发。SSRF 守卫在生产面原样保留。
-- **T19 主题配置的 HTTP 面**：主题是流水线的第一环（`list_enabled_topics` 只读 `enabled=True` 的主题，没有主题就没有任何数据产出），而它此前没有任何入口。契约先行补 `INTERFACES.md` §3 与 `docs/api-contract.md` §3.2，再落 `topics/` 领域模块与五条端点；**触发研究仍不在 API 上**（消耗模型预算，与 T15 拒绝 `POST /agent/runs` 同理）。探针与实跑查出四处产品缺陷（`created_by` 从不写入导致建主题必然失败、过宽的 `except IntegrityError` 把坏插入说成重名、空名能存进表、审计行不带请求 id），全部修复并补回归。
-- **T20 设计稿上屏**：导航从顶栏 2 项铺成左侧分组侧栏 8 项 4 组，补出推送记录、主题管理、仓库目录、采集与运行、评测、审计日志六个页面；`app.css` 173 → 433 行而**原有九个 token 取值一个未改**。两条结构判断值得记：所谓"割裂感"的成因是**内容区居中**（`max-width: 1180px; margin: 0 auto` 在 1920 宽下留出约 250px 死水带），不是侧栏太窄；侧栏条目与路由准入**共用一个常量**（`web/router.py:NAV_GROUPS`），因此"菜单里出现而打开被拒"与"能打开却不在菜单里"同时不可能发生。
-- **T21 运维配置面的归属**：推送目标白名单与用户账号**不做界面**，由后端拥有（账号只有 `bootstrap` CLI，目标直接写 `push_targets`）；界面上不可避免要提到它的两处只对 `ADMIN` 渲染，且该页**只在管理员时加载**这份 allowlist。顺手修掉一个同级缺陷：「释放到期报告」按钮按读角色渲染、路由却按写角色准入 —— 只读角色看得见、点了才 403。
-- **T22 运维手册**：新增 [docs/operations.md](docs/operations.md) —— 启动、建号、主题、白名单、采集与日报、研究、报告链路、回填、评测、排查、危险动作，每条命令都在运行中的栈上实跑过。写它的过程实测出四类缺口（README 内容缓存没有写入方、离线模型把失败的工具载荷当证据、评测数据集引用了不存在的主题名、研究不在 beat 里），逐条记在该文档 §11。
-- **T26 让报告有出口**：报告此前没有任何出口 —— `sensitivity` 里的 `PUBLIC` 只是下拉框里的一个标签，不参与任何判定；所有页面都要求登录，"把周报发给别人"的唯一办法是给对方建账号。新增 `report_share_links`（只存 `sha256(token)`，无明文列）、`reports/sharing.py`、免登录只读的 `GET /share/{token}` 与一套 JSON 端点。**闸门落在 `sensitivity` 而不是 `visibility`**：前者答"内容能不能离开组织"，后者只答"系统内谁能看"。令牌明文只在创建响应出现一次；失效（不存在/撤销/过期/报告撤回/改回非 PUBLIC）一律同一个 `404`，因为可区分就等于给了一个探测接口。实测 27 项全过，含"另一个不带 Cookie 的客户端能读到正文"与"撤回后与未知令牌渲染逐字相同的 404"。
-- **T25 让质量可证**：数据集此前写死早期夹具主题名（`AI Agent` / `AI Agent Sparse` / `AI Agent Injection`），本库一个都没有，于是五个评测变体全部以 `EVAL_TOPIC_NOT_FOUND` 收口 —— 验收标准第 8 条（可比 baseline / Agent / 消融）从未真正达成。新增 `datasets/weekly-agent-quality.v2.json`，把主题、窗口（库里仅 2026-10-16 与 10-19 有快照）与 `reference.facts` 全部对齐真实数据；`import_dataset()` 现在**导入时**校验启用样本的主题存在（`DATASET_TOPIC_MISSING`），消息直接列出可用主题名；目录模式跳过不适用的数据集并记入 `skipped`。实测 `--action run` 五个变体全部 `succeeded`，`--action compare` 给出第一份有效对比：`agent_full` 引用覆盖与事实一致均 1.0、16 次工具调用、0 项 gate 失败；`baseline_single_prompt` 与两个消融均为 0.0，`passed=true`。
-- **T24 让「自动」成立**：每日任务在四个确定性阶段之后可以派发研究运行（`pipeline/research_dispatch.py`）。派发判据三条同时成立：主题启用、本业务日 `rank` 成功且有候选、本业务日没有非 `failed` 的 `agent_runs` 行。开关 `AGENT_AUTO_RESEARCH_ENABLED` **默认关闭**（一次研究消耗真实预算），上限 `AGENT_DAILY_RESEARCH_LIMIT`。实测抓到一个真缺陷：最初把 `failed` 也算作"今天已研究"，于是第一次真实派发撞上 `AGENT_MODEL_UNAVAILABLE` 之后当天不再重试 —— 一次模型抖动就让整夜空转；判据改为排除 `failed`。`AGENT_MAX_TOKENS` 默认提到 30000（实测真实证据 18753 tokens），并记下"已有库的 `agent_configs` 行不受默认值影响"这条运维坑。
-- **T23 让报告链路真正可用**：修 T22 实测出的、同一根因的两面 —— `repository_contents` 在 `src/` 里**没有任何生产写入方**，以及离线模型把**失败的**工具载荷当成内容证据（`{"error": {...}}` 也是 dict）。给流水线补第四阶段 `contents`（排在 `rank` 之后，因为"哪些仓库值得预热"的答案就在排名里，候选集合与"研究被允许读的仓库"是同一批行），并把失败壳的构造与判据收进 `agent/llm/messages.py` 一处供渲染与过滤共用。实测：研究运行从 `needs_review`+`AGENT_EVIDENCE_INCOMPLETE`+`sufficient=false` 变为 `completed`+`sufficient=true`，`reports generate` 从硬失败 `readme source not found` 变为成功、`reports verify` 判 `passed`（详见 `ARCHITECTURE.md` §9.18）。
-
-要**操作这个系统**（起服务、建第一个管理员、加推送目标、触发采集与研究）直接看 [docs/operations.md](docs/operations.md)；要改代码先看 `ARCHITECTURE.md` §14 与 `AGENTS.md`。
-
-### 上一阶段：T18 文档同步与发布检查
-
-T18 的交付物是一条命令 —— `scripts/check_docs_drift.py`，十项比较，任何一项不通过就退出非零：
-
-```text
- 1 endpoints             契约声明的每个端点都有已注册路由；每条已注册路由都在契约里被提到
- 2 tables                Base.metadata 的每张表都在 docs/data-model.md 有小节；文档里有而代码里没有的必须自带"计划内"标注
- 3 architecture-summary  ARCHITECTURE.md §7 的摘要表列全 Base.metadata 的每张表，且计划表必须带标注
- 4 evaluation-targets    docs/evaluation.md §1 的变体表与 TARGET_ORDER 逐字同序，且点名 PROMOTION_TARGETS
- 5 configuration         Settings 的每个字段都在 .env.example 里；反之 .env.example 不能多出未登记的非 Compose 键
- 6 doc-index             docs/ 的每个文件都被 README 索引到；README 的每个 docs/ 链接都指向存在的文件
- 7 migrations            只有一个 Alembic head
- 8 secrets               被 git 跟踪的 .env.example 里没有凭据形状的值
- 9 status-lines          README/INTERFACES 的状态行点名 §14 里最后完成的任务
-10 version               __version__ 与 pyproject.toml 一致
-```
-
-**为什么是"比较"而不是"读一遍"。** 第一次按 T18 的字面要求去读文档时，查出了四组从未实现的接口：`/sources`、`/topics`（含 `POST /topics/{id}/run`）、`/repositories`（含 snapshots）、`/audit-logs` —— `INTERFACES.md` §3 与 `docs/api-contract.md` 声明了它们，代码里一条都没有。**读**正是让这件事漂移了十七个任务都没被发现的原因：读者看到的是一张看着合理的端点表，而不是一份 diff。同一个读法也只查出了两处（`feedback` 被当成已实现的表、`.env.example` 缺 `APP_NAME`），写成比较之后又揪出两处（`ARCHITECTURE.md` §7 摘要漏 5 张表、`README.md` 的状态行停在 T13）。
-
-**处置分两类。** 一是**实现**：`REQUIREMENTS.md` FR-D-05 点名要求「报告、**仓库**、Agent、评测和**审计** API」，所以 `/repositories`（含 `/repositories/{id}/snapshots`，闭区间窗口）与 `/audit-logs` 补上，并各配 18 项与 9 项测试。二是**删除**：`POST /topics/{id}/run` 与 T15 已删的 `POST /agent/runs` 是同一条理由 —— 一次研究运行消耗模型预算，触发权属于调度器与操作员 CLI，不属于任意已登录客户端；`/sources` 的字段就是部署配置（`base_url` 来自 `GITHUB_API_BASE`、`credential_ref` 指向环境变量 Token），改它们走环境变量与迁移，"一个能改限流预算的 HTTP 端点等于把公共 API 的用量控制交给任意已登录客户端"。
-
-一键入口 `.\scripts\verify_t18.ps1`（引擎不可用时 `-SqliteFixture`）。它除了静态门禁与十项比较之外，还会**故意把三份文档各改错一处**（`docs/api-contract.md` 的幽灵端点、`docs/data-model.md` 的幽灵表、`ARCHITECTURE.md` 的 `- [x] T18` 勾选）再跑一次比较、要求检查器**同时**报出三条漂移并退出 1，然后复原 —— 一个永远回答"一致"的比较器不会比它取代的"读一遍"更好，那四组幽灵接口今天还会留在契约里。三处一起改是有意的：一处漂移可能被单个检查的偶然巧合盖住，"三条一起被报出"才说明每一侧都在真的比较。
-
-**T18 顺手修掉的两个真实缺陷**（都不是 T18 新引入的）：
-
-- **天真时间戳在边界上被拒绝，而不是在查询构造器里炸成 `500`。** `GET /reports?created_after=2026-09-24T00:00:00`（不带时区偏移）自 T12 起就是坏的：`UTCDateTime` 会抛 `ValueError: UTC timestamps must be timezone-aware`，冒成 `500`。参数从未被行使，所以没人抓到。修复是新增 `api/params.py:UtcDateTime`（三个路由统一改用它），并让 422 的 detail 同时给出**字段路径与原因**。
-- **路由遍历在不同 FastAPI 版本下答案不同。** 检查器原先直接遍历 `app.routes`，在宿主机上找到 41 条路由，在容器里（FastAPI 0.143）**一条都找不到** —— 而它随后把契约里每个端点都报成"缺失"。改为递归下钻 `routes` 与 `original_router` 两种形状，并且**拒绝相信空结果**：走到 0 条路由就直接报错，而不是当作"契约干净"。
-
-判据与实测值见 [docs/api-contract.md](docs/api-contract.md) §3/§4/§8。
-
-**T18 交付后的复核又修掉七处缺陷**（探针先行：每条都先写一个**能失败**的测试或脚本证明它真实存在，再落最小修复）：
-
-- **`q` 是子串搜索，就要把 `%` / `_` 当字符。** 实现原把调用方输入直接拼进 `LIKE`，于是 `q=_` 匹配每个至少一字符的仓库、`q=%` 匹配整份目录 —— 与契约 §4 说的"子串匹配"正好相反。新增 `_literal_like()` 转义并给 `like(...)` 传 `escape`，补一条同时钉住两个方向的回归测试（转义过头也会失败）。
-- **冒烟的清理删不到"匿名拒绝"留下的行。** 未认证请求写下的 `auth.token` / `failed` 行 `actor_id` 为 `NULL`，按 actor 过滤**永远够不到**，每次运行都在只增不删的账本上永久留 3 行（Compose 库上已积累 24 行）。改为**字面前缀 + 请求 id** 两条句柄（`X-Request-ID` 由中间件写进审计行），并新增 Criterion 17 断言清理之后的 `leftovers` 四项全 `0`。
-- **比较器的结论不能被"把输入改窄"放大。** `check_docs_drift.py --only endpoints` 原会报 `{"passed": true}` 并退出 `0`（"跑过的都过了"被读成"文档一致"）。载荷补 `run` / `total` / `complete`，**十项全跑且全过才退 `0`**。
-- **断言里的日期不能是"写脚本那天"的日期。** 快照窗口断言原比对硬编码的 `2026-10-13,…`，而窗口由时钟推出，该断言只在当天成立；改为与冒烟报出的 `requested_window` 比较。
-
-其余三处（`LIKE` 前缀越界删除、载荷里写常量而非观测、docstring 与实现相矛盾的排序说明）见 `ARCHITECTURE.md` §9.15。
-
-**又按"类"扫了一遍。** 上面第一条洞的成因是"名字前缀含 `_`，却被当成 `LIKE` 模式"，所以把这一类在 `scripts/` 全局搜了一遍：`t7` / `t8` / `t11` / `t13` / `t14` / `t15` / `t16` / `t17` 共 **13 处**（清理 9 处、计数 4 处）全都不是字面前缀 —— 每个 drill 的名字前缀都含 `_`（`__t7_smoke_`、`__T13`、`__T15 report__`、`__t17_drill_`……），`__t17_drill_%` 同样匹配 `aat17xdrilly1`。已一并改为 `startswith(..., autoescape=True)`，并把几处硬写的标题/名字字面量提成与清理共用的常量。新增回归测试播种一行"`LIKE` 形状相同、但并非该 drill 所写"的值，再调用各脚本**真实的清理函数**，断言它存活而真属于 drill 的行被删；把任一处退回旧写法，对应用例即失败（13 条用例全部如此验证过）。这类缺陷**运行时不会报警**，只在库碰巧含有形状相同的值时删错行，所以只能靠扫"类"。
-
-`ARCHITECTURE.md` §14 的实施任务清单已无剩余项。
-
-
-T1 验证命令：
-
-```powershell
-.\scripts\verify_t1.ps1
-```
-
-该脚本会强制重建镜像，并执行 pytest、Ruff、mypy、Compose、API、Worker 和 Beat 验证。
-
-T2 验证命令：
-
-```powershell
-.\scripts\verify_t2.ps1
-```
-
-该脚本使用一次性 MySQL 数据库验证迁移升级、回滚、再次升级和模型一致性，不修改正式开发库。
-
-T3 验证命令：
-
-```powershell
-.\scripts\verify_t3.ps1
-```
-
-该脚本会重建服务、应用迁移、引导临时管理员、验证登录和当前用户、检查 401，并确认审计记录已持久化。
-
-T4 验证命令：
-
-```powershell
-.\scripts\verify_t4.ps1
-```
-
-该脚本执行真实双源采集，并重复采集一次确认仓库数量不变。
-
-T5 验证命令：
-
-```powershell
-.\scripts\verify_t5.ps1
-```
-
-该脚本在现有真实仓库上执行 3 次快照、2 次候选排序，验证幂等、窗口增量、排序和审计后清理验证数据。
-
-T6 验证命令：
-
-```powershell
-.\scripts\verify_t6.ps1
-```
-
-该脚本执行每日 Pipeline 的 MySQL 冒烟（运行记录、attempt 轨迹、错误脱敏、幂等和 CHECK 约束），通过真实 Celery broker 和 Worker 调度任务，用一个专用 Worker 指向不可达数据源以证明失败重试留下两条尝试记录，验证 Beat 定时触发与 CLI 状态查询，最后清理验证数据。
-
-T7 验证命令：
-
-```powershell
-.\scripts\verify_t7.ps1
-```
-
-该脚本执行 pytest、Ruff、mypy，重建服务并检查迁移漂移，然后在真实 MySQL 上调用全部 5 个白名单工具，验证 Schema 严格校验、跨主题 ACL 拒绝、内容清理与截断、不可信标记、草稿幂等与版本递增、只读工具零写入以及 `tool_calls` 记录，最后清理验证数据。
-
-T8 验证命令：
-
-```powershell
-.\scripts\verify_t8.ps1
-```
-
-该脚本执行 pytest、Ruff、mypy，重建服务并检查迁移漂移，然后在真实 MySQL 上跑通完整研究轨迹：断言 17 个步骤的 `step_index` 连续且类型覆盖 `plan/tool/observe/verify/write`、13 次工具调用全部成功且绑定同一 `agent_run`、6 个草稿章节版本为 1 且带引用、只读工具零写入，并验证「无候选」（`needs_review`）与「模型不可用」（`failed`）两条降级路径，最后清理验证数据。
-
-T9 验证命令：
-
-```powershell
-.\scripts\verify_t9.ps1
-```
-
-该脚本执行 pytest、Ruff、mypy、迁移和 drift 检查，然后在真实 MySQL 上验证正常 Token 持久化、80% 降级仍能写草稿、100% 预算在第二次模型调用前停止，以及恶意 README 被阻断、标记 `AGENT_PROMPT_INJECTION` 且不产生越权工具调用。
-
-T10 验证命令：
-
-```powershell
-.\scripts\verify_t10.ps1
-```
-
-该脚本在真实 MySQL 上先跑通 Agent 草稿，再验证六章节报告合成、16 条可追溯引用、metric 快照绑定、重复生成幂等、内容变化版本递增，以及伪造引用在写入前被拒绝。
-
-T11 验证命令：
-
-```powershell
-.\scripts\verify_t11.ps1
-```
-
-该脚本执行 pytest、Ruff、mypy、五服务重建、迁移升级/回滚/再次升级与 drift 检查，然后在真实 MySQL 上验证三条验收：伪造引用被 Verifier 拦截、`AUTO_WITH_DELAY` 报告在窗口前不发布且窗口后自动发布、`MANUAL` 报告缺少审核记录时无法发布。
-
-T12 验证命令：
-
-```powershell
-.\scripts\verify_t12.ps1
-```
-
-该脚本执行 pytest、Ruff、mypy、五服务重建、迁移升级/回滚/再次升级与 drift 检查，然后在真实 MySQL 上启动**真实 FastAPI 应用**跑通 T12 验收：报告列表按可见范围在数据库层过滤（`VIEWER` 看不到 `PRIVATE`，`ADMIN` 全见）、详情页与 API 的越权读取返回 `403` 且不泄露标题、CSRF 缺失/不匹配与只读角色写操作均返回 `403`、编辑正文追加不可变版本并回到 `draft`、`MANUAL` 走完「转人工 → 退回修改 → 再编辑 → 通过 → 发布」、已发布报告可回退为新的 `draft` 版本，并检查六类审计事件与验证/审核证据落库。
-
-T13 验证命令：
-
-```powershell
-.\scripts\verify_t13.ps1
-```
-
-该脚本在真实 MySQL 上驱动出站推送链路：只有 `approved` / `published` 报告可被推送、`CONFIDENTIAL` 额外要求同版本 `approve` 审核、允许列表的 `enabled` 与渠道一致以及默认关闭的 `allow_private` / `allow_confidential` 共同把关；**传输失败不是异常**（适配器返回 `ok=False` → 落库 `failed` + `error_code`，接口仍返回 `200`），只有守卫违规才抛错；幂等键让重复请求不再投递（`replayed=True`），失败重试推进同一行的 `attempt`。
-
-T14 验证命令：
-
-```powershell
-.\scripts\verify_t14.ps1
-```
-
-该脚本执行评测链路的真实运行：导入版本化数据集（同内容重放不新增行、同版本异内容返回 `409`）、按 `baseline_single_prompt` / `agent_full` / 消融变体分别执行并落真实测量，再重建统一对比报告——`passed` 只裁决 `agent_full`，消融只作对照，且 `scored_case_count > 0` 是通过的必要条件。
-
-T15 验证命令：
-
-```powershell
-.\scripts\verify_t15.ps1
-```
-
-该脚本在真实 MySQL 上校验只读监控层：窗口内任务成功率、Token、成本、延迟分位数（nearest-rank，不插值）、失败原因分布、工具成功率与报告人工阻断率全部真实可见，**未行使的指标返回 `null` 而不是 `0`**；评测段固定展示最新一轮 sweep 且 `passed` 直接读 `compare_latest` 不重算；`/ui/dashboard` 与运行轨迹页在真实应用上渲染，`VIEWER` 被拒且导航栏不暴露入口。
-
-T16 验证命令：
-
-```powershell
-.\scripts\verify_t16.ps1
-```
-
-该脚本执行历史回填与端到端演示：在一个 GitHub 形状的 mock transport 上跑真实 `BackfillJob` 走查（分页边界、第 3 页注入 `500` 后中断并只续传第 3、4 页、重放幂等、页预算与源限流预算、并发守卫与过期接管、越界与不可分页源被拒），随后把回填喂出的库交给真实 `run_daily_pipeline` → Agent → 报告生成 → 验证 → 发布策略 → 人工 `approve` → `publish_due_reports` 完整跑通，并由只读会话重新读回校验，同时驱动真实 CLI 子进程的 `list` / `status` 与两处拒绝路径。
-
-T17 验证命令：
-
-```powershell
-.\scripts\verify_t17.ps1
-
-# 本机 Docker 引擎起不来时的等价路径：同一份演练 + 同一套断言，跑在真实 SQLite 文件上
-.\scripts\verify_t17.ps1 -SqliteFixture
-
-# 演练残留行未清干净时单独收尾
-D:\python\ana\python.exe scripts\t17_security_drill.py --cleanup-only
-```
-
-该脚本在真实应用与真实数据库上跑完四类演练：**越权**（三角色 × 四种可见范围，匿名 `401`/`303`，列表 `total` 与可见 id 一致，四类写拒绝全 `403`，拒绝响应不含标题而审计行带被拒资源 id）、**Prompt Injection**（双语注入混在正常 README 里，中英两路均未到达模型、普通文本存活、命中即停转人工复核、五个白名单工具可达且 Prompt 内零凭据）、**API 失败**（源 `5xx`/超时各重试 3 次落 `COLLECTOR_FAILED`、模型不可用落 `AGENT_MODEL_UNAVAILABLE`、推送 `failed` → 换渠道 `sent` 且重放不二次发送）、**重复任务**（两次采集/两次扫描/两次推送无副作用）。判据与实测值见 [docs/security-and-privacy.md](docs/security-and-privacy.md) §9。
-
-两个引擎上均已实跑，payload 逐值一致：`-SqliteFixture`（2026-10-15）与默认 Compose + 真实 MySQL 路径（2026-10-15，含 `alembic upgrade head` 12 个迁移 + `alembic check` → `No new upgrade operations detected`）。
-
-T18 验证命令：
-
-```powershell
-.\scripts\verify_t18.ps1
-
-# 本机 Docker 引擎起不来时的等价路径：同一份冒烟 + 同一套断言，跑在真实 SQLite 文件上
-.\scripts\verify_t18.ps1 -SqliteFixture
-
-# 只跑十项文档一致性比较（`--only` 可重复，取值即上表的检查名）
-D:\python\ana\python.exe scripts\check_docs_drift.py
-D:\python\ana\python.exe scripts\check_docs_drift.py --only endpoints --only tables
-
-# 冒烟残留行未清干净时单独收尾
-D:\python\ana\python.exe scripts\t18_mysql_smoke.py --cleanup-only
-```
-
-该脚本做三件事：静态门禁（pytest / Ruff check+format / mypy / `docker compose config`）→ **十项文档一致性比较**（并故意把 `docs/api-contract.md`、`docs/data-model.md`、`ARCHITECTURE.md` 各改错一处，要求检查器**同时**报出三条漂移、退出 `1`，再复原后重新通过）→ 在真实数据库上冒烟 T18 新交付的两组端点（仓库目录与快照、审计日志），断言段覆盖 17 条判据。冒烟按名字前缀清理自己的行，因此**不要求全新数据库**，可在有数据的库上重复执行；第 17 条判据断言清理之后的 `leftovers` 四项全 `0` —— 把脚本末尾那句"把库留在原样"从注释变成测量。
-
-两个引擎上均已实跑（2026-10-15）：`-SqliteFixture` 与默认 Compose + 真实 MySQL 路径，payload 逐值一致。
-
-> **T11–T16 的容器路径需要在全新数据库上跑。** 这些脚本断言的是**绝对计数**（`runs_before == 0`、`pipeline_total == 8`、`report_total == 2`……），持久卷里残留上一轮的行就会失败（症状如 `expected '8' but got '18'`）。逐条验证前先清库：
->
-> ```powershell
-> docker compose --env-file .env.example -f infra/docker-compose.yml down -v
-> ```
->
-> 六个脚本在真实 Compose 五服务 + 真实 MySQL 上均已实跑通过（2026-10-14）。
->
-> **T17、T18 不同，不需要清库。** T18 的清理按名字前缀、天然幂等；T17 按主键高水位只删自己新建的行，并且它的越权断言**先测量库在自己动手之前是什么样**（`measure_visibility_baseline`）再比对，所以可以在有数据的库上重复执行 —— 这正是演练要能对真正的系统安全重跑的前提。**同一卷上连跑两次 `verify_t17.ps1` 均已通过**（2026-10-15 实测）。
->
-> 反过来说，任何拿**绝对 id** 去断言的东西都会掉进同一个坑：`AUTO_INCREMENT` 不因 `DELETE` 回落，所以"演练自己那四份报告编号是 1..4"只在从未写过报告的卷上成立。T17 的越权断言一度就是这样写的（全新卷通过、有历史的卷失败，长相和越权缺陷一模一样），修复与复现步骤见 [ARCHITECTURE.md](ARCHITECTURE.md) §15。
-
-
-## 开发原则
-
-1. 数据采集和指标计算保持确定性，Agent 负责研究决策、证据补齐、验证和综合写作。
-2. 常规低风险周报采用 `AUTO_WITH_DELAY`，不为追求安全而默认阻塞人工审核。
-3. 企业权限、审计、模型数据保护和 Token 成本以轻量方式实现，保留扩展接口，不宣称完成完整 DLP、ABAC 或多租户。
-4. 每次代码变更若影响架构、接口、数据模型、依赖或目录结构，必须同步回写 `ARCHITECTURE.md`。
+[MIT](LICENSE)
