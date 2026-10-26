@@ -18,8 +18,9 @@ Because `AUTO_WITH_DELAY` reports queue behind a withdrawal window, the script r
 report that reached `published` honestly rather than by a bypass.
 
 It is idempotent in the same sense as the seeder: every stage reuses the row a prior run created,
-so re-running advances nothing and mints no duplicate. Run inside the api container after the
-seeder:
+so re-running advances nothing and mints no duplicate. If the topic already has a `published`
+report, the pass reports it and returns without creating a new agent run or report. Run inside
+the api container after the seeder:
 
     docker compose --env-file .env -f infra/docker-compose.yml exec -T api \
       python /app/scripts/init_demo.py
@@ -68,8 +69,28 @@ def _offline_settings():
     )
 
 
+def _has_published_report(session, topic_id: int) -> Report | None:
+    """Return the topic's most recent `published` report, or `None`.
+
+    This is the idempotency gate: a topic that already reached `published` has nothing left to
+    demonstrate, and driving the research → publish loop again would mint a new agent run and
+    report for the same window.
+    """
+    return session.scalar(
+        select(Report)
+        .where(Report.topic_id == topic_id, Report.status == "published")
+        .order_by(Report.id.desc())
+        .limit(1)
+    )
+
+
 def main() -> int:
-    """Seed, then drive the research → publish loop to one published report."""
+    """Seed, then drive the research → publish loop to one published report.
+
+    Idempotent: if the topic already has a `published` report, the pass reports it and returns
+    without minting a new agent run, draft, or report. Re-running against a healthy deployment
+    advances nothing — the same guarantee the seeder gives.
+    """
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     factory = create_session_factory(engine)
@@ -88,6 +109,15 @@ def main() -> int:
             topic = seed._ensure_topic(session, admin)  # noqa: SLF001
             seed._ensure_repositories(session, source, topic)  # noqa: SLF001
             seed._ensure_push_targets(session)  # noqa: SLF001
+
+            # --- idempotency gate -------------------------------------------
+            published = _has_published_report(session, topic.id)
+            if published is not None:
+                print(
+                    f"idempotent: topic {topic.id} already has a published report "
+                    f"(report={published.id}); nothing to do"
+                )
+                return 0
 
             # --- research (offline) ------------------------------------------
             result = run_research_agent(session, topic_id=topic.id, settings=offline)

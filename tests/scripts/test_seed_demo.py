@@ -138,12 +138,15 @@ def test_seed_writes_the_full_loop_shape(session: Session) -> None:
     # The three normal candidates are research targets; the two boundary shapes are not.
     assert [link.selected_for_agent for link in links] == [True, True, True, False, False]
 
-    # Every candidate has seven snapshots (a per-day series, not a before/after pair).
+    # No candidate gets a fabricated snapshot series. A seeder that writes even one point puts a
+    # star count nobody can reproduce from GitHub into the timeline, and a later real collection
+    # would then straddle a fabricated→real boundary — the exact defect A1 removes. The series is
+    # the collector's to write.
     for repo in session.scalars(select(Repository)).all():
         snap = session.scalars(
             select(RepoSnapshot).where(RepoSnapshot.repository_id == repo.id)
         ).all()
-        assert len(snap) == 7
+        assert snap == []
 
 
 def test_collected_repository_is_bound_not_rewritten(session: Session) -> None:
@@ -299,3 +302,29 @@ def test_accounts_cover_all_three_roles(session: Session) -> None:
         assert seed.get_user_by_username(session, username) is not None
     # The data source is created once, not per account.
     assert _count(session, DataSource) == 0
+
+
+def test_init_demo_gate_sees_a_published_report(workspace) -> None:
+    """The init gate reports an already-published topic, so re-running mints nothing.
+
+    `init_demo.py` drove research → generate → publish on every run, which minted a new agent run
+    and report for the same window each time. The gate is the idempotency guard: a topic that
+    already reached `published` has nothing left to demonstrate.
+    """
+    import scripts.init_demo as init_demo
+
+    session = workspace.session
+    topic_id = 4242
+    agent_run = workspace.add_agent_run(topic_id)
+    workspace.add_report(
+        topic_id=topic_id,
+        agent_run_id=agent_run.id,
+        status="published",
+        title="Already published",
+    )
+    session.commit()
+
+    assert init_demo._has_published_report(session, topic_id) is not None  # noqa: SLF001
+
+    # A topic with only a non-published report is not gated: the loop still has work to do.
+    assert init_demo._has_published_report(session, topic_id + 1) is None  # noqa: SLF001

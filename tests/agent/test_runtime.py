@@ -680,8 +680,9 @@ class RudeDraftClient:
     """Offline client whose first draft answer is wrong in a specified way.
 
     `mode="sections"` returns a legal payload with one of six sections; `mode="schema"` returns an
-    object the payload model rejects. Both are things a real model does, and both used to end the
-    run on the first try.
+    object the payload model rejects; `mode="citationless"` returns all six sections but no
+    citations on any of them. All are things a real model does, and all used to end the run on
+    the first try.
     """
 
     def __init__(self, mode: str) -> None:
@@ -730,6 +731,23 @@ class RudeDraftClient:
                                 }
                             ],
                         }
+                    ]
+                }
+            elif self._mode == "citationless":
+                # All six sections present, but every `citations` list is empty. The old write
+                # stage accepted this as complete and the generate stage then refused it.
+                section_keys = (
+                    "summary",
+                    "trend",
+                    "highlights",
+                    "risks",
+                    "recommendation",
+                    "appendix",
+                )
+                payload = {
+                    "sections": [
+                        {"section_key": key, "content_markdown": f"{key} 正文。", "citations": []}
+                        for key in section_keys
                     ]
                 }
             else:
@@ -858,3 +876,30 @@ def test_a_markdown_answer_with_one_heading_is_asked_again(
     assert client.draft_calls == 2
     assert "缺少章节" in client.repair_notes[0]
     assert "trend" in client.repair_notes[0]
+
+
+def test_a_draft_with_all_sections_but_no_citations_is_asked_again(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A six-section draft whose citations are all empty is not complete.
+
+    The generate stage refuses an empty citation list, so accepting such a draft at the write
+    stage lets the run reach `completed` and then fail one step later — after the model call was
+    paid for. The retry names the empty sections, the same way a missing section is named.
+    """
+    seeded = seed_topic(workspace, repo_count=1)
+    client = RudeDraftClient("citationless")
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        client=client,
+        now=NOW,
+    )
+
+    assert result.status == "completed"
+    assert client.draft_calls == 2
+    assert "没有引用" in client.repair_notes[0]
+    assert "summary" in client.repair_notes[0]

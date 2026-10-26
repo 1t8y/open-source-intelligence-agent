@@ -669,6 +669,16 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         if absent:
             rejection = f"缺少章节 {', '.join(absent)}"
             continue
+        # A draft that has all six sections but none of its citations is not complete: the
+        # generate stage refuses it (`section X has no citations`), so accepting it here would
+        # let the run reach `completed` and then fail one step later — after the model call was
+        # already paid for. Re-ask, naming the empty sections, the same way a missing section is
+        # named. This is the code-side enforcement of the prompt rule "every section carries at
+        # least one citation".
+        citationless = [section.section_key for section in sections if not section.citations]
+        if citationless:
+            rejection = f"以下章节没有引用：{', '.join(citationless)}"
+            continue
         rejection = None
         break
 
