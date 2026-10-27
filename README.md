@@ -185,8 +185,6 @@ src/open_source_intelligence/
 | [docs/observability.md](docs/observability.md) | 监控指标口径、窗口语义与看板 |
 | [docs/backfill.md](docs/backfill.md) | 历史回填：分页、限流、断点续传与并发守卫 |
 | [docs/development-process.md](docs/development-process.md) | 企业流程的个人精简执行版本 |
-| [docs/readiness-and-startup-roadmap.md](docs/readiness-and-startup-roadmap.md) | 准备度检查与开工路线图 |
-| [docs/technology-learning-checklist.md](docs/technology-learning-checklist.md) | 按实施任务排列的技术学习清单 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构唯一真理源（设计理由、决策与实施清单） |
 | [REQUIREMENTS.md](REQUIREMENTS.md) / [INTERFACES.md](INTERFACES.md) | 需求与接口基线 |
 

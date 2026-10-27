@@ -670,7 +670,7 @@
 
 ### 管理界面（`/ui`）
 
-前端设计稿（`D:\job-workspace\.frontend-design\intelligence-console-v0.html`，仓库外）在 T20 上屏，落成下面这组页面。同一套服务层的服务端渲染界面（Jinja2 + HTMX，`include_in_schema=False`）。
+前端设计稿（保留在仓库外）在 T20 上屏，落成下面这组页面。同一套服务层的服务端渲染界面（Jinja2 + HTMX，`include_in_schema=False`）。
 
 **外壳**：登录态下是「左侧分组侧栏 + 右侧内容」。侧栏按「报告 / 数据 / 质量 / 运维」四组列出全部页面，条目按角色过滤 —— 某个角色看不到的页面**既不出现**，直接访问也会被拒。边界是一条可调的拖柄（`role="separator"` + `tabindex="0"`）：鼠标拖动、左右方向键微调、`Home`/`End` 到两端、双击复位，宽度记在 `localStorage`，钳位区间由 CSS 的 `--sidebar-min` / `--sidebar-max` 给出。未登录态（登录页 / 403 / 404）渲染居中的窄卡，没有侧栏。
 

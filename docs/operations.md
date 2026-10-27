@@ -478,7 +478,15 @@ docker compose ... exec -T api python -m open_source_intelligence.pipeline.cli -
 - **同一时刻只跑一份演练脚本**：它们按家族前缀清理自己，两份会互删。
 - **改文档/接口/数据模型/配置/依赖之后**先跑 `python scripts/check_docs_drift.py`（十项比较，任何一项不过就退非零）。它是"文档是否同步"的唯一判据。
 
-## 14. 文档与实现对照
+## 14. Windows 环境注意事项
+
+这套栈在 Windows 上同样能跑，但有三处本机特有的坑值得先知道：
+
+- **Git Bash 下给 `docker` 加 `MSYS_NO_PATHCONV=1`。** MSYS 会把 `/app`、`/workspace`、`/tmp/x` 这类容器内绝对路径改写成 Windows 路径，容器随即报错或静默失败（典型症状：`-w /workspace` 变成 `C:/…/PortableGit/workspace`）。
+- **改了代码必须 `--build --force-recreate`。** 镜像装的是**包**不是挂载源码，只 `restart` 会继续跑旧构建，表现是新路由全 404。想确认跑的是哪一版，比较镜像构建时间与 `git log -1` 的时间。
+- **装了 Watt Toolkit（Steam++）会让容器连不上 GitHub。** 它把 `api.github.com`、`github.com` 写进宿主 hosts 指向 `127.0.0.1` 并在本地起 443 代理；容器解析这个域名会落到**容器自身的回环**，于是采集报 `Connection refused`。两种解法：开它的 GitHub 加速（代理真在跑时可用），或在 `infra/docker-compose.yml` 给三个应用服务加 `extra_hosts` 把 `api.github.com` 钉到真实边缘 IP（GitHub 的 IP 会轮换，采集失效时先刷新那一行）。
+
+## 15. 文档与实现对照
 
 | 想知道什么 | 看哪 |
 |---|---|

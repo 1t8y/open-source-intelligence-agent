@@ -38,8 +38,15 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Local project manual (maintained locally, intentionally not committed)
+# Local working notes (kept on disk, never published)
+# The public repo carries the product, not the developer's own scaffolding:
+# stage manuals, diagnostics, task lists and learning notes stay local.
 使用手册.md
+开源情报Agent*.md
+快速开始.md
+诊断清单.md
+任务清单.md
+README.backup-*.md
 
 # Local agent memory and session data (kept on disk, not committed)
 .workbuddy/

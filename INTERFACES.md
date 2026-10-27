@@ -3,7 +3,6 @@
 > 文档状态：实施基线（T1-T28 已对齐）
 > 文档版本：v0.16
 > 最后更新：2026-10-16
-> 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
 ## 1. 契约范围
 

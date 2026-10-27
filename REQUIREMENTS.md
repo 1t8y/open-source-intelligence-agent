@@ -3,7 +3,6 @@
 > 文档状态：待用户确认  
 > 文档版本：v0.1  
 > 最后更新：2026-10-08  
-> 最终版路径：`D:\job-workspace\project_sources\open-source-intelligence-agent`
 
 ## 1. 文档关系
 
