@@ -678,7 +678,7 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 
 详细协议见 [docs/evaluation.md](docs/evaluation.md)；实现见 §9.11。上表的引用覆盖率、事实一致性与任务完成率三条阈值就是 `evaluation/runner.py:METRIC_TARGETS` 的代码化版本，构成 `GATED_METRICS`（能阻断发布的三个指标）。"关键数字准确率"以 `citation_coverage`（含数字的章节是否有引用）与 `source_accuracy`（引用能否在库中解析）两个可测比率落地；Prompt Injection 阻断率被真实测量但暂不设门禁，存 `details_json`；"Agent 相对 Baseline 的引用覆盖率提升"由统一对比报告的 `deltas_vs_reference` 直接给出，无需另设阈值。常规报告人工阻塞率由 T11 发布链路的 `pending_review` / `MANUAL` 占比观测，已由 T15 看板以 `ReportMetrics.manual_block_rate` 落地。
 
-第三项验收（"每次运行的 Token、成本、延迟、工具成功率和人工干预率是否可接受"）与 `docs/technology-learning-checklist.md` L65-66 的"能从失败报告追到具体工具调用"由 T15 的监控层承载，协议见 [docs/observability.md](docs/observability.md)，实现见 §9.12：`/api/v1/metrics/overview` 给出窗口内的任务成功率、Token、成本、延迟分位数与失败原因分布，`/api/v1/agent/runs/{id}/steps` 给出一次运行的步骤与工具调用序列。两者都是读侧，因此"可观测"不会反过来改变被观测的对象。
+第三项验收（"每次运行的 Token、成本、延迟、工具成功率和人工干预率是否可接受"）与"能从失败报告追到具体工具调用"这一条，由 T15 的监控层承载，协议见 [docs/observability.md](docs/observability.md)，实现见 §9.12：`/api/v1/metrics/overview` 给出窗口内的任务成功率、Token、成本、延迟分位数与失败原因分布，`/api/v1/agent/runs/{id}/steps` 给出一次运行的步骤与工具调用序列。两者都是读侧，因此"可观测"不会反过来改变被观测的对象。
 
 ## 13. 架构决策记录
 

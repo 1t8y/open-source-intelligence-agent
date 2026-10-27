@@ -142,7 +142,5 @@
 - `docs/data-model.md`：数据库模型和不变量。
 - `docs/security-and-privacy.md`：威胁、权限和数据处理。
 - `docs/evaluation.md`：质量、成本和回归评测。
-- `docs/technology-learning-checklist.md`：技术学习清单。
-- `docs/readiness-and-startup-roadmap.md`：准备度与正式开工路线图。
 - `docs/adr/`：关键决策记录。
 - `使用手册.md`：本地维护、被 `.gitignore` 忽略；每个阶段完成后必须更新，记录文件作用、结构关系、模块触发方式、验证状态和下一阶段入口。
