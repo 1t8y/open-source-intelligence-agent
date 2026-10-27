@@ -137,6 +137,10 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T api python /a
 
 每个净增都是「窗口末快照 stars − 首快照 stars」，可直接核对。
 
+### 真实投递
+
+发布后按白名单投递到真实收件箱：`PUSH_DELIVERY=live` + SMTP（587 + STARTTLS）+ HMAC 签名（Webhook 通道）。每次投递落一行 `report_pushes`，成功记 `smtp:<host>:<port>` / `http:200`，失败记 `failed` + `error_code`（传输失败不抛异常，而是一行可重试的记录）。同一报告同一版本同一目标只发一次，重复请求即重试。
+
 ### 5 变体消融评测（真实模型 `deepseek-chat`）
 
 对同一数据集跑 5 个变体，量化每个组件的增益（完整报告见 [docs/ablation-report-c1.md](docs/ablation-report-c1.md)）：
