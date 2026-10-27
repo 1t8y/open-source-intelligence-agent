@@ -1,6 +1,6 @@
 """Import all ORM models so metadata is complete for Alembic."""
 
-from .agent import AgentConfig, AgentRun, AgentStep, ToolCall
+from .agent import AgentConfig, AgentRun, AgentRunReview, AgentStep, ToolCall
 from .audit import AuditLog
 from .evaluation import EvalCase, EvalDataset, EvalResult, EvalRun
 from .identity import Role, User, UserRole
@@ -28,6 +28,7 @@ from .reporting import (
 __all__ = [
     "AgentConfig",
     "AgentRun",
+    "AgentRunReview",
     "AgentStep",
     "AuditLog",
     "BackfillJob",

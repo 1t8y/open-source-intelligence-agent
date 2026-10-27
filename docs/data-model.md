@@ -286,6 +286,23 @@ T7 新增。缓存经过清理的外部长文本（当前仅 README），供 `ge
 
 唯一约束：`UNIQUE(agent_run_id, step_index)`。
 
+### `agent_run_reviews`
+
+T29 新增。人对一条 `needs_review` 运行的判断。这类运行跑完了却没有产出报告（最常见是 `AGENT_EVIDENCE_INCOMPLETE`），所以没有「通过」这个动作可做；本表记录的是**读过的结论**，让下一个人知道这条已被看过、以及看的人怎么判。
+
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | BIGINT UNSIGNED | PK | 复核 ID |
+| `agent_run_id` | BIGINT UNSIGNED | FK agent_runs.id, CASCADE | 被复核的运行 |
+| `reviewer_id` | BIGINT UNSIGNED | FK users.id, SET NULL | 复核人 |
+| `verdict` | VARCHAR(32) | NOT NULL | `acknowledged`（原因已确认）/ `needs_rerun`（补完数据应重跑） |
+| `comment` | TEXT | NULL | 看到了什么、打算改什么 |
+| `created_at` | DATETIME(6) | NOT NULL | UTC |
+
+索引：`(agent_run_id, created_at)`。CHECK：`verdict IN ('acknowledged','needs_rerun')`。
+
+**只增不改**：同一条运行可以有多行，改主意就再记一条，旧结论不被覆盖。**且不改 `agent_runs.status`** —— 那条运行确实没有报告，改成别的状态就等于声称有一份不存在的草稿；写入前服务判定运行存在且状态为 `needs_review`，其余状态（含 `completed`）一律拒绝，已完成运行的人工决定落在它产出的报告上（`report_reviews`）。
+
 ### `tool_calls`
 
 字段：`id`、`agent_run_id`、`agent_step_id`、`tool_name`、`arguments_json`、`result_summary`、`status`、`error_code`、`latency_ms`、`created_at`。索引：`(agent_run_id)`、`(tool_name, status)`。

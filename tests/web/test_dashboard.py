@@ -174,7 +174,7 @@ def test_the_dashboard_links_to_a_run_trace(
     """The recent-runs table is the entry point to the trajectory, not a dead end."""
     web_login(client, admin)
     html = client.get(DASHBOARD).text
-    assert f"/ui/dashboard/runs/{ledger.failing_run_id}" in html
+    assert f"/ui/runs/{ledger.failing_run_id}" in html
     assert f"#{ledger.failing_run_id}" in html
 
 
@@ -183,7 +183,7 @@ def test_the_trace_page_reaches_the_tool_call_that_failed(
 ) -> None:
     """The operator-facing half of the same acceptance the API test covers."""
     web_login(client, admin)
-    response = client.get(f"{DASHBOARD}/runs/{ledger.failing_run_id}")
+    response = client.get(f"/ui/runs/{ledger.failing_run_id}")
     assert response.status_code == 200
     text = response.text
     assert f"运行 #{ledger.failing_run_id}" in text

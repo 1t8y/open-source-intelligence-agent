@@ -107,16 +107,20 @@ def test_runs_page_explains_that_needs_review_is_terminal(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """`needs_review` is a verdict on the run, not a queue waiting for a confirm button."""
+    """`needs_review` is a verdict on the run, and the page says where the human conclusion goes."""
     assert web_login(client, editor).status_code == 303
 
     response = client.get("/ui/runs")
 
     assert response.status_code == 200
     assert "需人工复核" in response.text
-    assert "不是等你点确认的队列" in response.text
+    # 没有「通过」这个动作，但有一条通道：结论记在运行上。
+    assert "没有「通过」这个动作" in response.text
+    assert "复核结论" in response.text
     # 旧标签承诺了一个不存在的动作，不能回到页面上。
     assert "待人工确认" not in response.text
+    # 复核筛选是这一列的可达路径，不能被拼错成另一个参数名。
+    assert 'name="review"' in response.text
 
 
 def test_repositories_page_says_why_the_rank_columns_are_absent(

@@ -1,6 +1,6 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T28 已对齐）
+> 文档状态：实施基线（T1-T29 已对齐）
 > 文档版本：v0.16
 > 最后更新：2026-10-16
 
@@ -111,7 +111,7 @@ create_session_factory(engine: Engine) -> sessionmaker[Session]
 Base.metadata
 ```
 
-首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`；此后 T10 追加 `report_versions`，T11 追加 `report_verifications`、`report_reviews`，T13 追加 `push_targets`、`report_pushes`，T14 追加 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results`，T16 追加 `backfill_jobs`，T26 追加 `report_share_links`，元数据共 **30 张表**（`feedback` 属计划内、尚未实现）。
+首期模型覆盖 `users`、`roles`、`user_roles`、`audit_logs`、`data_sources`、`topics`、`repositories`、`repo_snapshots`、`topic_repositories` 和 `pipeline_runs`；T7 追加 `agent_configs`、`agent_runs`、`agent_steps`、`tool_calls`、`reports`、`report_sources`、`report_drafts`、`report_sections` 和 `repository_contents`；此后 T10 追加 `report_versions`，T11 追加 `report_verifications`、`report_reviews`，T13 追加 `push_targets`、`report_pushes`，T14 追加 `eval_datasets`、`eval_cases`、`eval_runs`、`eval_results`，T16 追加 `backfill_jobs`，T26 追加 `report_share_links`，T29 追加 `agent_run_reviews`，元数据共 **31 张表**（`feedback` 属计划内、尚未实现）。
 
 Security 接口：
 
@@ -637,6 +637,7 @@ Agent 只能调用以下白名单工具：
 - `report_reviews` 记录人对某个版本的审核决定，`decision` 取 `approve`、`reject`、`request_changes`。
 - 报告编辑只允许在 `draft` / `changes_requested` 状态下进行，且只追加不可变的 `report_versions` 行，不覆盖历史版本；回退历史版本同样追加新版本，不重写历史，且只允许从 `draft` / `changes_requested` / `published` 发起（即状态机指向 `draft` 的入边）。两条路径都在写入前先判定状态，被拒时报告保持原状。
 - `report_reviews.edited_version_id` 必须指向**同一份报告**的版本行：外键只保证行存在，不保证归属，服务在写审核记录前显式解析该组合。
+- `agent_run_reviews` 记录人对一条 `needs_review` 运行的判断，`verdict` 取 `acknowledged`（原因已确认，不必再动）/ `needs_rerun`（补完数据后应重跑）。它**只增不改**，且**不改变 `agent_runs.status`**：那条运行确实没有产出报告，把它标成别的状态就等于声称有一份不存在的草稿。服务在写入前判定运行存在且状态为 `needs_review`，其余状态（含 `completed`）一律拒绝 —— 已完成运行的人工决定落在它产出的报告上。
 - `MANUAL` 报告缺少 `approve` 审核记录时不能发布。
 - 任何报告发布前，都必须存在针对其 `current_version` 且 `verdict=passed` 的 `report_verifications` 行（`INV-5`）。
 - 发布刻意按 `publish_mode` 收紧而不放宽：`publish_mode` 是上限，验证失败、敏感内容、首次配置、运行不干净等发现只会让决策更严格。

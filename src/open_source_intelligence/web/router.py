@@ -21,6 +21,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from open_source_intelligence.agent.errors import AGENT_ERROR_HINTS, AgentRunReviewError
+from open_source_intelligence.agent.reviews import (
+    REVIEWABLE_RUN_STATUS,
+    latest_run_reviews,
+    list_run_reviews,
+    record_run_review,
+)
 from open_source_intelligence.backfill.jobs import JOB_STATUSES, list_jobs, summarize_jobs
 from open_source_intelligence.core.config import Settings
 from open_source_intelligence.core.logging import redact_text
@@ -44,7 +51,10 @@ from open_source_intelligence.observability.queries import (
     list_agent_runs,
 )
 from open_source_intelligence.persistence.base import utc_now
-from open_source_intelligence.persistence.models.agent import AGENT_RUN_STATUSES
+from open_source_intelligence.persistence.models.agent import (
+    AGENT_RUN_REVIEW_VERDICTS,
+    AGENT_RUN_STATUSES,
+)
 from open_source_intelligence.persistence.models.audit import AUDIT_RESULTS
 from open_source_intelligence.persistence.models.identity import User
 from open_source_intelligence.persistence.models.intelligence import TOPIC_PUBLISH_MODES, Topic
@@ -166,6 +176,9 @@ RECENT_LIMIT = 50
 #: them), so 50 rows is a little over a week of history: enough to read a chain end to end without
 #: turning the card into a second database browser. The type/status filters narrow it beyond that.
 PIPELINE_RECENT_LIMIT = 50
+#: The two values the Agent-run ledger accepts for `?review=`. Anything else is ignored rather than
+#: forwarded, because a typo in a URL should not be an error on a read-only page.
+RUN_REVIEW_FILTERS = ("open", "done")
 
 #: Roles that may see an **operations-configuration** surface in the interface. Today that is the
 #: push-target allowlist and the empty-state sentences that tell a reader to go write one.
@@ -269,6 +282,10 @@ ENUM_LABELS: dict[str, str] = {
     # draft, so a human has to look. Phrased as a judgement about the run, not as a queue item —
     # there is no "confirm this run" operation, and the old label promised one.
     "needs_review": "需人工复核",
+    # What a reviewer concluded. Not approve/reject: there is no draft to approve, only a decision
+    # about whether this explanation closes the case or needs another attempt.
+    "acknowledged": "已确认原因",
+    "needs_rerun": "要重跑",
     "denied": "被拒",
     "sent": "已送达",
     "passed": "通过",
@@ -1155,26 +1172,18 @@ def dashboard_run_page(
     session: DbSession,
     web: WebSessionDep,
     run_id: int,
-) -> HTMLResponse:
-    """Render one run's trajectory: its ordered steps and the tool calls under each of them.
+) -> Response:
+    """Keep the dashboard's old run links working by pointing them at the run's real home.
 
-    This is the page the "从失败报告追到具体工具调用" acceptance is walked on: an operator sees
-    the run in the dashboard, opens it, and reaches the exact tool call that failed with its
-    error code. The role check runs first, as on the dashboard itself.
+    The trajectory used to live here, which is why opening a run from 采集与运行 felt like being
+    dropped into 运维看板: the URL said `dashboard`, the nav highlighted 运维看板, and the only way
+    back led to the dashboard. A run belongs to the ledger that lists it, so the page moved to
+    `/runs/{run_id}`; this path stays as a redirect because links and bookmarks outlive a fix.
     """
     _require_metrics_role(request, session, web)
-    trace = get_agent_run_trace(session, run_id=run_id)
-    if trace is None:
-        raise WebNotFound(f"运行 {run_id} 不存在")
-    return render(
-        request,
-        "dashboard_run.html",
-        {
-            "current_user": _identity(web.user),
-            "trace": trace,
-            "unfinished": trace.run.started_at is None or trace.run.finished_at is None,
-            "active": "dashboard",
-        },
+    return RedirectResponse(
+        f"/ui/runs/{run_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1788,6 +1797,7 @@ def runs_page(
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     run_type: Annotated[str | None, Query(alias="run_type")] = None,
     run_status: Annotated[str | None, Query(alias="run_status")] = None,
+    review: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> HTMLResponse:
     """Render the run ledger: pipeline stages, Agent runs over their candidate pool, backfills.
@@ -1806,7 +1816,14 @@ def runs_page(
         resource_type="metrics",
         message="采集与运行仅对管理员和编辑者开放",
     )
-    agent_runs = list_agent_runs(session, status=status_filter, page=page, page_size=LIST_PAGE_SIZE)
+    review_filter = review if review in RUN_REVIEW_FILTERS else None
+    agent_runs = list_agent_runs(
+        session,
+        status=status_filter,
+        review=review_filter,
+        page=page,
+        page_size=LIST_PAGE_SIZE,
+    )
     # A filter value that is not in the vocabulary is ignored rather than passed down: the service
     # raises for it, and a typo in a URL should not be a 500 on a read-only page.
     type_filter = run_type if run_type in RUN_TYPES else None
@@ -1824,9 +1841,14 @@ def runs_page(
             "current_user": _identity(web.user),
             "page": agent_runs,
             "topic_names": _topic_names(session, {run.topic_id for run in agent_runs.items}),
+            "run_reviews": latest_run_reviews(
+                session, run_ids=[run.id for run in agent_runs.items]
+            ),
             "jobs": summarize_jobs(list_jobs(session, limit=RECENT_LIMIT)),
             "status_filter": status_filter or "",
             "status_options": AGENT_RUN_STATUSES,
+            "review_filter": review_filter or "",
+            "review_options": RUN_REVIEW_FILTERS,
             "job_statuses": JOB_STATUSES,
             "limit": RECENT_LIMIT,
             "pipeline_runs": pipeline_runs,
@@ -1840,6 +1862,126 @@ def runs_page(
             "pipeline_limit": PIPELINE_RECENT_LIMIT,
             "active": "runs",
         },
+    )
+
+
+#: What a refused review says in the page's own words. The service raises English sentences with a
+#: `reason`; the interface translates the reason rather than forwarding the sentence, so the same
+#: refusal reads the same however it is reached.
+RUN_REVIEW_REFUSALS: dict[str, str] = {
+    "not_found": "这条运行已经不存在了，可能是被清理掉了。",
+    "not_reviewable": (
+        "只有「需人工复核」的运行需要记录复核结论。已完成的运行，结论在它产出的那份报告上。"
+    ),
+    "invalid_verdict": "没有选中有效的复核结论，请重新选择。",
+}
+
+
+def _render_run_detail(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    *,
+    run_id: int,
+    error: str | None = None,
+    notice: str | None = None,
+    status_code: int = status.HTTP_200_OK,
+) -> HTMLResponse:
+    """Render one run's trajectory, its review history, and the form that appends to it."""
+    trace = get_agent_run_trace(session, run_id=run_id)
+    if trace is None:
+        raise WebNotFound(f"运行 {run_id} 不存在")
+    reviews = list_run_reviews(session, run_id=run_id)
+    return render(
+        request,
+        "run_detail.html",
+        {
+            "current_user": _identity(web.user),
+            "trace": trace,
+            "unfinished": trace.run.started_at is None or trace.run.finished_at is None,
+            "reviews": reviews,
+            "latest_review": reviews[-1] if reviews else None,
+            # Admission to this page is already `METRICS_ROLES`, which is the same set as the report
+            # write roles, so the only remaining question is whether the run has anything to review.
+            "can_review": trace.run.status == REVIEWABLE_RUN_STATUS,
+            "review_verdicts": AGENT_RUN_REVIEW_VERDICTS,
+            "error_hints": AGENT_ERROR_HINTS,
+            "error": error,
+            "notice": notice,
+            "active": "runs",
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/runs/{run_id}", response_class=HTMLResponse)
+def run_detail_page(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    run_id: int,
+    reviewed: Annotated[str | None, Query()] = None,
+) -> HTMLResponse:
+    """Render one run: its ordered steps, the tool calls under each, and its review history.
+
+    This is the page the "从失败报告追到具体工具调用" acceptance is walked on — an operator sees a
+    run in the ledger, opens it, and reaches the exact tool call that failed with its error code.
+
+    It sits under `/runs` rather than under `/dashboard` because that is which list it belongs to.
+    The old dashboard path redirects here: opening a run from 采集与运行 used to highlight 运维看板
+    in the nav and offer only a way back to the dashboard, which read as "this went somewhere else".
+    """
+    _require_metrics_role(request, session, web)
+    return _render_run_detail(
+        request,
+        session,
+        web,
+        run_id=run_id,
+        notice="已记录复核结论。" if reviewed == "1" else None,
+    )
+
+
+@router.post("/runs/{run_id}/review", response_class=HTMLResponse)
+def run_review_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    run_id: int,
+    verdict: Annotated[str, Form()] = "",
+    comment: Annotated[str, Form()] = "",
+    csrf: CsrfField = "",
+) -> Response:
+    """Append one human conclusion to a run that stopped for review.
+
+    The verdict does not move the run: it still has no report, and saying otherwise would claim a
+    draft exists. What it does is let the next reader see the case was already read, and what the
+    reader decided — otherwise a `needs_review` row stays identical whether or not anyone looked.
+    """
+    _require_metrics_role(request, session, web)
+    with _audited_action(request, session, web, resource_type="agent_run", resource_id=str(run_id)):
+        verify_csrf(request, csrf)
+        _require_write_role(web)
+    try:
+        record_run_review(
+            session,
+            run_id=run_id,
+            verdict=verdict,
+            reviewer_id=web.user.id,
+            comment=comment.strip() or None,
+        )
+    except AgentRunReviewError as exc:
+        session.rollback()
+        return _render_run_detail(
+            request,
+            session,
+            web,
+            run_id=run_id,
+            error=RUN_REVIEW_REFUSALS.get(exc.reason, "复核结论没有记录成功。"),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse(
+        f"/ui/runs/{run_id}?reviewed=1",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

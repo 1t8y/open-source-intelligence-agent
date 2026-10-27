@@ -258,7 +258,7 @@
     <tbody>
       {% for run in recent_runs.items %}
       <tr>
-        <td><a href="/ui/dashboard/runs/{{ run.id }}">#{{ run.id }}</a></td>
+        <td><a href="/ui/runs/{{ run.id }}">#{{ run.id }}</a></td>
         <td>#{{ run.topic_id }}</td>
         <td><span class="badge status-{{ run.status }}">{{ run.status }}</span></td>
         <td>{{ run.publish_mode or "—" }}</td>

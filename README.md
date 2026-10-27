@@ -1,6 +1,6 @@
 # Open-Source Intelligence Agent
 
-> 项目状态：T1-T28 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
+> 项目状态：T1-T29 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
 
 **自动采集开源项目动态 → 专用研究 Agent 分析、验证 → 生成带可追溯证据的周报 → 风险闸门决定自动发布或人工审核。**
 

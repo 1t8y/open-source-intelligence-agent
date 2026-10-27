@@ -696,9 +696,12 @@
 | `POST /ui/topics/{topic_id}/toggle` | **仅管理员** | 启用 / 停用，不打开编辑表单 |
 | `POST /ui/topics/{topic_id}/delete` | **仅管理员** | 删除；有历史引用时 `409` 并点名引用它的表 |
 | `GET /ui/repositories` | 读角色 | 仓库目录，支持 `q`、`topic_id`、`language`、`sort`；按主题筛选时附候选排名、得分与是否入选 |
-| `GET /ui/runs` | 运行角色 | 三层台账：**流水线运行**（按 `run_type`/`run_status` 筛选，最近 50 条）→ **Agent 运行**（分页、可按状态筛选；点 `#` 进轨迹页）→ **回填任务**。词汇表外的筛选值被忽略而不是 500 |
+| `GET /ui/runs` | 运行角色 | 三层台账：**流水线运行**（按 `run_type`/`run_status` 筛选，最近 50 条）→ **Agent 运行**（分页、可按 `status` 与 `review=open\|done` 筛选，附每人最后一次复核结论；点 `#` 进运行详情）→ **回填任务**。词汇表外的筛选值被忽略而不是 500 |
+| `GET /ui/runs/{run_id}` | 运行角色 | 单条运行：状态与错误码的**人话解释**、有没有产出报告、复核结论历史与（仅 `needs_review`）复核表单、步骤轨迹与未挂步骤的工具调用。等价于 `GET /agent/runs/{run_id}/steps` |
+| `POST /ui/runs/{run_id}/review` | 运行角色 | 给一条 `needs_review` 运行追加复核结论（`verdict=acknowledged\|needs_rerun`，可选 `comment`），审计 `agent.review`；**不改运行状态**。非 `needs_review` 返回 `400` 并原地渲染中文拒绝 |
 | `GET /ui/evaluations` | 写角色 | 数据集与评测运行记录；**只读**，运行触发仍在操作员 CLI |
-| `GET /ui/dashboard`、`GET /ui/dashboard/runs/{run_id}` | 运行角色 | 看板与运行轨迹，等价于 `GET /metrics/overview` 与 `GET /agent/runs/{run_id}/steps` |
+| `GET /ui/dashboard` | 运行角色 | 看板，等价于 `GET /metrics/overview` |
+| `GET /ui/dashboard/runs/{run_id}` | 运行角色 | **已废弃**，`303` 重定向到 `/ui/runs/{run_id}`（运行详情归它所在的那张台账） |
 | `GET /ui/audit` | **仅管理员** | 审计台账，支持 `action`、`resource_type`、`result`、`actor_id` 与分页；按主键倒序 |
 
 写操作必须携带与 Cookie 一致的 `csrf_token` 表单字段（双提交校验）：缺失或不匹配返回 `403`。未登录访问任意 `/ui` 页面返回 `303` 重定向到 `/ui/login?next=<原路径>`。
@@ -994,9 +997,11 @@ UI 与 JSON API 的拒绝**共享同一组审计动作名**（T17）：`auth.csr
 
 这一段在从未跑过评测时返回 `"dataset": null` 且 `"targets": []`，而不是报错：没有评测不是故障。
 
-### `GET /ui/dashboard` 与 `GET /ui/dashboard/runs/{run_id}`
+### `GET /ui/dashboard`、`GET /ui/runs/{run_id}`
 
-管理界面上的等价视图，权限同 `METRICS_ROLES`：`/ui/dashboard` 渲染上面这个 payload 的六个区块（任务执行 / Agent 运行 / 工具调用 / 报告产出 / 评测结果 / 最近运行），`?window_days=` 语义与接口一致；`/ui/dashboard/runs/{run_id}` 渲染运行轨迹，等价于 `GET /agent/runs/{run_id}/steps`。
+管理界面上的等价视图，权限同 `METRICS_ROLES`：`/ui/dashboard` 渲染上面这个 payload 的六个区块（任务执行 / Agent 运行 / 工具调用 / 报告产出 / 评测结果 / 最近运行），`?window_days=` 语义与接口一致；`/ui/runs/{run_id}` 渲染运行详情与轨迹，等价于 `GET /agent/runs/{run_id}/steps`，另外多两件 API 没有的事：把 `error_code` 翻成一句人话、以及给 `needs_review` 运行提供复核结论的落点（`POST /ui/runs/{run_id}/review`，审计 `agent.review`）。
+
+运行详情挂在 `/ui/runs/{run_id}` 而不是 `/ui/dashboard/runs/{run_id}`：它属于**列出它的那张台账**。挂在 `dashboard` 下时，从「采集与运行」点进来的读者看到侧栏高亮的是「运维看板」，返回链接也只回看板，读起来像"跳到了别的模块"。旧路径保留为 `303` 重定向，书签和外链不会失效。
 
 两条路径都受同一个角色守卫，且导航栏只在有权访问时才渲染「运维看板」入口——无权用户看到的页面里没有通向 403 的死链。`VIEWER` 访问时返回 `403` 并给出说明文字。
 

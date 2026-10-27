@@ -5,8 +5,7 @@ functions and never issue SQL themselves, and a window predicate is part of the 
 rather than a post-filter applied afterwards.
 
 Nothing in this module writes a row. The overview is a pure read of what the pipeline, the
-Agent, the report and the evaluation layers already recorded, which is why it needs no
-migration: every column it reports on already existed.
+Agent, the report and the evaluation layers already recorded.
 """
 
 from __future__ import annotations
@@ -15,13 +14,18 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.core.config import Settings
 from open_source_intelligence.evaluation.errors import EvaluationError
 from open_source_intelligence.evaluation.runner import compare_latest
-from open_source_intelligence.persistence.models.agent import AgentRun, AgentStep, ToolCall
+from open_source_intelligence.persistence.models.agent import (
+    AgentRun,
+    AgentRunReview,
+    AgentStep,
+    ToolCall,
+)
 from open_source_intelligence.persistence.models.evaluation import EvalRun
 from open_source_intelligence.persistence.models.intelligence import PipelineRun, Topic
 from open_source_intelligence.persistence.models.reporting import Report
@@ -121,10 +125,17 @@ def list_agent_runs(
     *,
     status: str | None = None,
     topic_id: int | None = None,
+    review: str | None = None,
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> AgentRunPage:
-    """Return one page of Agent runs, newest first."""
+    """Return one page of Agent runs, newest first.
+
+    `review` narrows by whether a human has already written a conclusion on the run: `"open"` for
+    the ones nobody has read, `"done"` for the ones somebody has. It is a filter on this query
+    rather than a post-filter on the page so `total` counts what the reader is actually looking
+    at — a page of ten where eight are filtered out would otherwise still claim 50.
+    """
     resolved_page = max(1, page)
     resolved_size = clamp_page_size(page_size)
     conditions = []
@@ -132,6 +143,10 @@ def list_agent_runs(
         conditions.append(AgentRun.status == status)
     if topic_id is not None:
         conditions.append(AgentRun.topic_id == topic_id)
+    if review == "open":
+        conditions.append(~exists().where(AgentRunReview.agent_run_id == AgentRun.id))
+    elif review == "done":
+        conditions.append(exists().where(AgentRunReview.agent_run_id == AgentRun.id))
 
     total = int(session.scalar(select(func.count()).select_from(AgentRun).where(*conditions)) or 0)
     items = session.scalars(

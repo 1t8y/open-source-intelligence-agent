@@ -76,11 +76,17 @@ T15 要回答三个运维问题，`ARCHITECTURE.md` §14 把第一个写成了�
 | `GET /api/v1/agent/runs/{run_id}` | 单次运行的预算消耗与结果 |
 | `GET /api/v1/agent/runs/{run_id}/steps` | 轨迹：有序步骤 + 每步的工具调用 |
 | `GET /ui/dashboard?window_days=` | 看板页（六个区块，1 / 7 / 30 天切换） |
-| `GET /ui/dashboard/runs/{run_id}` | 运行轨迹页 |
+| `GET /ui/runs/{run_id}` | 运行详情页：错误码人话、有无产出报告、复核结论与表单、步骤轨迹 |
+| `POST /ui/runs/{run_id}/review` | 给 `needs_review` 运行追加复核结论（`agent.review`），不改运行状态 |
+| `GET /ui/dashboard/runs/{run_id}` | **已废弃**，`303` 到 `/ui/runs/{run_id}` |
+
+运行详情挂在 `/ui/runs/{run_id}`：它属于列出它的那张台账，挂 `dashboard` 下时从「采集与运行」点进去会看到侧栏高亮「运维看板」。
 
 **Agent 运行对 API 是只读的。** HTTP 只提供上面三个 `GET`：一次运行会消耗模型预算，触发权属于操作员与调度器，而不是任意一个已登录客户端。**运行有两个来源**：操作员 CLI（`agent/cli.py --action run`，或 `pipeline.cli --action daily --with-research`），以及每日任务在 `AGENT_AUTO_RESEARCH_ENABLED=true` 时的派发（T24，见 `pipeline/research_dispatch.py`；默认关闭）。`workers.tasks.run_research_agent` 仍**不单独进 beat 表** —— 两个调度源会让同一次研究双倍花钱。
 
-路由声明顺序是结构性约束：`/api/v1/agent/runs` 必须先于 `/api/v1/agent/runs/{run_id}`、`/ui/dashboard` 必须先于 `/ui/dashboard/runs/{run_id}`，否则字面量段会被路径参数吞掉 —— 与 `/reports/publish-due`、评测 `/runs` 是同一类陷阱。
+**`needs_review` 是终态，但复核有落点。** 这类运行跑完了却没有产出报告（最常见是 `AGENT_EVIDENCE_INCOMPLETE`：缺 README 或缺可比较的历史报告），所以没有"通过"这个动作可做；界面提供的是把**读过的判断**记下来（`agent_run_reviews`，只增不改），并在台账上显示"谁看过、结论是什么"，`?review=open` 就是还没人看过的那批。
+
+路由声明顺序是结构性约束：`/api/v1/agent/runs` 必须先于 `/api/v1/agent/runs/{run_id}`、`/ui/runs` 必须先于 `/ui/runs/{run_id}`，否则字面量段会被路径参数吞掉 —— 与 `/reports/publish-due`、评测 `/runs` 是同一类陷阱。
 
 ## 8. 出站脱敏
 

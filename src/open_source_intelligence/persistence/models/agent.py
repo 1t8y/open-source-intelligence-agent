@@ -25,6 +25,13 @@ from ..base import Base, UTCDateTime, uint64_pk, unsigned_bigint, utc_now
 AGENT_RUN_STATUSES = ("pending", "running", "needs_review", "completed", "failed")
 AGENT_STEP_TYPES = ("plan", "tool", "observe", "verify", "write")
 TOOL_CALL_STATUSES = ("success", "failed", "denied")
+#: What a human concluded after reading a `needs_review` run.
+#:
+#: Deliberately not "approve/reject": a run is a terminal fact, not a proposal. There is nothing
+#: to approve — the question a reviewer answers is "is this explanation good enough to stop
+#: looking, or does it need another attempt". A verdict therefore describes the *next move*, and
+#: it does not move the run's own status: the run still has no report either way.
+AGENT_RUN_REVIEW_VERDICTS = ("acknowledged", "needs_rerun")
 
 
 class AgentConfig(Base):
@@ -189,6 +196,47 @@ class ToolCall(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+    )
+
+
+class AgentRunReview(Base):
+    """One human conclusion about a run that stopped without a report.
+
+    A `needs_review` run is terminal: nothing downstream can approve it, because it produced no
+    draft to approve. What was missing was somewhere to put the *reading* — an operator opens the
+    trajectory, decides whether the evidence gap is understood or needs another attempt, and that
+    judgement went nowhere, so the same rows stayed untouched and unexplained forever.
+
+    Rows are append-only, like `report_reviews`: re-reading a run adds a line rather than editing
+    the last one, so "who thought what, when" survives a change of mind.
+    """
+
+    __tablename__ = "agent_run_reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('acknowledged', 'needs_rerun')",
+            name="verdict_valid",
+        ),
+        Index("ix_agent_run_reviews_run_created", "agent_run_id", "created_at"),
+    )
+
+    id: Mapped[uint64_pk]
+    agent_run_id: Mapped[int] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("agent_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    reviewer_id: Mapped[int | None] = mapped_column(
+        unsigned_bigint(),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         nullable=False,

@@ -28,6 +28,7 @@ def test_metadata_contains_core_tables() -> None:
     """Alembic metadata must expose T2/T7, T13 push, T14 eval, T16 backfill, and T26 shares."""
     assert set(Base.metadata.tables) == {
         "agent_configs",
+        "agent_run_reviews",
         "agent_runs",
         "agent_steps",
         "audit_logs",
