@@ -308,6 +308,7 @@ def push_report(
         version=target_version,
         channel=target.channel,
         destination=target.destination,
+        target_name=target.name,
         idempotency_key=key,
         status="pending",
         attempt=0,
@@ -319,6 +320,7 @@ def push_report(
     else:
         row.channel = target.channel
         row.destination = target.destination
+        row.target_name = target.name
     pipeline_run = start_pipeline_run(
         session,
         run_type=PUSH_RUN_TYPE,

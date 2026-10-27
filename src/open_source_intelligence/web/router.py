@@ -141,6 +141,7 @@ from open_source_intelligence.workers.celery_app import (
     create_celery_app,
 )
 
+from .markdown import render_markdown
 from .security import (
     CSRF_COOKIE,
     CSRF_FIELD,
@@ -311,6 +312,16 @@ ENUM_LABELS: dict[str, str] = {
     # Delivery channels.
     "email": "邮件",
     "webhook": "Webhook",
+    # Human review decisions. The audit trail keeps the raw code (an audit row names the operation,
+    # not its label); these three exist because the report page prints the decision next to the
+    # reviewer and 「approve」 in a Chinese table reads like a leaked field name.
+    "approve": "通过",
+    "reject": "拒绝",
+    "request_changes": "退回修改",
+    # Why a version exists. `rollback_to_vN` is generated with the version in it, so it is handled
+    # by the prefix rule in `_label` rather than by a fixed entry here.
+    "generated_from_agent_draft": "由 Agent 草稿生成",
+    "manual_edit": "人工编辑",
 }
 
 
@@ -322,10 +333,18 @@ def _label(value: object) -> str:
     "not yet labelled" instead of as a blank cell.
     """
     text = "" if value is None else str(value)
+    if text.startswith("rollback_to_v"):
+        # One reason carries its target in the value (`revisions.py` writes
+        # `rollback_to_v{version}`), so it can only be translated by rule. The digits pass through
+        # untouched on purpose: they are a version number, not a word.
+        return f"回滚到 v{text.removeprefix('rollback_to_v')}"
     return ENUM_LABELS.get(text, text)
 
 
 templates.env.filters["label"] = _label
+# Report bodies are Markdown. The filter returns sanitized markup, so the template must not add
+# `| safe` on top of it: escaping is the whole point (see `web/markdown.py`).
+templates.env.filters["markdown"] = render_markdown
 
 DbSession = Annotated[Session, Depends(get_db_session)]
 #: The alias matters: the templates post the token as `csrf_token`, and FastAPI binds a form
@@ -1817,9 +1836,14 @@ def runs_page(
         message="采集与运行仅对管理员和编辑者开放",
     )
     review_filter = review if review in RUN_REVIEW_FILTERS else None
+    # The two filter bars share this page, so each carries the other's value in a hidden field.
+    # "No filter" therefore arrives as `status=`, an empty string rather than `None`, and
+    # `AgentRun.status == ""` matches nothing — the pipeline filter would silently empty the Agent
+    # card and its empty state would blame the data. Same guard as the other two vocabularies here.
+    agent_status_filter = status_filter if status_filter in AGENT_RUN_STATUSES else None
     agent_runs = list_agent_runs(
         session,
-        status=status_filter,
+        status=agent_status_filter,
         review=review_filter,
         page=page,
         page_size=LIST_PAGE_SIZE,
@@ -1845,7 +1869,7 @@ def runs_page(
                 session, run_ids=[run.id for run in agent_runs.items]
             ),
             "jobs": summarize_jobs(list_jobs(session, limit=RECENT_LIMIT)),
-            "status_filter": status_filter or "",
+            "status_filter": agent_status_filter or "",
             "status_options": AGENT_RUN_STATUSES,
             "review_filter": review_filter or "",
             "review_options": RUN_REVIEW_FILTERS,

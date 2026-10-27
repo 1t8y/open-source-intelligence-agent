@@ -50,3 +50,7 @@ README.backup-*.md
 
 # Local agent memory and session data (kept on disk, not committed)
 .workbuddy/
+
+# Local raw screen recordings (100 MB+). The compressed cut that the README embeds is
+# docs/assets/demo.mp4 and *is* tracked; keep the source files out of the repository.
+屏幕录制*.mp4

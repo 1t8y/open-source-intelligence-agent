@@ -79,7 +79,7 @@
 
 <section class="card">
   <h2>报告正文</h2>
-  <pre class="content">{{ report.content_markdown }}</pre>
+  <div class="content-md">{{ report.content_markdown | markdown }}</div>
 </section>
 
 <details class="card research-trace">
@@ -156,7 +156,7 @@
       {% for version in detail.versions %}
       <tr>
         <td>v{{ version.version }}{% if version.version == report.current_version %} <span class="badge">当前</span>{% endif %}</td>
-        <td>{{ version.change_reason or "—" }}</td>
+        <td>{{ (version.change_reason | label) if version.change_reason else "—" }}</td>
         <td>{{ version.created_by if version.created_by else "—" }}</td>
         <td>{{ version.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>
         <td>
@@ -231,7 +231,7 @@
         <td><code>{{ push.destination }}</code></td>
         <td>{{ push.channel }}</td>
         <td>v{{ push.version }}</td>
-        <td class="{{ 'ok-text' if push.status == 'sent' else 'error-text' }}">{{ push.status }}</td>
+        <td class="{{ 'ok-text' if push.status == 'sent' else 'error-text' }}">{{ push.status | label }}</td>
         <td>{{ push.attempt }}</td>
         <td>{{ push.error_code or "—" }}</td>
         <td>{{ push.updated_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>
@@ -319,7 +319,7 @@
       {% for review in detail.reviews %}
       <tr>
         <td>v{{ review.version }}</td>
-        <td>{{ review.decision }}</td>
+        <td>{{ review.decision | label }}</td>
         <td>{{ review.reviewer_id if review.reviewer_id else "—" }}</td>
         <td>{{ review.comment or "—" }}</td>
         <td>{{ review.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>

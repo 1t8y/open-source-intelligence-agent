@@ -7,8 +7,8 @@
    两条硬约定：
    1. 下面 `--bg` 到 `--error` 九个令牌的取值一个都没改：界面重排不该顺手调色。
       新增的颜色一律从它们派生（同一个中性轴或同一个强调色相），不引入新色相。
-   2. `.content` 这个名字已经被报告正文占用（`<pre class="content">`），
-      所以页面内容容器叫 `.page`，对应宽度的令牌叫 `--content-max`，两者不冲突。
+   2. 报告正文的容器叫 `.content-md`（渲染后的 Markdown），页面内容容器叫 `.page`、
+      对应宽度的令牌叫 `--content-max`，三者名字不冲突。
    ========================================================================== */
 
 :root {
@@ -401,19 +401,50 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
 .filters input[type="text"] { min-width: 220px; }
 .filters .narrow-field input { min-width: 96px; }
 
-.content {
-  white-space: pre-wrap;
+/* 渲染后的报告正文（Markdown → HTML）。
+   `.content` 是给 `<pre>` 用的原始文本样式（等宽 + pre-wrap），报告正文不再用它：
+   正文按 Markdown 渲染，等宽字体会让中文段落发虚，行首也无需保留再换行一次。
+   两者的容器底色与边框保持一致，页面观感才不分裂。 */
+.content-md {
   word-break: break-word;
-  font-family: var(--mono);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.75;
   background: var(--surface-sunken);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  padding: 12px;
-  margin: 0;
+  padding: 16px 20px;
   max-height: 640px;
   overflow: auto;
 }
+.content-md > :first-child { margin-top: 0; }
+.content-md > :last-child { margin-bottom: 0; }
+.content-md h1, .content-md h2, .content-md h3, .content-md h4 {
+  margin: 20px 0 10px;
+  line-height: 1.35;
+}
+.content-md h1 { font-size: 20px; }
+.content-md h2 { font-size: 17px; }
+.content-md h3 { font-size: 15px; }
+.content-md h4 { font-size: 14px; }
+.content-md p, .content-md ul, .content-md ol, .content-md table, .content-md blockquote {
+  margin: 0 0 12px;
+}
+.content-md ul, .content-md ol { padding-left: 22px; }
+.content-md li { margin: 4px 0; }
+.content-md table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.content-md th, .content-md td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+.content-md th { background: #e9edf3; font-weight: 600; }
+.content-md code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: #e9edf3;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.content-md pre { background: #e9edf3; padding: 12px; overflow: auto; border-radius: var(--r-sm); }
+.content-md pre code { background: none; padding: 0; }
+.content-md blockquote { border-left: 3px solid var(--line); padding-left: 12px; color: var(--muted); }
+.content-md hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 
 /* ==========================================================================
    4b. 首页一键触发：动作砖 + 回执条

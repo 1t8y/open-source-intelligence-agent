@@ -13,6 +13,6 @@
 </section>
 
 <section class="card">
-  <pre class="content">{{ report.content_markdown }}</pre>
+  <div class="content-md">{{ report.content_markdown | markdown }}</div>
 </section>
 {% endblock %}

@@ -97,12 +97,11 @@
           </a>
         </td>
         <td class="num">v{{ push.version }}</td>
-        {# 目标名与目的地都取自这一行自己的冗余列，不是联表读 allowlist：
-           审计行必须在 allowlist 条目被改名或删除之后仍然可读，这正是它们被冗余下来的原因。 #}
-        <td>
-          {% set target = targets | selectattr("id", "equalto", push.target_id) | first %}
-          {{ target.name if target else "（目标 #" ~ push.target_id ~ " 已不存在）" }}
-        </td>
+        {# 目标名与目的地都取自这一行自己的冗余列，不联表读 allowlist：
+           审计行必须在 allowlist 条目被改名或删除之后仍然可读。这里曾经用 allowlist 反查名字，
+           而 allowlist 只有 ADMIN 能读 —— 于是 editor 看到的每一行都是「目标 #N 已不存在」，
+           目标其实活着且启用中。 #}
+        <td>{{ push.target_name or "（目标名未知）" }}</td>
         <td class="mono">{{ push.destination | redact }}</td>
         <td><span class="badge status-{{ push.status }}">{{ push.status | label }}</span></td>
         <td class="num">{{ push.attempt }}</td>

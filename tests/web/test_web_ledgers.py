@@ -137,3 +137,32 @@ def test_repositories_page_says_why_the_rank_columns_are_absent(
     assert unfiltered.status_code == 200
     assert "候选排名 / 得分 / 入选" in unfiltered.text
     assert '<th class="num">候选排名</th>' not in unfiltered.text
+
+
+def test_an_empty_status_parameter_does_not_empty_the_agent_ledger(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+) -> None:
+    """Filtering the pipeline card must not wipe the Agent card next to it.
+
+    The two filter bars live on one page, so each carries the other's current value as a hidden
+    field. When the other value is "no filter" that hidden field submits `status=` — an empty
+    string, which is not `None`, and `AgentRun.status == ""` matches nothing. The card then said
+    还没有 Agent 运行 while 51 runs existed: the filter bar erased its neighbour, and the empty
+    state blamed the data.
+    """
+    topic = workspace.add_topic()
+    run = workspace.add_agent_run(topic.id)
+    run.status = "needs_review"
+    run.started_at = NOW
+    run.finished_at = NOW
+    session.flush()
+    assert web_login(client, editor).status_code == 303
+
+    response = client.get("/ui/runs?status=&run_type=collect&run_status=succeeded")
+
+    assert response.status_code == 200
+    assert "还没有 Agent 运行" not in response.text
+    assert f'href="/ui/runs/{run.id}"' in response.text

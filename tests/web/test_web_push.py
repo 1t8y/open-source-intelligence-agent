@@ -144,7 +144,7 @@ def test_pushing_from_the_panel_records_the_delivery(
 
     assert response.status_code == 200, response.text
     assert f"已推送到 {target.destination}（第 1 次尝试）" in response.text
-    assert 'class="ok-text">sent</td>' in response.text
+    assert 'class="ok-text">已送达</td>' in response.text
     assert ("report.push", "success") in audit_trail(session_factory)
 
 
@@ -296,3 +296,41 @@ def test_an_anonymous_post_is_redirected_to_login(
 
     assert response.status_code == 303
     assert response.headers["location"].startswith("/ui/login")
+
+
+# --------------------------------------------------------------------------------------
+# The delivery ledger (T30 regression: the target name must not depend on the reader's role)
+# --------------------------------------------------------------------------------------
+
+
+def test_the_delivery_ledger_names_the_target_for_an_editor(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+) -> None:
+    """An editor sees the destination's name, not a tombstone.
+
+    The ledger used to resolve the name by looking it up in the allowlist, and only `ADMIN` may
+    read the allowlist — so an editor's page said 「（目标 #N 已不存在）」 for every row while the
+    target was alive and enabled. The name is denormalized onto the delivery row instead.
+    """
+    report = seed_pushable_report(session, workspace, status=PUBLISHED)
+    target = workspace.add_push_target(name="ops-mailbox")
+    assert web_login(client, editor).status_code == 303
+    assert (
+        client.post(
+            f"{BASE}/{report.id}/push",
+            data={**_token(client), "target_id": target.id},
+        ).status_code
+        == 200
+    )
+
+    page = client.get("/ui/pushes")
+
+    assert page.status_code == 200
+    assert "ops-mailbox" in page.text
+    assert "已不存在" not in page.text
+    # The name is stored on the row, so it survives the allowlist entry being retargeted later.
+    rows = list_pushes(session, limit=10)
+    assert [row.target_name for row in rows] == ["ops-mailbox"]

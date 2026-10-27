@@ -22,7 +22,7 @@
   {%- if counts -%}
     <span class="badges">
       {%- for name, count in counts.items() -%}
-      <span class="badge status-{{ name }}">{{ name }} {{ count }}</span>
+      <span class="badge status-{{ name }}">{{ name | label }} {{ count }}</span>
       {%- endfor -%}
     </span>
   {%- else -%}<span class="metric-missing">窗口内无样本</span>{%- endif -%}
@@ -186,9 +186,9 @@
         {% if overview.evaluations.passed is none %}
         <span class="badge">未裁决</span>
         {% elif overview.evaluations.passed %}
-        <span class="badge status-published">passed</span>
+        <span class="badge status-published">{{ "passed" | label }}</span>
         {% else %}
-        <span class="badge status-failed">failed</span>
+        <span class="badge status-failed">{{ "failed" | label }}</span>
         {% endif %}
       </dd>
     </div>
@@ -197,7 +197,7 @@
   <p class="hint">
     相对参照变体发生回退：
     {% for name in overview.evaluations.regressions %}
-    <span class="badge status-changes_requested">{{ name }}</span>
+    <span class="badge status-changes_requested">{{ name | label }}</span>
     {% endfor %}
   </p>
   {% endif %}
@@ -212,7 +212,7 @@
       {% for target in overview.evaluations.targets %}
       <tr>
         <td><code>{{ target.target_type }}</code></td>
-        <td><span class="badge">{{ target.status }}</span></td>
+        <td><span class="badge">{{ target.status | label }}</span></td>
         <td>{{ target.scored_case_count }}</td>
         <td>{{ rate(target.metrics.get("citation_coverage")) }}</td>
         <td>{{ rate(target.metrics.get("factual_consistency")) }}</td>
@@ -260,7 +260,7 @@
       <tr>
         <td><a href="/ui/runs/{{ run.id }}">#{{ run.id }}</a></td>
         <td>#{{ run.topic_id }}</td>
-        <td><span class="badge status-{{ run.status }}">{{ run.status }}</span></td>
+        <td><span class="badge status-{{ run.status }}">{{ run.status | label }}</span></td>
         <td>{{ run.publish_mode or "—" }}</td>
         <td>{{ run.loop_count }}</td>
         <td>{{ run.tool_call_count }} / {{ run.model_call_count }}</td>

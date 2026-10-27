@@ -98,6 +98,12 @@ class ReportPush(Base, TimestampMixin):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     channel: Mapped[str] = mapped_column(String(16), nullable=False)
     destination: Mapped[str] = mapped_column(String(512), nullable=False)
+    #: The target's name at send time. Denormalized for the same reason as `channel` and
+    #: `destination`: the ledger names the destination, and until this column existed it resolved
+    #: that name by joining the allowlist — which is `OPS_CONFIG_ROLES`-only, so an editor saw
+    #: "（目标 #29 已不存在）" for every row while the target was alive and enabled. An audit row
+    #: that turns into a tombstone because of the *reader's* role is not an audit row.
+    target_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)

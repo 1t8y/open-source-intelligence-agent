@@ -493,6 +493,7 @@ T13 新增。一次投递尝试的记录（不论成败），同时也是重试�
 | `version` | INT | NOT NULL | 被投递的 `reports.current_version` |
 | `channel` | VARCHAR(16) | NOT NULL | 反规范化的渠道，便于目标变更后追溯 |
 | `destination` | VARCHAR(512) | NOT NULL | 反规范化的地址，同上 |
+| `target_name` | VARCHAR(128) | NOT NULL, default `''` | 发送时的目标名；同上（T30 补，见下） |
 | `status` | VARCHAR(16) | NOT NULL | `pending`、`sent`、`failed` |
 | `attempt` | INT | NOT NULL, default 1 | 已尝试次数，重试只推进该列 |
 | `idempotency_key` | VARCHAR(255) | UNIQUE, NOT NULL | `report:{report_id}:v{version}:target:{target_id}` |
@@ -508,6 +509,8 @@ T13 新增。一次投递尝试的记录（不论成败），同时也是重试�
 唯一约束：`UNIQUE(idempotency_key)`，同一 `(report, version, target)` 只有一行（重复请求重放该行，不重复发送）。索引：`(report_id, created_at)`、`(status, updated_at)`（后者服务于重试扫描）。CHECK：`version >= 1`、`attempt >= 0`、`status IN ('pending','sent','failed')`。
 
 `channel` 与 `destination` 刻意反规范化：目标行之后可能被改名或改地址，但历史投递记录必须能回答"当时发到了哪里、走的哪条通道"。
+
+`target_name`（T30 补）是同一类字段，补上它是因为前两个字段只解决了"发到哪"，没解决"发给谁"：台账曾用 `target_id` 反查 allowlist 拿名字，而 allowlist 只有 `OPS_CONFIG_ROLES` 能读 —— 于是 `EDITOR` 看到的每一行都是「（目标 #N 已不存在）」，目标其实活着且启用中。审计行因为**读者角色**变成墓碑，就不算审计行了。
 
 ## 7. 评测与反馈
 
