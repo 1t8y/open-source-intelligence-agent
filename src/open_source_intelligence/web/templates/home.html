@@ -78,33 +78,62 @@
 </section>
 
 {# --- 3. 一键触发 ---------------------------------------------------- #}
+{# 两块并排的「动作砖」：一句说明 + 一个提交控件。控件靠底对齐，两砖等高时按钮落在同一条线上。
+   两个表单都 `hx-target` 到下面那个空容器，因此**后端只能回片段**（partials/home_trigger_result.html）；
+   回整页会把外壳塞进容器里，看起来像页面套页面。
+   `hx-disabled-elt` 让按钮在请求在飞时置灰，避免同一个任务被点两次。 #}
 {% if can_trigger %}
 <section class="card">
   <h2>一键触发</h2>
   <p class="hint">
-    采集会打公共 API、研究会消耗真实模型预算，请确认确实需要再点。
-    任务进入后台队列，完成后可在「采集与运行」与「运维看板」查看。
+    两条链路都在后台队列里跑，点完可以离开页面。采集打公共 API、研究消耗真实模型预算，确认需要再点。
   </p>
-  <div class="row start">
-    <form method="post" action="/ui/home/collect" hx-post="/ui/home/collect" hx-target="#home-trigger-result" hx-swap="innerHTML" style="margin:0">
+
+  <div class="action-tiles">
+    <form class="action-tile" method="post" action="/ui/home/collect"
+          hx-post="/ui/home/collect" hx-target="#home-trigger-result" hx-swap="innerHTML"
+          hx-disabled-elt="find button">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="primary">立即采集</button>
+      <div class="action-copy">
+        <span class="action-title">采集</span>
+        <span class="action-desc">拉取 GitHub 与 Hugging Face 清单，写当日快照并重排候选。</span>
+        <span class="action-note">provider=all · 上限 {{ collect_limit }} 条/源</span>
+      </div>
+      <div class="action-control">
+        <button type="submit" class="primary">立即采集</button>
+      </div>
     </form>
 
-    <form method="post" action="/ui/home/research" hx-post="/ui/home/research" hx-target="#home-trigger-result" hx-swap="innerHTML" style="margin:0">
+    <form class="action-tile" method="post" action="/ui/home/research"
+          hx-post="/ui/home/research" hx-target="#home-trigger-result" hx-swap="innerHTML"
+          hx-disabled-elt="find button">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>
-        <span>主题</span>
-        <select name="topic_id" required>
-          {% for topic in topics %}
-          <option value="{{ topic.id }}">{{ topic.name }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <button type="submit" class="primary">立即研究</button>
+      <div class="action-copy">
+        <span class="action-title">研究</span>
+        <span class="action-desc">对选中的主题跑完整 Agent：规划 → 工具取数 → 成稿 → 自检。</span>
+        <span class="action-note">产出为草稿，仍需审核后才能发布</span>
+      </div>
+      <div class="action-control">
+        <label class="action-field">
+          <span>主题</span>
+          <select name="topic_id" required{% if not topics %} disabled{% endif %}>
+            {% for topic in topics %}
+            <option value="{{ topic.id }}">{{ topic.name }}</option>
+            {% endfor %}
+            {% if not topics %}
+            <option value="">无已启用主题</option>
+            {% endif %}
+          </select>
+        </label>
+        <button type="submit" class="primary"{% if not topics %} disabled{% endif %}>立即研究</button>
+      </div>
     </form>
   </div>
-  <div id="home-trigger-result"></div>
+
+  {# 触发回执的落点。空的时候不占位（`.trigger-slot:empty` 收掉内边距）；
+     `aria-live` 挂在容器上而不是片段上 —— 片段是后插入的，读屏不一定会念新节点。 #}
+  <div id="home-trigger-result" class="trigger-slot" aria-live="polite"></div>
+
   {% if not topics %}
   <p class="hint">当前没有启用的主题，无法触发研究。先去「主题管理」启用一个主题。</p>
   {% endif %}

@@ -678,8 +678,8 @@
 |---|---|---|
 | `GET /ui/login`、`POST /ui/login`、`POST /ui/logout` | 公开 / 已登录 | 登录表单与退出；会话存 `HttpOnly` Cookie |
 | `GET /ui/home` | 读角色 | 首页落地页：系统状态（运行模式 + 采集/研究/报告概览）、最近一期报告、一键触发卡片（仅写角色渲染触发按钮） |
-| `POST /ui/home/collect` | 写角色 | 排队一次完整每日流水线（采集→快照→排名→正文缓存）到 worker；异步执行，审计 `collector.run` |
-| `POST /ui/home/research` | 写角色 | 排队一次研究运行到 worker（`topic_id` 必填、须启用）；异步执行，审计 `agent.run` |
+| `POST /ui/home/collect` | 写角色 | 排队一次完整每日流水线（采集→快照→排名→正文缓存）到 worker；异步执行，审计 `collector.run`；htmx 请求回**回执片段**，纯表单提交回整页 |
+| `POST /ui/home/research` | 写角色 | 排队一次研究运行到 worker（`topic_id` 必填、须启用）；异步执行，审计 `agent.run`；响应形态同上 |
 | `GET /ui/reports` | 读角色 | 报告列表，支持 `status`、`visibility`、`page`，权限过滤同 API |
 | `GET /ui/reports/{report_id}` | 读角色 | 报告详情：验证结论、引用与证据、版本历史、审核记录、编辑表单、推送卡片与投递记录 |
 | `POST /ui/reports/{report_id}/{verify,review,publish,rollback,edit}` | 写角色 | 动作，返回刷新后的报告片段 |
@@ -701,6 +701,8 @@
 | `GET /ui/audit` | **仅管理员** | 审计台账，支持 `action`、`resource_type`、`result`、`actor_id` 与分页；按主键倒序 |
 
 写操作必须携带与 Cookie 一致的 `csrf_token` 表单字段（双提交校验）：缺失或不匹配返回 `403`。未登录访问任意 `/ui` 页面返回 `303` 重定向到 `/ui/login?next=<原路径>`。
+
+**htmx 目标区域只收片段，不收页面**。`hx-target` 指向的是页面里的一个小容器（`#report-panel`、`#sweep-result`、`#home-trigger-result`），响应一旦是带外壳的整页，外壳就会被插进容器里 —— 读者看到的是"页面套页面"。因此凡是被 htmx 调用的写端点都只回片段：首页两条触发端点靠 `HX-Request` 头区分（htmx 回 `partials/home_trigger_result.html`，浏览器无脚本时回整页，同一条表单两者都能用）；`403` 在 htmx 请求里也只回一行 `.alert.error`，而不是那张带自己外壳的 403 页。判定收在 `_is_htmx` 一处。
 
 **UI 的角色集合与 API 同源**：上表每一行的准入角色就是该资源在 API 侧的同一个常量（`REPORT_READ_ROLES` / `REPORT_WRITE_ROLES` / `TOPIC_READ_ROLES` / `TOPIC_WRITE_ROLES` / `REPOSITORY_READ_ROLES` / `METRICS_ROLES` / `AUDIT_READ_ROLES`），侧栏条目也由同一组常量生成 —— 菜单里出现而打开被拒，和能打开却不在菜单里，都是缺陷。
 

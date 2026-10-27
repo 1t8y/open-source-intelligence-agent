@@ -1,0 +1,6 @@
+{#
+  一行拒绝原因的片段。
+  htmx 的写操作被拒时用它替换目标区域：整张 403 页自带外壳，塞进卡片里就是页面套页面。
+  片段只带一句话，状态码仍然是 403（`htmx:beforeSwap` 会让 4xx 的 HTML 也参与替换）。
+#}
+<div class="alert error" role="alert">{{ message }}</div>

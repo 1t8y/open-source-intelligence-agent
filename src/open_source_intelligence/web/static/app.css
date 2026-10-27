@@ -40,6 +40,11 @@
   --delta-up: #b3261e;
   --delta-down: #167c4a;
 
+  /* —— 提示底色：同色相的两个极浅档，`.alert` 与触发回执共用 —— */
+  --ok-tint: #e6f6ec;
+  --error-tint: #fdeceb;
+  --warn-tint: #fdf3e2;
+
   /* —— 圆角：沿用 10 / 8 / 999 三档 —— */
   --r-lg: 10px;
   --r-sm: 8px;
@@ -295,9 +300,9 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 }
 
 .alert { padding: 8px 12px; border-radius: var(--r-sm); font-size: 14px; margin: 0 0 var(--sp4); }
-.alert.ok { background: #e6f6ec; color: var(--ok); }
-.alert.error { background: #fdeceb; color: var(--error); }
-.alert.warn { background: #fdf3e2; color: var(--warn); }
+.alert.ok { background: var(--ok-tint); color: var(--ok); }
+.alert.error { background: var(--error-tint); color: var(--error); }
+.alert.warn { background: var(--warn-tint); color: var(--warn); }
 
 .ok-text { color: var(--ok); }
 /* 分享链接要能整条选中复制：等宽、撑满、只读框。 */
@@ -409,6 +414,81 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
   max-height: 640px;
   overflow: auto;
 }
+
+/* ==========================================================================
+   4b. 首页一键触发：动作砖 + 回执条
+   --------------------------------------------------------------------------
+   两块「砖」并排，每块一句说明加一个提交控件；控件靠底对齐，两砖等高时按钮落在同一条线上。
+   触发后的回执换进 `.trigger-slot`，是页面里的一条状态带，不是另一份页面。
+   ========================================================================== */
+
+.action-tiles {
+  display: grid;
+  /* 240px 是「说明不掉成三行」的下界，也是两块砖还能并排的上界。 */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp3);
+  margin: var(--sp4) 0 0;
+}
+
+.action-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp3);
+  margin: 0;
+  padding: var(--sp4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+/* 焦点进入砖内即整块抬起：键盘 Tab 到选择框时，读得出「我现在在哪一块」。 */
+.action-tile:focus-within { border-color: var(--accent); background: var(--panel); }
+/* 请求在飞：整块压暗一档。按钮由 `hx-disabled-elt` 置灰，所以重复点不会有第二条请求。 */
+.action-tile.htmx-request { opacity: 0.65; }
+
+.action-copy { display: flex; flex-direction: column; gap: 2px; }
+.action-title { color: var(--ink); font-size: 14px; font-weight: 650; }
+.action-desc { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.action-note { margin-top: 2px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+
+.action-control { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp2); margin-top: auto; }
+/* 全局 `form label` 是整行块级（见 §4），这里要和按钮同排，所以把块级与下边距收回来；
+   选择框按最长主题名的内容宽度撑开（`width: auto`），不跟着砖一起拉长，
+   这样「主题 ▾ 立即研究」始终是一簇，而不是按钮被甩到砖的另一头。 */
+.action-control label.action-field { display: flex; flex: 0 1 auto; align-items: center; gap: var(--sp2); margin: 0; min-width: 0; }
+.action-control label.action-field > span { margin: 0; white-space: nowrap; }
+.action-control select { width: auto; max-width: 100%; }
+
+/* 回执落点：空的时候不占位，有内容时才有一行高度。 */
+.trigger-slot:empty { display: none; }
+.trigger-slot { margin-top: var(--sp3); }
+
+.trigger-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp2);
+  padding: 10px var(--sp3);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+}
+.trigger-result.is-ok { background: var(--ok-tint); color: var(--ok); }
+.trigger-result.is-error { background: var(--error-tint); color: var(--error); }
+.trigger-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.trigger-text { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp2); margin: 0; }
+.trigger-text strong { font-weight: 650; }
+/* 任务号用等宽片：短、可对照、不抢标题的颜色（底色取自文字色，两个状态共用一条规则）。 */
+.trigger-text code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 6%);
+  color: inherit;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+/* 「去哪儿看」紧跟文字，不甩到行尾：一条回执读下来是「发生了什么 → 去哪看」。 */
+.trigger-link { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.trigger-link:hover { text-decoration-thickness: 2px; }
 
 /* ==========================================================================
    5. 运维看板：指标块、窗口切换与运行轨迹

@@ -313,6 +313,16 @@ def add_web_surface(app: FastAPI) -> None:
 
     @app.exception_handler(WebForbidden)
     async def forbidden_handler(request: Request, exc: WebForbidden) -> Response:
+        # A refusal inside an htmx swap lands in a small container. The whole 403 page there would
+        # be a page nested in a card — the same defect the trigger fragment exists to avoid — so a
+        # swap gets one line and keeps the status code.
+        if _is_htmx(request):
+            return templates.TemplateResponse(
+                request,
+                "partials/alert.html",
+                {"message": exc.message, "current_user": None, "csrf_token": ""},
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
         return templates.TemplateResponse(
             request,
             "forbidden.html",
@@ -722,6 +732,7 @@ def home_page(
             "newest_topic_name": topic_names.get(newest.topic_id) if newest is not None else None,
             "can_trigger": can_trigger,
             "topics": topics.items,
+            "collect_limit": _settings(request).pipeline_collect_limit,
             "runtime_mode": _runtime_mode(_settings(request)),
             "active": "home",
         },
@@ -764,18 +775,18 @@ def home_collect(
         metadata_json={"task_id": task_id, "provider": "all", "source": "ui"},
     )
     session.commit()
-    return render(
+    return _trigger_response(
         request,
-        "home.html",
-        _home_notice_context(
-            session,
-            web,
-            request,
-            now=None,
-            notice=f"已排队采集任务 {task_id[:8]}…",
+        session,
+        web,
+        result=_trigger_result(
+            ok=True,
+            title="已排队采集任务",
+            task_id=task_id,
+            detail="采集 → 快照 → 排名 → 正文缓存依次在 worker 上进行。",
+            href="/ui/runs",
+            link_label="采集与运行",
         ),
-        status_code=status.HTTP_200_OK,
-        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
     )
 
 
@@ -815,18 +826,18 @@ def home_research(
             metadata_json={"reason": "topic missing or disabled"},
         )
         session.commit()
-        return render(
+        return _trigger_response(
             request,
-            "home.html",
-            _home_notice_context(
-                session,
-                web,
-                request,
-                now=None,
-                error=f"主题 {topic_id} 不存在或已停用",
+            session,
+            web,
+            result=_trigger_result(
+                ok=False,
+                title="无法触发研究",
+                detail=f"主题 {topic_id} 不存在或已停用，先到「主题管理」确认。",
+                href="/ui/topics",
+                link_label="主题管理",
             ),
             status_code=status.HTTP_400_BAD_REQUEST,
-            csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
         )
     task_id = _queue_research(_settings(request), topic_id=topic_id)
     record_audit_event(
@@ -841,18 +852,18 @@ def home_research(
         metadata_json={"task_id": task_id, "topic_id": topic_id, "source": "ui"},
     )
     session.commit()
-    return render(
+    return _trigger_response(
         request,
-        "home.html",
-        _home_notice_context(
-            session,
-            web,
-            request,
-            now=None,
-            notice=f"已排队主题 {topic_id} 的研究任务 {task_id[:8]}…",
+        session,
+        web,
+        result=_trigger_result(
+            ok=True,
+            title="已排队研究任务",
+            task_id=task_id,
+            detail=f"主题 {topic.name}；新稿落到「报告中心」等待审核。",
+            href="/ui/reports",
+            link_label="报告中心",
         ),
-        status_code=status.HTTP_200_OK,
-        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
     )
 
 
@@ -871,6 +882,80 @@ def _queue_research(settings: Settings, *, topic_id: int) -> str:
     app = create_celery_app(settings)
     result = app.send_task(RESEARCH_AGENT_TASK, kwargs={"topic_id": topic_id})
     return str(result.id)
+
+
+def _is_htmx(request: Request) -> bool:
+    """Return whether the request came from htmx.
+
+    htmx stamps `HX-Request: true` on everything it sends. A handler that swaps into a small
+    container needs that signal: the same endpoint also serves a browser without JavaScript, and
+    only one of the two audiences can take a fragment.
+    """
+    return request.headers.get("HX-Request", "").lower() == "true"
+
+
+def _trigger_result(
+    *,
+    ok: bool,
+    title: str,
+    task_id: str | None = None,
+    detail: str | None = None,
+    href: str | None = None,
+    link_label: str | None = None,
+) -> dict[str, Any]:
+    """Describe one trigger outcome once, for both the fragment and the fallback page."""
+    return {
+        "ok": ok,
+        "title": title,
+        "task_id": task_id,
+        "detail": detail,
+        "href": href,
+        "link_label": link_label,
+    }
+
+
+def _trigger_response(
+    request: Request,
+    session: Session,
+    web: WebSession,
+    *,
+    result: dict[str, Any],
+    status_code: int = status.HTTP_200_OK,
+) -> Response:
+    """Answer a home trigger with a fragment for htmx, or the whole page for a plain form post.
+
+    Both trigger forms target `#home-trigger-result` with `hx-swap="innerHTML"`, so a full document
+    there gets inserted *inside* the card — the shell ends up nested in itself, which is neither
+    readable nor presentable. The fragment is the only thing an htmx swap can take.
+
+    The same forms still carry `method`/`action`, so a browser without JavaScript posts them too.
+    That client gets the page back, carrying the same message as an alert — which is why the
+    outcome is described once in `_trigger_result` instead of once per response shape.
+    """
+    if _is_htmx(request):
+        return render(
+            request,
+            "partials/home_trigger_result.html",
+            {"result": result},
+            status_code=status_code,
+        )
+    message = result["title"]
+    if result["task_id"]:
+        message = f"{message} {result['task_id'][:8]}…"
+    return render(
+        request,
+        "home.html",
+        _home_notice_context(
+            session,
+            web,
+            request,
+            now=None,
+            notice=message if result["ok"] else None,
+            error=None if result["ok"] else message,
+        ),
+        status_code=status_code,
+        csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
+    )
 
 
 def _home_notice_context(
@@ -907,6 +992,7 @@ def _home_notice_context(
         "newest_topic_name": topic_names.get(newest.topic_id) if newest is not None else None,
         "can_trigger": not roles.isdisjoint(TRIGGER_ROLES),
         "topics": topics.items,
+        "collect_limit": _settings(request).pipeline_collect_limit,
         "runtime_mode": _runtime_mode(_settings(request)),
         "active": "home",
         "notice": notice,

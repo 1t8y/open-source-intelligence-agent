@@ -1,0 +1,29 @@
+{#
+  一键触发的回执片段。
+  htmx 用 `hx-swap="innerHTML"` 把它换进 `#home-trigger-result`，所以这里**只能是这一段**：
+  一旦继承 base.html，整个外壳（含侧栏）就会被塞进卡片里，页面看起来是自己嵌了自己。
+  同理，这里不要 `id="home-trigger-result"` —— 容器是宿主页面给的，片段只负责内容。
+
+  键先取成局部变量再用：Jinja 对 `foo.bar` 是先试属性再试键，字典方法名会被优先命中；
+  下标没有这层歧义，取一次也让下面那几行读起来像模板而不是表达式。
+#}
+{% set ok = result["ok"] %}
+{% set task_id = result["task_id"] %}
+{% set href = result["href"] %}
+{% set link_label = result["link_label"] %}
+<div class="trigger-result {{ 'is-ok' if ok else 'is-error' }}" role="{{ 'status' if ok else 'alert' }}">
+  {# 圆点放在文字行里而不是行外：窄屏时整条回执会换行，行外的点会孤零零留在第一行。 #}
+  <p class="trigger-text">
+    <span class="trigger-dot" aria-hidden="true"></span>
+    <strong>{{ result["title"] }}</strong>
+    {% if task_id %}
+    <code title="{{ task_id }}">{{ task_id[:8] }}…</code>
+    {% endif %}
+    {% if result["detail"] %}
+    <span class="trigger-detail">{{ result["detail"] }}</span>
+    {% endif %}
+  </p>
+  {% if href %}
+  <a class="trigger-link" href="{{ href }}">{{ link_label }} →</a>
+  {% endif %}
+</div>

@@ -37,6 +37,7 @@ from support import NOW, Workspace
 
 from open_source_intelligence.persistence.models.audit import AuditLog
 from open_source_intelligence.reports import queries
+from open_source_intelligence.web import router as web_router
 from open_source_intelligence.web.security import SESSION_COOKIE
 
 BASE = "/ui/reports"
@@ -210,6 +211,28 @@ def test_mutating_actions_reject_a_mismatched_csrf_token(
 
     assert response.status_code == 403
     assert "CSRF 校验失败" in response.text
+
+
+def test_refusal_inside_an_htmx_swap_is_one_line(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+) -> None:
+    """A refused swap gets a message, not the 403 page: that page would nest in the target."""
+    case = _seed(session, workspace)
+    assert web_login(client, editor).status_code == 303
+
+    response = client.post(
+        f"{BASE}/{case.report_id}/verify",
+        data={},
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 403
+    assert "CSRF 校验失败" in response.text
+    assert "<!DOCTYPE" not in response.text
+    assert 'class="sidebar"' not in response.text
 
 
 def test_static_assets_are_served_locally(client: TestClient) -> None:
@@ -721,6 +744,73 @@ def test_home_hides_triggers_from_a_viewer(
     assert "最近一期报告" in response.text
     assert "一键触发" not in response.text
     assert "立即采集" not in response.text
+
+
+def test_home_trigger_answers_htmx_with_a_fragment(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trigger fired from the page must reply with the notice alone, not a second page.
+
+    The trigger forms target `#home-trigger-result` with `hx-swap="innerHTML"`, so whatever the
+    endpoint returns is inserted *into* that card. Returning the full template put the shell —
+    sidebar included — inside the card, and the reader saw the platform nested in itself.
+    """
+    _seed(session, workspace)
+    assert web_login(client, editor).status_code == 303
+    monkeypatch.setattr(web_router, "_queue_collect", lambda settings: "abc12345def")
+
+    response = client.post(
+        "/ui/home/collect",
+        data={**_token(client)},
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 200
+    assert "已排队采集任务" in response.text
+    assert "abc12345" in response.text
+    # 片段不含文档外壳，也不含第二份侧栏与那个被替换的容器本身。
+    assert "<!DOCTYPE" not in response.text
+    assert 'class="sidebar"' not in response.text
+    assert 'id="home-trigger-result"' not in response.text
+
+
+def test_home_trigger_without_htmx_still_renders_the_page(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain form post (no JavaScript) still gets a whole page back, notice included."""
+    _seed(session, workspace)
+    assert web_login(client, editor).status_code == 303
+    monkeypatch.setattr(web_router, "_queue_collect", lambda settings: "abc12345def")
+
+    response = client.post("/ui/home/collect", data={**_token(client)})
+
+    assert response.status_code == 200
+    assert "<!DOCTYPE" in response.text
+    assert "已排队采集任务" in response.text
+    assert "系统状态" in response.text
+
+
+def test_home_without_topics_disables_the_research_tile(
+    client: TestClient,
+    editor: Actor,
+) -> None:
+    """No enabled topic: the research tile points at the fix instead of offering a dead button."""
+    assert web_login(client, editor).status_code == 303
+
+    response = client.get("/ui/home")
+
+    assert response.status_code == 200
+    assert "一键触发" in response.text
+    assert "无已启用主题" in response.text
+    assert "disabled" in response.text
 
 
 def test_login_without_next_lands_on_home(client: TestClient, editor: Actor) -> None:
