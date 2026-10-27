@@ -292,6 +292,54 @@ def schedule_report(session: Session, *, report_id: int, now: datetime | None = 
     return report
 
 
+def withdraw_report(
+    session: Session,
+    *,
+    report_id: int,
+    actor_id: int | None = None,
+    comment: str | None = None,
+    now: datetime | None = None,
+) -> Report:
+    """Pull a published report back into the editing queue.
+
+    `published -> draft` is the only edge out of `published` (see `state.py`), and withdrawal is
+    what it exists for: the report stops being public, loses the publish window it was holding,
+    and has to clear verification and the policy again before it can go back out. The version it
+    was published as stays in the history — withdrawing is not a delete.
+
+    Share links need no cleanup here: the share gate is `sensitivity=PUBLIC` **and**
+    `status=published`, so a withdrawn report's links stop resolving the moment the status moves.
+    """
+    moment = now or utc_now()
+    report = session.get(Report, report_id)
+    if report is None:
+        raise ReportNotFoundError(f"report {report_id} does not exist")
+    if report.status != "published":
+        raise ReportStateError(
+            f"report {report.id} is {report.status}; only a published report can be withdrawn"
+        )
+    published_at = report.published_at
+    transition_report(report, "draft")
+    report.publish_at = None
+    report.published_at = None
+    record_audit_event(
+        session,
+        action="report.withdraw",
+        resource_type="report",
+        resource_id=str(report.id),
+        result="success",
+        actor_id=actor_id,
+        metadata_json={
+            "version": report.current_version,
+            "published_at": published_at.isoformat() if published_at is not None else None,
+            "withdrawn_at": moment.isoformat(),
+            "comment": comment,
+        },
+    )
+    session.commit()
+    return report
+
+
 def publish_report(
     session: Session,
     *,

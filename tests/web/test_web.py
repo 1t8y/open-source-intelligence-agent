@@ -700,6 +700,60 @@ def test_rollback_is_not_offered_on_the_publishing_path(
     assert report.content_markdown.endswith("第二版内容。\n")
 
 
+def test_published_report_offers_withdraw_and_returns_to_draft(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """A published report has one way back, and the page has to offer it.
+
+    Without the button the report is stuck: `edit` needs a draft, `rollback` needs a second
+    version, and nothing else accepts `published`. The page used to render a hint telling the
+    reader to "退回修改或回滚" — two operations that cannot be reached from here.
+    """
+    case = _seed(session, workspace)
+    configure_report(session, report_id=case.report_id, status="published")
+    assert web_login(client, editor).status_code == 303
+
+    page = client.get(f"{BASE}/{case.report_id}")
+    assert page.status_code == 200
+    assert f'action="{BASE}/{case.report_id}/withdraw"' in page.text
+    assert "撤销发布" in page.text
+
+    withdrawn = client.post(f"{BASE}/{case.report_id}/withdraw", data={**_token(client)})
+
+    assert withdrawn.status_code == 200
+    assert "已撤销发布" in withdrawn.text
+    report = load_report(session_factory, case.report_id)
+    assert report.status == "draft"
+    assert report.published_at is None
+    # 撤销之后页面本身也换了：编辑表单回来了，撤销按钮走了。
+    assert f'action="{BASE}/{case.report_id}/edit"' in withdrawn.text
+    assert f'action="{BASE}/{case.report_id}/withdraw"' not in withdrawn.text
+    # 一次成功撤销就是一行审计，动作名与 API 侧一致。
+    assert ("report.withdraw", "success") in audit_trail(session_factory)
+
+
+def test_withdraw_is_refused_on_a_report_that_is_not_published(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """A forced post on a draft renders the refusal and leaves the report where it was."""
+    case = _seed(session, workspace)
+    assert web_login(client, editor).status_code == 303
+
+    response = client.post(f"{BASE}/{case.report_id}/withdraw", data={**_token(client)})
+
+    assert response.status_code == 200
+    assert "only a published report can be withdrawn" in response.text
+    assert load_report(session_factory, case.report_id).status == "draft"
+
+
 # --------------------------------------------------------------------------------------
 # Home page
 # --------------------------------------------------------------------------------------

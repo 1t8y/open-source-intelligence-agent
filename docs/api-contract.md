@@ -683,6 +683,7 @@
 | `GET /ui/reports` | 读角色 | 报告列表，支持 `status`、`visibility`、`page`，权限过滤同 API |
 | `GET /ui/reports/{report_id}` | 读角色 | 报告详情：验证结论、引用与证据、版本历史、审核记录、编辑表单、推送卡片与投递记录 |
 | `POST /ui/reports/{report_id}/{verify,review,publish,rollback,edit}` | 写角色 | 动作，返回刷新后的报告片段 |
+| `POST /ui/reports/{report_id}/withdraw` | 写角色 | **撤销发布**：`published -> draft`（状态机唯一的出口），清空 `publish_at`/`published_at`，版本与审核记录保留，审计 `report.withdraw`；只对 `published` 有效，其余状态渲染拒绝 |
 | `POST /ui/reports/{report_id}/push` | 写角色 | 推送到一个允许列表目标，返回刷新后的报告片段；渠道取自目标行，表单传 `channel` 无效 |
 | `POST /ui/reports/publish-due` | 写角色 | 到期释放驱动，返回释放结果片段；**按钮只对写角色渲染** —— 渲染面与准入面取同一个常量 |
 | `POST /ui/reports/{report_id}/share` | 写角色 | 生成分享链接，返回刷新后的报告片段；**明文令牌只出现在这一次响应里**，列表与刷新都不会重现 |
@@ -695,7 +696,7 @@
 | `POST /ui/topics/{topic_id}/toggle` | **仅管理员** | 启用 / 停用，不打开编辑表单 |
 | `POST /ui/topics/{topic_id}/delete` | **仅管理员** | 删除；有历史引用时 `409` 并点名引用它的表 |
 | `GET /ui/repositories` | 读角色 | 仓库目录，支持 `q`、`topic_id`、`language`、`sort`；按主题筛选时附候选排名、得分与是否入选 |
-| `GET /ui/runs` | 运行角色 | Agent 运行台账（分页、可按状态筛选）与回填任务列表 |
+| `GET /ui/runs` | 运行角色 | 三层台账：**流水线运行**（按 `run_type`/`run_status` 筛选，最近 50 条）→ **Agent 运行**（分页、可按状态筛选；点 `#` 进轨迹页）→ **回填任务**。词汇表外的筛选值被忽略而不是 500 |
 | `GET /ui/evaluations` | 写角色 | 数据集与评测运行记录；**只读**，运行触发仍在操作员 CLI |
 | `GET /ui/dashboard`、`GET /ui/dashboard/runs/{run_id}` | 运行角色 | 看板与运行轨迹，等价于 `GET /metrics/overview` 与 `GET /agent/runs/{run_id}/steps` |
 | `GET /ui/audit` | **仅管理员** | 审计台账，支持 `action`、`resource_type`、`result`、`actor_id` 与分页；按主键倒序 |

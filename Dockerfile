@@ -18,7 +18,13 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 COPY scripts ./scripts
 
-RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" .
+# 一次装齐依赖与本包。`--retries` / `--timeout` 是给镜像源抖动留的余量：默认 5 次 15 秒在
+# 国内源上会装出一个缺包的半成品镜像（曾出现 `No module named 'urllib3'`，构建却是成功的）。
+#
+# 已知代价：`COPY src` 在安装之前，改一行源码就会让这一层失效、重下一次全部依赖（约 1–3 分钟）。
+# 试过"先装空包再覆盖源码"的两段式分层，但第二次 `pip install` 会留下上一次的空 `__init__.py`，
+# 镜像能构建成功却启动即崩（`cannot import name '__version__'`）—— 宁慢勿脆，保持单段。
+RUN pip install --no-cache-dir --retries 5 --timeout 60 --index-url "$PIP_INDEX_URL" .
 
 USER app
 

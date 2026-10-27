@@ -12,10 +12,11 @@
       </p>
     </div>
     <div class="badges">
-      <span class="badge status-{{ report.status }}">{{ report.status }}</span>
-      <span class="badge">{{ report.visibility }}</span>
-      <span class="badge">{{ report.sensitivity }}</span>
-      <span class="badge">{{ report.publish_mode }}</span>
+      {# 徽章上的字译成中文，class 里的取值保持原样：前者给人读，后者给 CSS 认。 #}
+      <span class="badge status-{{ report.status }}">{{ report.status | label }}</span>
+      <span class="badge">{{ report.visibility | label }}</span>
+      <span class="badge">{{ report.sensitivity | label }}</span>
+      <span class="badge">{{ report.publish_mode | label }}</span>
     </div>
   </div>
 
@@ -51,10 +52,26 @@
         <option value="reject">拒绝</option>
       </select>
       <input type="text" name="comment" placeholder="审核意见" maxlength="2000">
-      <button type="submit">提交审核</button>
+      <button type="submit">提交审核决定</button>
+    </form>
+    {% endif %}
+    {% if report.status == "published" %}
+    {# 撤销是 `published` 唯一的出口（`published -> draft`）。没有它，一篇已发布的报告既不能编辑
+       （编辑要求草稿）也不能回滚（回滚要求至少两个版本），只能停在库里。 #}
+    <form method="post" action="/ui/reports/{{ report.id }}/withdraw"
+          hx-post="/ui/reports/{{ report.id }}/withdraw" hx-target="#report-panel" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger"
+              onclick="return confirm('撤销后报告回到草稿，读者将看不到它；版本与审核记录都会保留。确定撤销？')">
+        撤销发布
+      </button>
     </form>
     {% endif %}
   </div>
+  <p class="hint">
+    <b>运行验证</b>先跑四项发布前检查；<b>按策略发布</b>由策略决定是直接发布、进撤回窗口，还是转「待审核」——
+    草稿想走人工审核，点它就会转过去。报告停在「待审核」时，审核人用<b>提交审核决定</b>通过、退回（回到草稿）或拒绝。
+  </p>
   {% else %}
   <p class="hint">当前角色只读，不能验证、审核、发布、编辑、回退或推送报告。</p>
   {% endif %}
@@ -157,6 +174,16 @@
       {% endfor %}
     </tbody>
   </table>
+  {% if not rollbackable %}
+  {# 一整列都是「—」时要说明原因，否则读者会以为按钮坏了。回滚是"把历史版本复制成新草稿"，
+     所以它既要状态允许，也要确实存在另一个版本可复制。 #}
+  <p class="hint">
+    这一版只有 {{ detail.versions | length }} 个版本、当前状态是「{{ report.status | label }}」，
+    因此没有「回滚到此版本」。回滚是<b>把某个历史版本复制成一份新草稿</b>，需要同时满足两条：
+    报告处于草稿 / 退回修改 / 已发布，且至少有一个不同于当前的版本。
+    {% if report.status == "published" %}已发布的单版本报告要改内容，先用上方的「撤销发布」回到草稿。{% endif %}
+  </p>
+  {% endif %}
 </section>
 
 <section class="card">
@@ -336,7 +363,11 @@
   </form>
 </section>
 {% elif can_write %}
-<p class="hint">报告处于 {{ report.status }}，不能直接编辑正文；请先退回修改，或回滚到历史版本。</p>
+<p class="hint">
+  报告处于「{{ report.status | label }}」，不能直接编辑正文。要改内容只有两条路：
+  {% if report.status == "published" %}点上方「撤销发布」回到草稿，{% elif report.status == "pending_review" %}让审核人「退回修改」，{% else %}等它回到草稿，{% endif %}
+  或者用「回滚到此版本」把某个历史版本复制成新草稿。任何一条都会生成新版本，并需要重新验证、重新发布。
+</p>
 {% endif %}
 
 {% if trace %}

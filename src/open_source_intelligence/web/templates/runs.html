@@ -5,16 +5,103 @@
   <div>
     <h1>采集与运行</h1>
     <p class="sub">
-      这条流水线的两半：<b>回填任务</b>按页遍历仓库历史，把一个主题的候选池填起来；
-      <b>Agent 运行</b>在候选池上做研究并产出报告。点开一条运行可以追到它每一步的工具调用。
+      这条链路分三层：<b>流水线运行</b>是链上的每一段（采集 → 快照 → 排名 → 正文缓存，以及按主题的
+      研究 / 发布 / 推送）；<b>Agent 运行</b>是「研究」这一段内部的完整轨迹（规划、工具、成稿、自检）；
+      <b>回填任务</b>是「采集」之前的历史补齐，按页遍历仓库。三层都只对管理员和编辑者开放。
     </p>
   </div>
 </header>
 
+{# ------------------------------------------------------------------ 流水线运行 #}
+<section class="card">
+  <div class="row space-between">
+    <h2 style="margin:0">流水线运行</h2>
+    <form class="filters" method="get" action="/ui/runs" style="margin:0">
+      {# 两个筛选条各管一张表，但都 GET 到同一页：把对方的当前值带上，否则筛一次就把另一个清空。 #}
+      <input type="hidden" name="status" value="{{ status_filter }}">
+      <label>
+        <span>类型</span>
+        <select name="run_type">
+          <option value="" {% if not run_type_filter %}selected{% endif %}>全部</option>
+          {% for value in run_types %}
+          <option value="{{ value }}" {% if run_type_filter == value %}selected{% endif %}>{{ value | label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>状态</span>
+        <select name="run_status">
+          <option value="" {% if not run_status_filter %}selected{% endif %}>全部</option>
+          {% for value in run_statuses %}
+          <option value="{{ value }}" {% if run_status_filter == value %}selected{% endif %}>{{ value | label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">筛选</button>
+    </form>
+  </div>
+
+  {% if pipeline_runs %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>类型</th>
+        <th>状态</th>
+        <th>主题</th>
+        <th class="num">尝试</th>
+        <th>开始</th>
+        <th class="num">耗时</th>
+        <th>错误码</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in pipeline_runs %}
+      <tr>
+        <td class="mono">{{ run.id }}</td>
+        <td><span class="badge">{{ run.run_type | label }}</span></td>
+        <td><span class="badge status-{{ run.status }}">{{ run.status | label }}</span></td>
+        <td>{{ pipeline_topic_names.get(run.topic_id, "—") if run.topic_id else "全局" }}</td>
+        <td class="num">{{ run.attempt }}</td>
+        <td class="mono">{{ run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
+        <td class="num">
+          {%- if run.finished_at and run.started_at -%}
+            {%- set seconds = (run.finished_at - run.started_at).total_seconds() -%}
+            {%- if seconds >= 60 -%}{{ "%.1f" | format(seconds / 60) }} 分
+            {%- else -%}{{ "%.1f" | format(seconds) }} 秒{%- endif -%}
+          {%- else -%}—{%- endif -%}
+        </td>
+        <td class="mono">{{ run.error_code or "—" }}</td>
+        <td class="truncate" title="{{ run.error_message | redact if run.error_message else '' }}">
+          {{- run.error_message | redact if run.error_message else "—" -}}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">
+    最多显示最近 {{ pipeline_limit }} 条（一次每日流水线约 8 条）。<b>失败</b>的行在「说明」里写明原因，
+    重跑对应阶段即可；「正文缓存」失败只会让报告少一张 README 快照，不影响排名。
+  </p>
+  {% else %}
+  <p class="empty">
+    {% if run_type_filter or run_status_filter %}
+    当前筛选下没有流水线运行，换个类型或状态试试。
+    {% else %}
+    还没有流水线运行。首页「立即采集」或每日定时任务都会写入它们。
+    {% endif %}
+  </p>
+  {% endif %}
+</section>
+
+{# -------------------------------------------------------------------- Agent 运行 #}
 <section class="card">
   <div class="row space-between">
     <h2 style="margin:0">Agent 运行</h2>
     <form class="filters" method="get" action="/ui/runs" style="margin:0">
+      <input type="hidden" name="run_type" value="{{ run_type_filter }}">
+      <input type="hidden" name="run_status" value="{{ run_status_filter }}">
       <label>
         <span>状态</span>
         <select name="status">
@@ -27,6 +114,14 @@
       <button type="submit">筛选</button>
     </form>
   </div>
+
+  <p class="hint" style="margin-top:0">
+    每条运行有三种收尾：<b>已完成</b>（证据齐全，产出了报告）、<b>需人工复核</b>（跑完了，但证据不足以支撑成稿，
+    或撞上预算 / 写盘问题）、<b>失败</b>（模型、传输出错）。<b>「需人工复核」是这条运行的终态，不是等你点确认的队列</b>
+    —— 这里没有、也不该有「确认」按钮：要做的是点 <b>#</b> 打开它的轨迹，看它缺了哪一步；如果它已经产出报告，
+    人工决定发生在「报告中心」的那份报告上（审核 / 退回 / 撤销）；没产出就补数据后重跑。
+    最常见的错误码 <code>AGENT_EVIDENCE_INCOMPLETE</code> 就是「证据不够，没敢写」。
+  </p>
 
   {% if page.items %}
   <table class="grid">
@@ -70,10 +165,10 @@
     <span>共 {{ page.total }} 条，第 {{ page.page }} 页，每页 {{ page.page_size }} 条</span>
     <span>
       {% if page.page > 1 %}
-      <a href="/ui/runs?page={{ page.page - 1 }}&status={{ status_filter }}">上一页</a>
+      <a href="/ui/runs?page={{ page.page - 1 }}&status={{ status_filter }}&run_type={{ run_type_filter }}&run_status={{ run_status_filter }}">上一页</a>
       {% endif %}
       {% if page.page * page.page_size < page.total %}
-      <a href="/ui/runs?page={{ page.page + 1 }}&status={{ status_filter }}">下一页</a>
+      <a href="/ui/runs?page={{ page.page + 1 }}&status={{ status_filter }}&run_type={{ run_type_filter }}&run_status={{ run_status_filter }}">下一页</a>
       {% endif %}
     </span>
   </div>
@@ -82,6 +177,7 @@
   {% endif %}
 </section>
 
+{# -------------------------------------------------------------------- 回填任务 #}
 <section class="card">
   <h2>回填任务</h2>
   <p class="hint" style="margin-top:0">

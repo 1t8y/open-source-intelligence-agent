@@ -58,6 +58,7 @@ from open_source_intelligence.reports.publishing import (
     publish_report,
     record_review,
     schedule_report,
+    withdraw_report,
 )
 from open_source_intelligence.reports.verification import (
     REASON_LOW_CITATION_COVERAGE,
@@ -526,6 +527,51 @@ def test_publish_report_records_a_run_and_audit(
     assert runs[0].finished_at == NOW
     audits = session.scalars(select(AuditLog).where(AuditLog.action == "report.publish")).all()
     assert any(event.result == "success" for event in audits)
+
+
+def test_withdraw_report_returns_a_published_report_to_draft(
+    session: Session,
+    report_case: SeededReport,
+) -> None:
+    """Withdrawal is the only edge out of `published`, and it clears the publish window.
+
+    Until this existed, a published report could not be corrected at all: editing needs a draft
+    and rolling back needs a second version, so a single-version published report was stuck.
+    """
+    _force_scheduled(session, report_case)
+    publish_report(session, report_id=report_case.report_id, now=NOW)
+    published_version = session.get(Report, report_case.report_id).current_version
+
+    withdrawn = withdraw_report(
+        session,
+        report_id=report_case.report_id,
+        actor_id=1,
+        comment="数字口径要改",
+        now=NOW,
+    )
+
+    assert withdrawn.status == "draft"
+    assert withdrawn.publish_at is None
+    assert withdrawn.published_at is None
+    # Withdrawing is not a delete and not a revision: the published version stays as it was.
+    assert withdrawn.current_version == published_version
+    events = session.scalars(select(AuditLog).where(AuditLog.action == "report.withdraw")).all()
+    assert [event.result for event in events] == ["success"]
+    assert events[0].metadata_json["version"] == published_version
+    assert events[0].metadata_json["comment"] == "数字口径要改"
+
+
+def test_withdraw_report_refuses_a_report_that_was_never_published(
+    session: Session,
+    report_case: SeededReport,
+) -> None:
+    """A draft has nothing to withdraw; the state machine refuses the edge, not the caller."""
+    assert report_case.reload(session).status == "draft"
+
+    with pytest.raises(ReportStateError, match="only a published report"):
+        withdraw_report(session, report_id=report_case.report_id, now=NOW)
+
+    assert session.get(Report, report_case.report_id).status == "draft"
 
 
 # --------------------------------------------------------------------------------------

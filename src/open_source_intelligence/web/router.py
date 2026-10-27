@@ -59,6 +59,11 @@ from open_source_intelligence.persistence.models.reporting import (
 )
 from open_source_intelligence.pipeline.queries import SORT_OPTIONS as REPOSITORY_SORT_OPTIONS
 from open_source_intelligence.pipeline.queries import list_repositories
+from open_source_intelligence.pipeline.runs import (
+    RUN_STATUSES,
+    RUN_TYPES,
+    list_pipeline_runs,
+)
 from open_source_intelligence.reports import queries
 from open_source_intelligence.reports.errors import ReportGenerationError, ReportPublishError
 from open_source_intelligence.reports.publishing import (
@@ -66,6 +71,7 @@ from open_source_intelligence.reports.publishing import (
     publish_or_request_review,
     publish_report,
     record_review,
+    withdraw_report,
 )
 from open_source_intelligence.reports.revisions import (
     EDITABLE_STATUSES,
@@ -156,6 +162,10 @@ LIST_PAGE_SIZE = 20
 #: `list_jobs` and `list_eval_runs` take a limit rather than a page, so the page states the cap
 #: instead of pretending to paginate.
 RECENT_LIMIT = 50
+#: How many pipeline-run rows the ledger shows. One daily pipeline writes a run per stage (~8 of
+#: them), so 50 rows is a little over a week of history: enough to read a chain end to end without
+#: turning the card into a second database browser. The type/status filters narrow it beyond that.
+PIPELINE_RECENT_LIMIT = 50
 
 #: Roles that may see an **operations-configuration** surface in the interface. Today that is the
 #: push-target allowlist and the empty-state sentences that tell a reader to go write one.
@@ -255,10 +265,23 @@ ENUM_LABELS: dict[str, str] = {
     "partial": "部分成功",
     "completed": "已完成",
     "cancelled": "已取消",
-    "needs_review": "待人工确认",
+    # Agent runs only: the run finished, but its evidence base was not enough to stand behind a
+    # draft, so a human has to look. Phrased as a judgement about the run, not as a queue item —
+    # there is no "confirm this run" operation, and the old label promised one.
+    "needs_review": "需人工复核",
     "denied": "被拒",
     "sent": "已送达",
     "passed": "通过",
+    # Pipeline run types: one stage of the chain each. `agent`/`publish`/`push` are per topic,
+    # the rest run for every enabled topic in one pass.
+    "collect": "采集",
+    "snapshot": "快照",
+    "rank": "排名",
+    "contents": "正文缓存",
+    "backfill": "回填",
+    "agent": "研究",
+    "publish": "发布",
+    "push": "推送",
     # Visibility, sensitivity, and the two publish modes (report and topic share the vocabulary).
     "PRIVATE": "私有",
     "TEAM": "团队",
@@ -1489,6 +1512,40 @@ def rollback_action(
     )
 
 
+@router.post("/reports/{report_id}/withdraw", response_class=HTMLResponse)
+def withdraw_action(
+    request: Request,
+    session: DbSession,
+    web: WebSessionDep,
+    report_id: int,
+    comment: Annotated[str, Form()] = "",
+    csrf: CsrfField = "",
+) -> HTMLResponse:
+    """Pull a published report back to draft.
+
+    This is the only way out of `published` (`published -> draft`), and until now it existed
+    nowhere in the interface: an editor could publish a report and then have no way to correct it,
+    because editing requires a draft and rolling back requires a second version to roll back to.
+    """
+    _authorize_action(request, session, web, report_id, csrf)
+    try:
+        withdraw_report(
+            session,
+            report_id=report_id,
+            actor_id=web.user.id,
+            comment=comment or None,
+        )
+    except (ReportGenerationError, ReportPublishError) as exc:
+        return _panel(request, session, web, report_id, error=str(exc))
+    return _panel(
+        request,
+        session,
+        web,
+        report_id,
+        flash="已撤销发布，报告回到草稿。改完要重新验证、重新发布；撤销不等于删除，版本仍在。",
+    )
+
+
 @router.post("/reports/{report_id}/edit", response_class=HTMLResponse)
 def edit_action(
     request: Request,
@@ -1729,13 +1786,17 @@ def runs_page(
     session: DbSession,
     web: WebSessionDep,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
+    run_type: Annotated[str | None, Query(alias="run_type")] = None,
+    run_status: Annotated[str | None, Query(alias="run_status")] = None,
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> HTMLResponse:
-    """Render the run ledger: Agent runs over their candidate pool, and the backfill walks.
+    """Render the run ledger: pipeline stages, Agent runs over their candidate pool, backfills.
 
-    The two live on one page because they are the two halves of 采集与运行: a backfill job is the
-    history walk that fills a topic's candidate pool, and an Agent run is the research pass over it.
-    Both are `METRICS_ROLES` — they expose cross-topic cost and failure reasons, not one report.
+    The three live on one page because they are the three layers of 采集与运行: a pipeline run is
+    one stage of the chain (collect → snapshot → rank → contents, or the per-topic agent/publish/
+    push), an Agent run is the research pass inside the `agent` stage, and a backfill job is the
+    history walk that fills a topic's candidate pool. All three are `METRICS_ROLES` — they expose
+    cross-topic cost and failure reasons, not one report.
     """
     _require_roles(
         request,
@@ -1746,6 +1807,16 @@ def runs_page(
         message="采集与运行仅对管理员和编辑者开放",
     )
     agent_runs = list_agent_runs(session, status=status_filter, page=page, page_size=LIST_PAGE_SIZE)
+    # A filter value that is not in the vocabulary is ignored rather than passed down: the service
+    # raises for it, and a typo in a URL should not be a 500 on a read-only page.
+    type_filter = run_type if run_type in RUN_TYPES else None
+    stage_status_filter = run_status if run_status in RUN_STATUSES else None
+    pipeline_runs = list_pipeline_runs(
+        session,
+        run_type=type_filter,
+        status=stage_status_filter,
+        limit=PIPELINE_RECENT_LIMIT,
+    )
     return render(
         request,
         "runs.html",
@@ -1758,6 +1829,15 @@ def runs_page(
             "status_options": AGENT_RUN_STATUSES,
             "job_statuses": JOB_STATUSES,
             "limit": RECENT_LIMIT,
+            "pipeline_runs": pipeline_runs,
+            "pipeline_topic_names": _topic_names(
+                session, {run.topic_id for run in pipeline_runs if run.topic_id is not None}
+            ),
+            "run_type_filter": type_filter or "",
+            "run_status_filter": stage_status_filter or "",
+            "run_types": RUN_TYPES,
+            "run_statuses": RUN_STATUSES,
+            "pipeline_limit": PIPELINE_RECENT_LIMIT,
             "active": "runs",
         },
     )
