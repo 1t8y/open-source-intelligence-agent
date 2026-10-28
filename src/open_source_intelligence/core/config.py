@@ -48,7 +48,12 @@ class Settings(BaseSettings):
     agent_prompt_version: str = Field(default="v1", min_length=1, max_length=64)
     agent_max_loops: int = Field(default=4, ge=1, le=20)
     agent_max_model_calls: int = Field(default=6, ge=1, le=50)
-    agent_max_tool_calls: int = Field(default=10, ge=1, le=100)
+    #: Tool-call budget for one research run. The verifier demands three kinds of evidence per
+    #: run - a profile and metrics for every candidate, at least one cached README, at least one
+    #: prior-report query - so the floor is `candidates x 2 + 2`. At the default candidate limit
+    #: of 5 that is 12, and 10 spent the whole budget on profiles and metrics: the run then had
+    #: no README, no baseline, and ended `AGENT_EVIDENCE_INCOMPLETE` every single day.
+    agent_max_tool_calls: int = Field(default=20, ge=1, le=100)
     agent_max_tokens: int = Field(default=30000, ge=1, le=1_000_000)
     agent_max_cost: Decimal = Field(default=Decimal("0.50"), ge=0)
     #: Provider billing table, in USD per one million tokens. DeepSeek's `usage` payload
@@ -64,6 +69,10 @@ class Settings(BaseSettings):
     #: Automatic research dispatch is off by default: a research run costs real budget, and an
     #: unattended loop that starts one per topic per day is a spending decision, not a defaults
     #: decision. The mechanism is wired either way - see `pipeline/research_dispatch.py`.
+    #: Whether a finished research run carries itself through to a report. Off, the chain stops
+    #: at a `report_drafts` row and somebody has to run `reports/cli.py --action generate` - which
+    #: is why an unattended day produced a draft, no report, and no email.
+    agent_auto_report_enabled: bool = True
     agent_auto_research_enabled: bool = False
     agent_daily_research_limit: int = Field(default=2, ge=1, le=50)
     publish_delay_minutes: int = Field(default=60, ge=0, le=10080)

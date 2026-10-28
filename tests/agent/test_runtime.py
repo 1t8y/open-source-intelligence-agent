@@ -28,7 +28,11 @@ from open_source_intelligence.agent.llm.errors import MODEL_REQUEST_FAILED, Mode
 from open_source_intelligence.agent.llm.messages import ChatMessage, ModelTurn, ToolSchema
 from open_source_intelligence.agent.llm.offline import OfflineModelClient
 from open_source_intelligence.agent.prompts import load_prompt
-from open_source_intelligence.agent.runtime import DEFAULT_AGENT_CONFIG_NAME, run_research_agent
+from open_source_intelligence.agent.runtime import (
+    DEFAULT_AGENT_CONFIG_NAME,
+    evidence_tool_floor,
+    run_research_agent,
+)
 from open_source_intelligence.agent.tools.contracts import TOOL_INTERNAL_ERROR
 from open_source_intelligence.agent.tools.errors import ToolExecutionError
 from open_source_intelligence.agent.tools.registry import (
@@ -258,6 +262,87 @@ def test_runtime_records_every_tool_call_against_the_run(
         "save_report_section",
     }
     assert sum(1 for call in calls if call.tool_name == "save_report_section") == 6
+
+
+def test_every_tool_call_is_attached_to_the_step_that_made_it(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """A call with a null `agent_step_id` is invisible in the trajectory it belongs to.
+
+    The run page groups calls by `agent_step_id`. The registry commits each call as it runs (that
+    evidence must survive a crash), which happens before the node writes its `agent_steps` row — so
+    nothing set the link and every step reported 「该步骤没有工具调用」 while its summary said
+    「executed 5 tool call(s)」, and the whole run's calls were dumped into a separate
+    「未挂到步骤上的工具调用」 card that blamed deleted rows.
+    """
+    seeded = seed_topic(workspace, repo_count=1)
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        now=NOW,
+    )
+
+    steps = {
+        step.id: step
+        for step in session.scalars(
+            select(AgentStep).where(AgentStep.agent_run_id == result.agent_run_id)
+        )
+    }
+    calls = session.scalars(
+        select(ToolCall).where(ToolCall.agent_run_id == result.agent_run_id)
+    ).all()
+
+    assert calls
+    assert all(call.agent_step_id is not None for call in calls)
+    assert {call.agent_step_id for call in calls} <= set(steps)
+
+    # Research calls hang off the `tool` steps, section writes off a `write` step: the grouping
+    # has to match the node that actually ran them, not merely some step of the same run.
+    research = [call for call in calls if call.tool_name != "save_report_section"]
+    writes = [call for call in calls if call.tool_name == "save_report_section"]
+    assert {steps[call.agent_step_id].step_type for call in research} == {"tool"}
+    assert {steps[call.agent_step_id].step_type for call in writes} == {"write"}
+
+
+def test_the_tool_budget_floor_matches_the_evidence_the_verifier_demands() -> None:
+    """`2 x candidates + 2`: a profile and metrics each, one README, one baseline query."""
+    assert evidence_tool_floor(0) == 2
+    assert evidence_tool_floor(5) == 12
+
+
+def test_a_tight_tool_budget_is_lifted_to_what_the_evidence_bar_needs(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """The configured cap must not make a run that cannot possibly pass.
+
+    Default candidates (5) against the old default budget (10) is exactly that: two calls per
+    candidate for profile and metrics eats the budget before a README or a baseline query, so every
+    scheduled run ended `AGENT_EVIDENCE_INCOMPLETE` and produced no report. The floor is applied at
+    run start, so a config that is too small no longer decides the outcome.
+    """
+    seeded = seed_topic(workspace, repo_count=2)
+    settings = build_settings(agent_max_tool_calls=1, agent_max_candidates=2)
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=settings,
+        now=NOW,
+    )
+
+    assert result.status == "completed"
+    calls = session.scalars(
+        select(ToolCall).where(ToolCall.agent_run_id == result.agent_run_id)
+    ).all()
+    # The run got more calls than the configured budget of 1: the floor decided the ceiling, not
+    # the config. A late denial (`TOOL_BUDGET_EXCEEDED`) is fine - the model may keep proposing
+    # calls after the evidence bar is met; what matters is that the bar itself was reachable.
+    assert len(calls) >= evidence_tool_floor(2)
+    assert result.verification is not None
+    assert result.verification.sufficient is True
 
 
 def test_runtime_marks_run_for_review_without_candidates(

@@ -145,7 +145,7 @@
     <li class="trace-step">
       <div class="row">
         <span class="badge">#{{ item.step.step_index }}</span>
-        <span class="badge status-{{ item.step.status }}">{{ item.step.step_type }} · {{ item.step.status }}</span>
+        <span class="badge status-{{ item.step.status }}">{{ item.step.step_type | label }} · {{ item.step.status | label }}</span>
         <span class="meta">{{ ms(item.step.latency_ms) }}</span>
         <span class="meta">{{ item.step.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</span>
       </div>
@@ -159,7 +159,7 @@
           {% for call in item.tool_calls %}
           <tr>
             <td><code>{{ call.tool_name }}</code></td>
-            <td><span class="badge status-{{ call.status }}">{{ call.status }}</span></td>
+            <td><span class="badge status-{{ call.status }}">{{ call.status | label }}</span></td>
             <td>{% if call.error_code %}<code>{{ call.error_code }}</code>{% else %}—{% endif %}</td>
             <td>{{ ms(call.latency_ms) }}</td>
             <td><code class="trace-payload">{{ call.arguments_json | redacted_json }}</code></td>
@@ -169,7 +169,7 @@
         </tbody>
       </table>
       {% else %}
-      <p class="hint">该步骤没有工具调用。</p>
+      <p class="hint">{% if item.step.step_type == "tool" %}这一步的调用没有记录所属步骤（早期运行的历史数据）。{% else %}这一步不调用工具。{% endif %}</p>
       {% endif %}
     </li>
     {% endfor %}
@@ -183,8 +183,8 @@
 <section class="card">
   <h2>未挂到步骤上的工具调用</h2>
   <p class="hint">
-    这些调用的 <code>agent_step_id</code> 已失效。它们被单独保留而不是丢弃：追溯一次失败时，
-    丢失的调用恰恰是最需要的证据。
+    这些调用的 <code>agent_step_id</code> 为空或已失效 —— 要么运行发生在记录关联之前（早期版本），
+    要么所属的步骤行已经被删除。它们被单独保留而不是丢弃：追溯一次失败时，丢失的调用恰恰是最需要的证据。
   </p>
   <table class="grid">
     <thead>
@@ -194,7 +194,7 @@
       {% for call in trace.unlinked_tool_calls %}
       <tr>
         <td><code>{{ call.tool_name }}</code></td>
-        <td><span class="badge status-{{ call.status }}">{{ call.status }}</span></td>
+        <td><span class="badge status-{{ call.status }}">{{ call.status | label }}</span></td>
         <td>{% if call.error_code %}<code>{{ call.error_code }}</code>{% else %}—{% endif %}</td>
         <td>{{ ms(call.latency_ms) }}</td>
         <td><code class="trace-payload">{{ call.arguments_json | redacted_json }}</code></td>

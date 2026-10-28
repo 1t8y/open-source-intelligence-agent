@@ -307,6 +307,8 @@ T29 新增。人对一条 `needs_review` 运行的判断。这类运行跑完了
 
 字段：`id`、`agent_run_id`、`agent_step_id`、`tool_name`、`arguments_json`、`result_summary`、`status`、`error_code`、`latency_ms`、`created_at`。索引：`(agent_run_id)`、`(tool_name, status)`。
 
+`agent_step_id` 指向发起这次调用的步骤行。列可空，但**正常运行时总是有值**：调用先落库（崩溃也要留住证据），步骤行随后由 `StepRecorder.record` 写入，所以链接由 `StepRecorder.link_tool_calls` 在节点末尾补上。为空只意味着两种情况——运行发生在补链接之前（历史数据），或所属步骤行已被删除；两种情况运行详情页都单独列在「未挂到步骤上的工具调用」里，而不是丢弃。
+
 ## 6. 报告、引用与审核
 
 ### `reports`

@@ -153,6 +153,24 @@ def _plan_schemas(
     )
 
 
+def evidence_tool_floor(candidate_count: int) -> int:
+    """Return the fewest tool calls a run needs before the verifier can possibly pass it.
+
+    The verifier asks for three kinds of evidence (`graph._verify_node`): a profile **and** metrics
+    for every candidate, at least one cached README, and at least one prior-report query. That is
+    `2 x candidates + 2` calls, and any budget below it produces a run that cannot succeed no
+    matter how well the model reasons.
+
+    This exists because the two numbers were configured independently and drifted apart: the
+    default candidate limit is 5 and the default budget was 10, so every scheduled run spent its
+    last call on the tenth profile/metrics lookup, never read a README, recorded
+    `AGENT_EVIDENCE_INCOMPLETE`, and produced no report - quietly, once a day. Tool calls cost no
+    tokens (only the model turns that request them do), so the floor lifts the budget rather than
+    shrinking the candidate set: the alternative silently narrows what the report covers.
+    """
+    return 2 * max(0, candidate_count) + 2
+
+
 def load_or_create_config(session: Session, settings: Settings) -> AgentConfig:
     """Return the enabled Agent config, creating the default row on first use."""
     config = session.scalar(
@@ -355,12 +373,14 @@ def run_research_agent(
     recorder = StepRecorder(session, agent_run)
     recorder.mark_running()
 
+    # The configured cap is a ceiling, not a target: the evidence bar sets a floor under it.
+    tool_budget = max(config.max_tool_calls, evidence_tool_floor(len(candidate_ids)))
     context = ToolContext(
         agent_run_id=agent_run.id,
         topic_id=topic_id,
         authorized_topic_ids=frozenset({topic_id}),
         allowed_tools=allowed_tools,
-        max_tool_calls=config.max_tool_calls,
+        max_tool_calls=tool_budget,
     )
     deps = GraphDependencies(
         client=resolved_client,
@@ -382,7 +402,7 @@ def run_research_agent(
         "prompt_version": config.prompt_version,
         "max_loops": config.max_loops,
         "max_model_calls": config.max_model_calls,
-        "max_tool_calls": config.max_tool_calls,
+        "max_tool_calls": tool_budget,
         "max_tokens": config.max_tokens,
         "max_cost": config.max_cost,
         "research_plan": [],

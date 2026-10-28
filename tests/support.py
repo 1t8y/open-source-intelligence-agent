@@ -15,7 +15,12 @@ from open_source_intelligence.agent.tools.context import ToolContext
 from open_source_intelligence.core.config import Settings
 from open_source_intelligence.persistence import models  # noqa: F401
 from open_source_intelligence.persistence.base import Base
-from open_source_intelligence.persistence.models.agent import AgentConfig, AgentRun
+from open_source_intelligence.persistence.models.agent import (
+    AgentConfig,
+    AgentRun,
+    AgentStep,
+    ToolCall,
+)
 from open_source_intelligence.persistence.models.identity import User
 from open_source_intelligence.persistence.models.intelligence import (
     DataSource,
@@ -263,6 +268,52 @@ class Workspace:
         self.session.add(agent_run)
         self.session.flush()
         return agent_run
+
+    def add_agent_step(
+        self,
+        agent_run_id: int,
+        *,
+        step_type: str = "tool",
+        status: str = "ok",
+        summary: str = "executed 1 tool call(s)",
+        step_index: int = 1,
+    ) -> AgentStep:
+        """Append one step row to a run, for tests that need a trail to read."""
+        step = AgentStep(
+            agent_run_id=agent_run_id,
+            step_index=step_index,
+            step_type=step_type,
+            status=status,
+            summary=summary,
+            latency_ms=1,
+        )
+        self.session.add(step)
+        self.session.flush()
+        return step
+
+    def add_tool_call(
+        self,
+        agent_run_id: int,
+        agent_step_id: int | None,
+        *,
+        tool_name: str = "get_repository_profile",
+        status: str = "success",
+        arguments: dict[str, object] | None = None,
+        result_summary: str = "1 row",
+    ) -> ToolCall:
+        """Append one tool call, optionally attached to the step that made it."""
+        call = ToolCall(
+            agent_run_id=agent_run_id,
+            agent_step_id=agent_step_id,
+            tool_name=tool_name,
+            arguments_json=arguments or {"repo_id": 1},
+            result_summary=result_summary,
+            status=status,
+            latency_ms=1,
+        )
+        self.session.add(call)
+        self.session.flush()
+        return call
 
     def add_report(
         self,

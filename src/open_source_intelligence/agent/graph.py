@@ -347,6 +347,9 @@ def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     guard_triggered = bool(state.get("guard_triggered"))
     messages: list[ChatMessage] = []
     observations: list[ToolObservation] = []
+    # Calls are committed one by one as they run (evidence has to survive a crash); the step is
+    # written afterwards, so remember where this node started and attach that tail to it.
+    first_call = len(deps.context.recorded_call_ids)
 
     for call in calls:
         context = replace(deps.context, tool_call_count=tool_call_count)
@@ -376,12 +379,13 @@ def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         )
 
     status = "ok" if all(item.ok for item in observations) else "partial"
-    deps.recorder.record(
+    step = deps.recorder.record(
         step_type="tool",
         status=status,
         summary=f"executed {len(observations)} tool call(s)",
         latency_ms=_elapsed_ms(started),
     )
+    deps.recorder.link_tool_calls(step.id, deps.context.recorded_call_ids[first_call:])
     return {
         "messages": messages,
         "last_observations": observations,
@@ -722,6 +726,10 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     saved: list[SectionRef] = []
     tool_call_count = state.get("tool_call_count", 0)
     failures = 0
+    # Same bookkeeping as the tool node: section writes are also `tool_calls` rows, and they belong
+    # to the `write` step written below. `replace` copies the list by reference, so the registry
+    # appends to the same list the run context holds.
+    first_write_call = len(deps.context.recorded_call_ids)
     for index, section in enumerate(sections):
         arguments: dict[str, Any] = {
             "section_key": section.section_key,
@@ -737,13 +745,14 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         else:
             failures += 1
 
-    deps.recorder.record(
+    write_step = deps.recorder.record(
         step_type="write",
         status="ok" if failures == 0 else "partial",
         summary=f"saved {len(saved)} section(s), {failures} failed",
         input_digest=digest_text(turn.text),
         latency_ms=_elapsed_ms(started),
     )
+    deps.recorder.link_tool_calls(write_step.id, deps.context.recorded_call_ids[first_write_call:])
     # A partially stored draft is not a finished draft: report it as needing a human instead
     # of letting the run look complete with fewer sections than the template requires.
     next_prompt_tokens = prompt_tokens

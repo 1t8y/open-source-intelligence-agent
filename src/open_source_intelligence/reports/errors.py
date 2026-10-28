@@ -4,6 +4,10 @@
 class ReportGenerationError(ValueError):
     """Raised when a draft cannot be promoted into a traceable report."""
 
+    #: Stable identifier so a caller (the API, the CLI, the worker) can branch on the failure
+    #: instead of matching on the message. It used to be absent, and callers printed `null`.
+    code = "REPORT_GENERATION_FAILED"
+
 
 class ReportNotFoundError(ReportGenerationError):
     """Raised when the addressed report or report version does not exist.

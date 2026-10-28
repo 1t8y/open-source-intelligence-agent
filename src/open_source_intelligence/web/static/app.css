@@ -325,7 +325,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .grid th { color: var(--muted); font-weight: 600; }
 .grid code { font-family: var(--mono); font-size: 12px; }
 /* 数字列右对齐并用等宽数字，位数才排得成一条线 —— 这是本界面唯一的字体性格。 */
-.grid .num, .grid td.num { text-align: right; font-family: var(--mono); font-feature-settings: "tnum" 1; }
+.grid .num, .grid td.num { text-align: right; font-family: var(--mono); font-feature-settings: "tnum" 1; white-space: nowrap; }
 .grid td.mono, .grid .mono { font-family: var(--mono); font-size: 12px; }
 .grid .truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

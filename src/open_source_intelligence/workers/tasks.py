@@ -34,6 +34,7 @@ from open_source_intelligence.pipeline.research_dispatch import (
     select_research_targets,
 )
 from open_source_intelligence.pipeline.runs import PipelineStageError
+from open_source_intelligence.reports.automation import finish_run_report
 from open_source_intelligence.reports.publishing import (
     PUBLISH_BATCH_LIMIT,
 )
@@ -233,6 +234,7 @@ def run_research_agent(
         raise ValueError("the research Agent is disabled by AGENT_ENABLED")
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
+    report_summary: dict[str, Any] | None = None
     try:
         with session_factory() as session:
             result = execute_research_agent(
@@ -243,6 +245,10 @@ def run_research_agent(
                 window_end=_optional_datetime(window_end),
                 max_candidates=max_candidates,
             )
+            # A draft on its own is not a report: without this edge the daily chain ended at
+            # `report_drafts`, so nothing was verified, nothing was published, and no mail went out.
+            if settings.agent_auto_report_enabled and result.report_draft_id is not None:
+                report_summary = finish_run_report(session, agent_run_id=result.agent_run_id)
     finally:
         engine.dispose()
     if (
@@ -257,6 +263,7 @@ def run_research_agent(
             ),
         )
     payload: dict[str, Any] = result.to_dict()
+    payload["report"] = report_summary
     payload["task"] = RESEARCH_AGENT_TASK
     return payload
 

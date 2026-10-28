@@ -375,3 +375,7 @@ class ToolRegistry:
         )
         session.add(record)
         session.commit()
+        # The owning step is written after the calls return, so the id is claimed later by
+        # `StepRecorder.link_tool_calls`. Leaving it null meant the run page could never show a
+        # call under its step and dumped every call into "未挂到步骤上的工具调用" instead.
+        ctx.recorded_call_ids.append(record.id)

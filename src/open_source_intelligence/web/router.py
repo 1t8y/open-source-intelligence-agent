@@ -309,6 +309,17 @@ ENUM_LABELS: dict[str, str] = {
     "AUTO": "自动",
     "AUTO_WITH_DELAY": "延迟自动",
     "MANUAL": "手动",
+    # Agent step trail. `step_type` is the graph node that ran, `status` is its verdict; both are
+    # printed as a pair on the run page (`规划 · 正常`), where the raw codes read like stack frames.
+    "plan": "规划",
+    "tool": "调用工具",
+    "observe": "整理证据",
+    "verify": "验证",
+    "write": "成稿",
+    "ok": "正常",
+    "insufficient": "证据不足",
+    "skipped": "跳过",
+    "degraded": "降级",
     # Delivery channels.
     "email": "邮件",
     "webhook": "Webhook",

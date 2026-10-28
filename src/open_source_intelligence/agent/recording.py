@@ -7,15 +7,16 @@ the run got that far. Summaries are redacted before they are stored (INV-8).
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.core.logging import redact_text
 from open_source_intelligence.persistence.base import utc_now
-from open_source_intelligence.persistence.models.agent import AgentRun, AgentStep
+from open_source_intelligence.persistence.models.agent import AgentRun, AgentStep, ToolCall
 
 StepType = Literal["plan", "tool", "observe", "verify", "write"]
 
@@ -76,6 +77,21 @@ class StepRecorder:
         self._session.add(step)
         self._session.commit()
         return step
+
+    def link_tool_calls(self, step_id: int, call_ids: Sequence[int]) -> None:
+        """Attach the tool calls of one node to the step that node just wrote.
+
+        The order is fixed by the graph: tool calls are executed and committed first (each one is
+        evidence that must survive a crash), and only then is the `agent_steps` row written, so the
+        step id does not exist while the calls run. Without this the calls kept a null
+        `agent_step_id` forever and the run page reported every step as having no tool calls.
+        """
+        if not call_ids:
+            return
+        self._session.execute(
+            update(ToolCall).where(ToolCall.id.in_(list(call_ids))).values(agent_step_id=step_id)
+        )
+        self._session.commit()
 
     def sync_counters(
         self,

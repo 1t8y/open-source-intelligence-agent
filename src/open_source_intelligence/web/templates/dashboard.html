@@ -85,7 +85,7 @@
     <tbody>
       {% for run_type, counts in overview.pipeline.by_run_type.items() %}
       <tr>
-        <td><code>{{ run_type }}</code></td>
+        <td>{{ run_type | label }}</td>
         <td>{{ status_badges(counts) }}</td>
       </tr>
       {% endfor %}

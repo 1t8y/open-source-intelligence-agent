@@ -65,8 +65,8 @@
       <a href="/ui/reports/{{ newest.id }}"><strong>{{ newest.title }}</strong></a>
       <p class="meta">
         主题：{{ newest_topic_name or "—" }} ·
-        状态：<span class="badge status-{{ newest.status }}">{{ newest.status }}</span> ·
-        可见：{{ newest.visibility }} · 敏感：{{ newest.sensitivity }}
+        状态：<span class="badge status-{{ newest.status }}">{{ newest.status | label }}</span> ·
+        可见：{{ newest.visibility | label }} · 敏感：{{ newest.sensitivity | label }}
       </p>
     </div>
     <a href="/ui/reports/{{ newest.id }}">打开报告 →</a>

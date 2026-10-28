@@ -259,6 +259,8 @@ docker compose ... exec -T api python -m open_source_intelligence.agent.cli --ac
 
 `--window-start` / `--window-end` 覆盖窗口（ISO 8601）；`--max-candidates` 覆盖主题的候选上限，**这是控制这一轮模型预算最直接的一个旋钮**。运行级预算在 `AGENT_MAX_LOOPS` / `AGENT_MAX_MODEL_CALLS` / `AGENT_MAX_TOOL_CALLS` / `AGENT_MAX_TOKENS` / `AGENT_MAX_COST`。
 
+`AGENT_MAX_TOOL_CALLS` 需要和候选数一起看，不能单独调小。验证器要的证据是「每个候选一份 profile + 一份 metrics，另加至少一份 README、至少一次历史报告查询」，即 `候选数 × 2 + 2` 次调用；预算低于它，这一次运行**无论模型多想干也过不了**，只会白花模型费用并留下一条 `AGENT_EVIDENCE_INCOMPLETE`。`agent/runtime.py:evidence_tool_floor` 在运行开始时把预算抬到这个下限（工具调用本身不计费，只有请求它的模型轮次计费），所以要压成本请压 `AGENT_MAX_MODEL_CALLS` 或 `AGENT_MAX_CANDIDATES`，而不是压工具预算。
+
 ### 自动派发（T24）
 
 `AGENT_AUTO_RESEARCH_ENABLED=false`（默认）时，每日任务在四个阶段之后什么都不做，载荷里 `research_dispatched` 为 `null`。改成 `true` 之后，任务会对**同时满足三条**的主题各派发一个研究任务：

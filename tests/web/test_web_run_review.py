@@ -178,3 +178,33 @@ def test_the_old_dashboard_run_link_still_resolves(
 
     assert response.status_code == 303
     assert response.headers["location"] == f"/ui/runs/{run.id}"
+
+
+def test_a_step_shows_the_tool_calls_that_belong_to_it(
+    session: Session,
+    workspace: Workspace,
+    editor: Actor,
+    client: TestClient,
+) -> None:
+    """The trajectory groups calls by `agent_step_id`; an unlinked call belongs to no step.
+
+    Every call used to be written with a null `agent_step_id`, so each step claimed it had no
+    tool calls while its own summary said `executed 5 tool call(s)`, and the run's calls all fell
+    through to a card blaming deleted rows. The graph writes the link now
+    (`StepRecorder.link_tool_calls`); this pins what the page does with it.
+    """
+    run = _run(session, workspace, status="needs_review")
+    step = workspace.add_agent_step(run.id, step_type="tool", summary="executed 1 tool call(s)")
+    call = workspace.add_tool_call(run.id, step.id, tool_name="get_repository_profile")
+    assert call.agent_step_id == step.id
+    assert web_login(client, editor).status_code == 303
+
+    page = client.get(f"/ui/runs/{run.id}")
+
+    assert page.status_code == 200
+    # The step badge is translated, and the call is rendered under that step rather than in the
+    # orphan card.
+    assert "调用工具 · 正常" in page.text
+    assert "get_repository_profile" in page.text
+    assert "未挂到步骤上的工具调用" not in page.text
+    assert "该步骤没有工具调用" not in page.text

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +15,11 @@ class ToolContext:
     allowed_tools: tuple[str, ...]
     max_tool_calls: int
     tool_call_count: int = 0
+    #: Ids of the `tool_calls` rows written so far, in order. The registry appends here as it
+    #: records; the graph drains the tail into the step it is about to write, because the step row
+    #: does not exist yet when the calls run. Mutating a list on a frozen dataclass is fine — what
+    #: frozen forbids is rebinding the attribute.
+    recorded_call_ids: list[int] = field(default_factory=list)
 
     def can_access_topic(self, topic_id: int) -> bool:
         """Return whether the run may read resources of the given topic."""
