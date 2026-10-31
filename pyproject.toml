@@ -22,7 +22,7 @@ dependencies = [
   "PyJWT>=2.8,<3",
   "python-multipart>=0.0.9,<1",
   "redis>=5,<7",
-  "sqlalchemy>=2.0,<3",
+  "sqlalchemy>=2.0,<2.1",
   "uvicorn[standard]>=0.30,<1",
 ]
 
@@ -66,7 +66,11 @@ select = ["B", "E", "F", "I", "UP"]
 python_version = "3.11"
 strict = true
 packages = ["open_source_intelligence"]
-plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+# SQLAlchemy 2.0 ships native PEP 484 annotations, so its mypy plugin has been deprecated
+# since 2.0 and was removed in 2.1. Declaring `sqlalchemy.ext.mypy.plugin` here breaks mypy
+# under the resolver's `sqlalchemy>=2.0,<3` (which installs 2.1) with "No module named
+# 'sqlalchemy.ext.mypy'". Only pydantic's plugin is needed.
+plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["celery", "celery.*"]
