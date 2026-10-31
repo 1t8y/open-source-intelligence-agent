@@ -17,7 +17,9 @@ concurrency:
 jobs:
   test:
     name: Test and static checks
-    runs-on: ubuntu-latest
+    # Pin the image as well as Python: ubuntu-latest has moved to Ubuntu 26.04, where the
+    # setup-python cache does not provide Python 3.12.7. Keep this paired with the version below.
+    runs-on: ubuntu-24.04
     env:
       PIP_DEFAULT_TIMEOUT: "120"
       PIP_RETRIES: "5"
@@ -79,7 +81,7 @@ jobs:
   build:
     name: Build image and smoke-test health
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write

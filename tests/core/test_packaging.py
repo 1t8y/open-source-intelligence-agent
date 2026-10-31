@@ -30,6 +30,8 @@ def test_ci_installs_the_exact_toolchain_and_runs_clean_mypy() -> None:
     assert "python -m pip install --no-cache-dir -r requirements-ci.txt" in workflow
     assert "python -m pytest -p no:cacheprovider" in workflow
     assert "python -m mypy --no-incremental src" in workflow
+    assert workflow.count("runs-on: ubuntu-24.04") == 2
+    assert "runs-on: ubuntu-latest" not in workflow
     assert "mypy==1.11.2" in lock
     assert "pytest==7.4.4" in lock
     assert "sqlalchemy==2.0.34" in lock
