@@ -27,11 +27,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Pinned to the versions the suite is actually verified against locally. There is no lock
+# file, and the loose ranges used before (`mypy>=1.11,<2`, `pytest>=8,<10`) let CI resolve to
+# much newer releases than the local environment, which changed mypy's strictness (new
+# `unused-ignore` and `untyped-decorator` findings) and pytest's collection behavior. Keeping
+# the toolchain identical on both sides is what makes the local gate reproducible in CI.
+# `pytest-asyncio` was dropped: the suite has no async tests, and its `pytest>=8.2` floor
+# conflicts with the pinned pytest anyway.
 dev = [
-  "mypy>=1.11,<2",
-  "pytest>=8,<10",
-  "pytest-asyncio>=0.24,<2",
-  "ruff>=0.6,<1",
+  "mypy==1.11.2",
+  "pytest==7.4.4",
+  "ruff==0.16.10",
 ]
 
 [tool.setuptools]
