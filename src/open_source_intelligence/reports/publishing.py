@@ -191,8 +191,20 @@ def _latest_published_report(session: Session, *, topic_id: int, exclude_id: int
     ).first()
 
 
-def _baseline_reasons(session: Session, report: Report) -> list[str]:
-    """Collect reasons that come from the run and the topic history, not the artifact."""
+def _baseline_reasons(
+    session: Session,
+    report: Report,
+    *,
+    skip_first_run: bool = False,
+) -> list[str]:
+    """Collect reasons that come from the run and the topic history, not the artifact.
+
+    `skip_first_run` is set by `AUTO_WITH_DELAY`: that mode is the unattended auto-publish
+    path, and it already carries a verification gate plus a withdrawal window, so holding the
+    topic's first report back for a human would stall every new topic that is meant to run on
+    its own. `MANUAL` and `AUTO` keep the first-run review, because a human is already in
+    their loop.
+    """
     reasons: list[str] = []
     agent_run = session.get(AgentRun, report.agent_run_id)
     if agent_run is None:
@@ -204,7 +216,8 @@ def _baseline_reasons(session: Session, report: Report) -> list[str]:
 
     previous = _latest_published_report(session, topic_id=report.topic_id, exclude_id=report.id)
     if previous is None:
-        reasons.append(REASON_FIRST_RUN)
+        if not skip_first_run:
+            reasons.append(REASON_FIRST_RUN)
         return reasons
     previous_run = session.get(AgentRun, previous.agent_run_id)
     if previous_run is None:
@@ -248,7 +261,13 @@ def evaluate_publish_policy(
         reasons.append(REASON_SENSITIVE_CONTENT)
     if report.sensitivity == SENSITIVE_SENSITIVITY:
         reasons.append(REASON_SENSITIVE_REPORT)
-    reasons.extend(_baseline_reasons(session, report))
+    reasons.extend(
+        _baseline_reasons(
+            session,
+            report,
+            skip_first_run=report.publish_mode == PUBLISH_MODE_AUTO_WITH_DELAY,
+        )
+    )
     if report.publish_mode == PUBLISH_MODE_AUTO and report.visibility != INTERNAL_VISIBILITY:
         # `AUTO` is reserved for internal reports; anything narrower goes through review.
         reasons.append(REASON_NOT_INTERNAL_VISIBILITY)

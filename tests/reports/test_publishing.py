@@ -151,17 +151,37 @@ def test_delay_minutes_come_from_settings(
     assert decision.publish_at == NOW + timedelta(minutes=15)
 
 
-def test_first_run_always_asks_for_review(
+def test_first_run_asks_for_review_on_manual(
     session: Session,
-    report_case: SeededReport,
+    workspace: Workspace,
 ) -> None:
-    """The very first report for a topic has no baseline, so a human must sign off."""
-    decision = evaluate_publish_policy(session, report_id=report_case.report_id, now=NOW)
+    """A MANUAL report's first run has no baseline, so a human must sign off."""
+    case = _prepare_case(session, workspace, publish_mode=MANUAL, prior_publication=False)
+
+    decision = evaluate_publish_policy(session, report_id=case.report_id, now=NOW)
 
     assert decision.requires_review is True
     assert decision.resolution == "pending_review"
     assert decision.publish_at is None
     assert REASON_FIRST_RUN in decision.reason_codes
+
+
+def test_auto_with_delay_skips_first_run_review(
+    session: Session,
+    report_case: SeededReport,
+) -> None:
+    """The unattended auto-publish path does not hold a topic's first report back.
+
+    `AUTO_WITH_DELAY` already carries a verification gate and a withdrawal window, so requiring
+    a human sign-off on the first report would stall every new auto-published topic. The first
+    run must schedule instead of blocking, and must not carry `FIRST_RUN`.
+    """
+    decision = evaluate_publish_policy(session, report_id=report_case.report_id, now=NOW)
+
+    assert decision.resolution == "scheduled"
+    assert decision.requires_review is False
+    assert REASON_FIRST_RUN not in decision.reason_codes
+    assert decision.publish_at == NOW + timedelta(minutes=60)
 
 
 def test_low_citation_coverage_escalates_to_review(
