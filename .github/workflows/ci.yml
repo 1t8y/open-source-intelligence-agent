@@ -32,7 +32,12 @@ jobs:
         run: pip install --upgrade pip && pip install ".[dev]"
 
       - name: Unit tests (offline, no external services)
-        run: pytest -o addopts="" -q
+        # `python -m pytest` rather than the bare `pytest` entry point: the entry point does
+        # not put the checkout root on sys.path, so `pythonpath = ["scripts"]` in
+        # pyproject.toml (a relative path) is not resolved and `import scripts.seed_demo`
+        # in tests/scripts/ fails collection with ModuleNotFoundError. `python -m` adds the
+        # current directory to sys.path[0], matching how the suite runs locally.
+        run: python -m pytest -o addopts="" -q
 
       - name: Ruff lint
         run: ruff check
