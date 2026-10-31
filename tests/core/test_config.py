@@ -2,6 +2,7 @@
 
 import pytest
 from pydantic import ValidationError
+from support import build_settings
 
 from open_source_intelligence.core.config import Settings
 
@@ -10,6 +11,19 @@ VALID_SETTINGS = {
     "redis_url": "redis://localhost:6379/0",
     "secret_key": "x" * 32,
 }
+
+
+def test_test_settings_ignore_a_developer_dotenv(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test helpers must not inherit a developer's real provider configuration."""
+    (tmp_path / ".env").write_text(
+        "AGENT_PROVIDER=openai_compatible\nAGENT_API_BASE=https://example.com/v1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = build_settings()
+
+    assert settings.agent_provider == "offline"
 
 
 def test_valid_settings_load() -> None:

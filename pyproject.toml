@@ -27,11 +27,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Pinned to the versions the suite is actually verified against locally. There is no lock
-# file, and the loose ranges used before (`mypy>=1.11,<2`, `pytest>=8,<10`) let CI resolve to
-# much newer releases than the local environment, which changed mypy's strictness (new
-# `unused-ignore` and `untyped-decorator` findings) and pytest's collection behavior. Keeping
-# the toolchain identical on both sides is what makes the local gate reproducible in CI.
+# Pinned to the versions the suite is actually verified against locally. The loose ranges used
+# before (`mypy>=1.11,<2`, `pytest>=8,<10`) let CI resolve to much newer releases, which changed
+# mypy's strictness and pytest's collection behavior. `requirements-ci.txt` mirrors these pins for
+# the complete CI environment so local and remote gates stay reproducible.
 # `pytest-asyncio` was dropped: the suite has no async tests, and its `pytest>=8.2` floor
 # conflicts with the pinned pytest anyway.
 dev = [
@@ -73,11 +72,20 @@ python_version = "3.11"
 strict = true
 packages = ["open_source_intelligence"]
 # SQLAlchemy 2.0 ships native PEP 484 annotations, so its mypy plugin has been deprecated
-# since 2.0 and was removed in 2.1. Declaring `sqlalchemy.ext.mypy.plugin` here breaks mypy
-# under the resolver's `sqlalchemy>=2.0,<3` (which installs 2.1) with "No module named
-# 'sqlalchemy.ext.mypy'". Only pydantic's plugin is needed.
+# since 2.0 and was removed in 2.1. The project pins `sqlalchemy<2.1` and CI installs 2.0.34,
+# so only pydantic's plugin is needed; declaring `sqlalchemy.ext.mypy.plugin` would fail on 2.1.
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["celery", "celery.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["mistune"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# SQLAlchemy's MySQL dialect constructors are untyped even in 2.0. Keep the exception scoped
+# to this adapter module instead of sprinkling inline ignores that newer mypy calls unused.
+module = ["open_source_intelligence.persistence.base"]
+disable_error_code = ["no-untyped-call"]

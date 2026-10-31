@@ -20,19 +20,19 @@ NAMING_CONVENTION = {
 
 def unsigned_bigint() -> BigInteger:
     """Return a portable BIGINT that is unsigned on MySQL."""
-    mysql_type = mysql.BIGINT(unsigned=True)  # type: ignore[no-untyped-call]
+    mysql_type = mysql.BIGINT(unsigned=True)
     return BigInteger().with_variant(mysql_type, "mysql").with_variant(Integer(), "sqlite")
 
 
 def unsigned_smallint() -> SmallInteger:
     """Return a portable SMALLINT that is unsigned on MySQL."""
-    mysql_type = mysql.SMALLINT(unsigned=True)  # type: ignore[no-untyped-call]
+    mysql_type = mysql.SMALLINT(unsigned=True)
     return SmallInteger().with_variant(mysql_type, "mysql").with_variant(Integer(), "sqlite")
 
 
 def medium_text() -> Text:
     """Return a portable TEXT column that maps to MEDIUMTEXT on MySQL."""
-    mysql_type = mysql.MEDIUMTEXT()  # type: ignore[no-untyped-call]
+    mysql_type = mysql.MEDIUMTEXT()
     return Text().with_variant(mysql_type, "mysql")
 
 
@@ -60,7 +60,7 @@ class UTCDateTime(TypeDecorator[datetime]):
     def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[datetime]:
         """Use microsecond precision on MySQL and standard DATETIME elsewhere."""
         if dialect.name == "mysql":
-            mysql_type = mysql.DATETIME(fsp=6)  # type: ignore[no-untyped-call]
+            mysql_type = mysql.DATETIME(fsp=6)
             return dialect.type_descriptor(mysql_type)
         return dialect.type_descriptor(DateTime())
 

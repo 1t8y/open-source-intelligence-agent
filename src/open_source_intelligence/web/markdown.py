@@ -18,7 +18,7 @@ Two rules decide how it is rendered:
 
 from __future__ import annotations
 
-import mistune  # type: ignore[import-untyped]
+import mistune
 from markupsafe import Markup
 
 #: Table and strikethrough are the two GitHub extensions the composed reports actually use; the
