@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test and static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package with dev tools
+        run: pip install --upgrade pip && pip install ".[dev]"
+
+      - name: Unit tests (offline, no external services)
+        run: pytest -o addopts="" -q
+
+      - name: Ruff lint
+        run: ruff check
+
+      - name: Ruff format
+        run: ruff format --check src tests migrations scripts
+
+      - name: Mypy
+        run: mypy src
+
+      - name: Docs drift
+        run: python scripts/check_docs_drift.py
+
+  build:
+    name: Build image and smoke-test health
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha
+            type=ref,event=branch
+            type=ref,event=pr
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          # A fixed local tag the smoke-test step can address, independent of the
+          # metadata tag scheme (whose sha- tag uses a short SHA, not the full one).
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ghcr.io/${{ github.repository }}:ci-smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the /health endpoint
+        env:
+          SMOKE_TAG: ghcr.io/${{ github.repository }}:ci-smoke
+        run: |
+          # /health is process liveness only; the required Settings fields must be present
+          # with valid formats, but the endpoint never actually connects to them.
+          docker run --rm -d --name osint-health \
+            -e SECRET_KEY=ci-smoke-test-secret-key-0123456789abcdef \
+            -e DATABASE_URL=mysql+pymysql://app:secret@127.0.0.1:3306/osint \
+            -e REDIS_URL=redis://127.0.0.1:6379/0 \
+            "$SMOKE_TAG" \
+            python -m uvicorn open_source_intelligence.api.app:create_app \
+            --factory --host 0.0.0.0 --port 8000
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health; then
+              echo
+              echo "health endpoint responded"
+              docker stop osint-health
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "health endpoint did not come up in time"
+          docker logs osint-health
+          docker stop osint-health
+          exit 1
+
+      - name: Push image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
