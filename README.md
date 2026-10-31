@@ -46,7 +46,7 @@
 
 <video src="docs/assets/demo.mp4" poster="docs/assets/home.png" controls width="100%"></video>
 
-**[▶ 打开演示视频](docs/assets/demo.mp4)**（MP4 · 1080p · 4.7 MB）
+**[▶ 打开演示视频](docs/assets/demo.mp4)**（MP4 · 1080p · 3.5 MB）
 
 > GitHub 的 README 不会内联播放仓库内的 mp4：点上面的链接下载后观看，或在本地 IDE／Typora 里预览时直接播。录屏里所有数字、投递记录、评测结果都来自本机真实运行，不是演示数据。
 
