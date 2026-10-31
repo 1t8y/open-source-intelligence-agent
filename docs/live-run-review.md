@@ -113,8 +113,8 @@ backfill 与一次性 CLI 仍用 `stars` 保持原有分页语义。真机验证
 `AlysisAi/AlysisCode`、`bytechefhq/bytechef`、`Team-Commonly/commonly` 等 `sort=stars` 永远
 看不到的新面孔，同时 rea 仍因近期活跃而保留。新增 2 个测试（`tests/collectors/test_paging.py`）。
 
-**③ topic 41 连续四天研究失败，报告全部堆积。** 10-28、10-29、10-30、10-31 的 topic 41
-agent run 均为 `AGENT_EVIDENCE_INCOMPLETE`（10-28 还有一个 topic 42 同样原因）。
+**③ topic 41 连续四天研究失败，报告全部堆积（已修复）。** 10-28、10-29、10-30、10-31 的
+topic 41 agent run 均为 `AGENT_EVIDENCE_INCOMPLETE`（10-28 还有一个 topic 42 同样原因）。
 结果是 #60、#62、#63 三份报告全部停在 `pending_review`，没有任何一份发出。
 
 这个失败码容易误读成「预算不够」，实际不是。候选只有 5 个（`AGENT_MAX_CANDIDATES=5`），
@@ -133,6 +133,17 @@ verify 节点连续四次判 `insufficient`（`summary` 里写得很明确：`no
 was read`），直到预算耗完，run 以 `needs_review` 收场。所以这既是模型的行为问题，也是
 编排没有兜底的问题——`evidence_tool_floor` 只保证**总量**够 12 次，不保证**分配**覆盖到四类证据。
 
+修复（本复盘落地，两层）：
+- **提示词层**：`prompts/plan_v1.md` 把「读缓存内容」从「可选第 4 步、仅少数」改成「必做」，
+  明说缺了它证据验证不会通过。
+- **编排兜底层**：`graph._verify_node` 在判定 insufficient 且「从未读过任何 README」时，
+  注入一条 user 引导消息，点明缺口是 `get_repository_content`（只注入一次，靠 `readme_nudged`
+  状态位防重复）。`AgentState` 增加 `readme_nudged` 字段。
+
+真机验证（真实模型 `deepseek-chat`）：topic 41 的研究 run#147 从「`needs_review` /
+`AGENT_EVIDENCE_INCOMPLETE`、README 零次」变成「`completed`、无错误、`get_repository_content` 1 次、
+历史查询从重复 2 次降到 1 次」。新增 3 个 nudge 单元测试（`tests/agent/test_graph.py`）。
+
 三份报告的发布决策记录在 `pipeline_runs.metrics_json` 里，原因码值得原样看：
 
 | 决策 run | 报告 | resolution | reason_codes |
@@ -142,10 +153,11 @@ was read`），直到预算耗完，run 以 `needs_review` 收场。所以这既
 | #641 | #63 | `pending_review` | `AGENT_RUN_NOT_CLEAN`, `FIRST_RUN` |
 
 #62 的研究运行是 `completed`、验证 `passed`、没有 `AGENT_RUN_NOT_CLEAN`，它**唯一**
-被拦的原因就是 `FIRST_RUN`。而 `FIRST_RUN` 的判据是「该主题还没有发布过的报告」——
-三份都没发出去，所以下一份仍然是「首份」。这是死锁，不是偶发：只要没人手动放行一次，
-topic 41 会一直生报告、一直不发。对照 topic 44 的决策（`resolution=scheduled`,
-`reasons=[]`）就能看出差别不在数据质量，而在闸门状态。
+被拦的原因就是 `FIRST_RUN`。README 兜底修好后，topic 41 能稳定产出干净 run，但「首份报告
+必须人审」这个闸门仍会让它停在 `pending_review`——这是有测试固化的刻意设计（
+`tests/reports/test_publishing.py::test_first_run_always_asks_for_review`），不是 bug。它意味着
+每个新主题的第一份报告都要人工点一次「通过」，无人值守场景下就「卡首份」。要不要放宽是
+产品决策，不在本次复盘范围。
 
 **④ 数据面缺口：`open_issues` 从未采集。** 823 条快照全为空。这直接限制了报告对
 「高增长是否伴随高维护成本」的判断，而这条恰恰是选型时最该看的。
@@ -155,6 +167,6 @@ topic 41 会一直生报告、一直不发。对照 topic 44 的决策（`resolu
 作为一条无人值守的情报流水线，它已经通过了最基本也最难的一项检验：**连续两天，固定的
 时间、固定的窗口、零人工干预、邮件按时落地，并且内容随真实数据变化而不是复读模板。**
 
-作为产品它还差两步：研究阶段要在写稿前兜底读一份 README（否则像 topic 41 那样反复产出
-不合格的证据）、首份报告的人审闸门要能放行一次（否则该主题永远死锁在「首份」）。窗口重叠
-与候选池固定这两条已随本复盘修复。
+作为产品还剩两件事：`open_issues` 数据缺口（见问题④），以及「首份报告人审」要不要放宽——
+后者不是缺陷，是有测试固化的安全设计，只影响无人值守时新主题的第一封投递。窗口重叠、候选池
+固定、研究侧缺 README 这三条已随本复盘修复。

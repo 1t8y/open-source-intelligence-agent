@@ -510,7 +510,36 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         summary=result.reason,
         latency_ms=_elapsed_ms(started),
     )
-    return {"verification": result, "guard_triggered": guard_triggered}
+
+    # A nudge for the one gap the model keeps leaving open: it does profile + metrics + history
+    # and then stops, never reading a README, so the verifier stays "insufficient" until the
+    # budget runs out. When the only missing class is cached content, tell the planner exactly
+    # what is missing instead of letting it guess. Sent once, so a run that still cannot satisfy
+    # the condition does not accumulate the same instruction every loop.
+    nudge_messages: list[ChatMessage] = []
+    if (
+        not result.sufficient
+        and candidates
+        and not content_repos
+        and not guard_triggered
+        and not state.get("readme_nudged", False)
+    ):
+        nudge_messages = [
+            ChatMessage(
+                role="user",
+                content=(
+                    "证据校验仍未通过：你已经为所有候选仓库取了画像和指标、查询了历史报告，"
+                    "但还没有阅读任何一份候选仓库的缓存内容。请调用 `get_repository_content` "
+                    "至少阅读一个候选仓库（优先排名最靠前的），否则整轮证据会被判为不完整。"
+                ),
+            )
+        ]
+    return {
+        "verification": result,
+        "guard_triggered": guard_triggered,
+        "readme_nudged": bool(state.get("readme_nudged", False)) or bool(nudge_messages),
+        "messages": nudge_messages,
+    }
 
 
 def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:

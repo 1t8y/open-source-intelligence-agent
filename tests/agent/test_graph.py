@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
-from open_source_intelligence.agent.graph import GRAPH_NODES, _route_after_verify
+from open_source_intelligence.agent.graph import GRAPH_NODES, _route_after_verify, _verify_node
 from open_source_intelligence.agent.llm.messages import ModelToolCall
-from open_source_intelligence.agent.state import AgentState, VerificationResult
+from open_source_intelligence.agent.state import AgentState, EvidenceRef, VerificationResult
 
 
 def _call() -> ModelToolCall:
@@ -44,8 +45,81 @@ def _state(**overrides: Any) -> AgentState:
     return state
 
 
+def _evidence(*, tool_name: str, repo_id: int | None = None, ok: bool = True) -> EvidenceRef:
+    return EvidenceRef(
+        tool_name=tool_name,
+        repo_id=repo_id,
+        ok=ok,
+        result_count=1,
+        truncated=False,
+    )
+
+
+def _verify_deps() -> Mock:
+    """A dependency double exposing the two things `_verify_node` reads."""
+    deps = Mock()
+    deps.run_verifier = True
+    deps.recorder.record.return_value = Mock()
+    return deps
+
+
 def test_graph_node_order_is_fixed() -> None:
     assert GRAPH_NODES == ("plan", "tool", "observe", "verify", "write")
+
+
+def test_verify_nudges_the_planner_when_no_content_was_read() -> None:
+    """A missing README read is the one gap the model keeps leaving open; say so once.
+
+    Without the nudge the planner keeps doing profile + metrics + history and never reads cached
+    content, so the verifier stays "insufficient" until the budget runs out. The nudge must fire
+    exactly once and name the missing tool.
+    """
+    state = _state(
+        candidate_repo_ids=[1, 2],
+        evidence=[
+            _evidence(tool_name="get_repository_profile", repo_id=1),
+            _evidence(tool_name="query_repo_metrics", repo_id=1),
+            _evidence(tool_name="search_prior_reports"),
+        ],
+    )
+
+    result = _verify_node(state, _verify_deps())  # type: ignore[arg-type]
+
+    assert result["verification"].sufficient is False
+    assert len(result["messages"]) == 1
+    assert "get_repository_content" in result["messages"][0].content
+    assert result["readme_nudged"] is True
+
+
+def test_verify_does_not_nudge_twice() -> None:
+    """The nudge is a one-shot: a run that still cannot read content must not pile it up."""
+    state = _state(
+        candidate_repo_ids=[1],
+        evidence=[_evidence(tool_name="get_repository_profile", repo_id=1)],
+        readme_nudged=True,
+    )
+
+    result = _verify_node(state, _verify_deps())  # type: ignore[arg-type]
+
+    assert result["messages"] == []
+
+
+def test_verify_does_not_nudge_when_content_was_read() -> None:
+    """Once a README is in the evidence, there is nothing to nudge about."""
+    state = _state(
+        candidate_repo_ids=[1],
+        evidence=[
+            _evidence(tool_name="get_repository_profile", repo_id=1),
+            _evidence(tool_name="query_repo_metrics", repo_id=1),
+            _evidence(tool_name="search_prior_reports"),
+            _evidence(tool_name="get_repository_content", repo_id=1),
+        ],
+    )
+
+    result = _verify_node(state, _verify_deps())  # type: ignore[arg-type]
+
+    assert result["verification"].sufficient is True
+    assert result["messages"] == []
 
 
 def test_routes_to_write_once_evidence_is_sufficient() -> None:
