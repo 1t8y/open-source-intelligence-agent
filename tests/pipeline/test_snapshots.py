@@ -30,7 +30,13 @@ def build_session_factory() -> sessionmaker[Session]:
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
-def add_repository(session: Session, *, stars: int = 100, forks: int = 10) -> Repository:
+def add_repository(
+    session: Session,
+    *,
+    stars: int = 100,
+    forks: int = 10,
+    open_issues: int | None = 8,
+) -> Repository:
     """Insert one repository with deterministic counters."""
     source = DataSource(
         name="GitHub",
@@ -45,6 +51,7 @@ def add_repository(session: Session, *, stars: int = 100, forks: int = 10) -> Re
         language="Python",
         stars=stars,
         forks=forks,
+        open_issues=open_issues,
         first_seen_at=datetime(2026, 10, 1, tzinfo=UTC),
         last_seen_at=datetime(2026, 10, 1, tzinfo=UTC),
     )
@@ -67,6 +74,7 @@ def test_snapshot_creation_is_idempotent_and_computes_daily_deltas() -> None:
         assert first_snapshot is not None
         assert first_snapshot.stars == 100
         assert first_snapshot.forks == 10
+        assert first_snapshot.open_issues == 8
         assert first_snapshot.stars_delta is None
         assert first_snapshot.forks_delta is None
 

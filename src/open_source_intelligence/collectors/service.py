@@ -96,6 +96,7 @@ def upsert_repository(
         "topics_json": list(item.topics),
         "stars": item.stars,
         "forks": item.forks,
+        "open_issues": item.open_issues,
         "first_seen_at": item.observed_at,
         "last_seen_at": item.observed_at,
     }
@@ -139,6 +140,7 @@ def upsert_repository(
             topics_json=statement.inserted.topics_json,
             stars=statement.inserted.stars,
             forks=statement.inserted.forks,
+            open_issues=statement.inserted.open_issues,
             last_seen_at=statement.inserted.last_seen_at,
         )
         session.execute(statement)
@@ -170,6 +172,7 @@ def upsert_repository(
         repository.topics_json = list(item.topics)
         repository.stars = item.stars
         repository.forks = item.forks
+        repository.open_issues = item.open_issues
         repository.last_seen_at = item.observed_at
     return repository
 

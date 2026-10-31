@@ -43,6 +43,7 @@ class FakeCollector:
                 topics=("agent",),
                 stars=self.stars,
                 forks=2,
+                open_issues=7,
                 observed_at=datetime(2026, 10, 9, tzinfo=UTC),
             )
             for index in range(limit)
@@ -72,6 +73,7 @@ def test_repeated_collection_is_idempotent_and_updates_metrics() -> None:
 
     assert len(repositories) == 2
     assert {repository.stars for repository in repositories} == {20}
+    assert {repository.open_issues for repository in repositories} == {7}
     assert len(audits) == 2
     assert all(event.action == "collector.run" for event in audits)
 

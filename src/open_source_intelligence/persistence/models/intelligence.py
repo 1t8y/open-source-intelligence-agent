@@ -106,6 +106,7 @@ class Repository(Base):
     __table_args__ = (
         CheckConstraint("stars >= 0", name="stars_nonnegative"),
         CheckConstraint("forks >= 0", name="forks_nonnegative"),
+        CheckConstraint("open_issues IS NULL OR open_issues >= 0", name="open_issues_nonnegative"),
         UniqueConstraint("source_id", "provider_repo_id"),
         Index("ix_repositories_language_stars", "language", "stars"),
         Index("ix_repositories_last_seen", "last_seen_at"),
@@ -126,6 +127,7 @@ class Repository(Base):
     topics_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     stars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     forks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    open_issues: Mapped[int | None] = mapped_column(Integer, nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 

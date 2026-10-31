@@ -31,6 +31,7 @@ class CollectedRepository:
     stars: int
     forks: int
     observed_at: datetime
+    open_issues: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -41,7 +41,7 @@ def create_daily_snapshots(
                 snapshot_date=snapshot_date,
                 stars=repository.stars,
                 forks=repository.forks,
-                open_issues=None,
+                open_issues=repository.open_issues,
                 stars_delta=stars_delta,
                 forks_delta=forks_delta,
             )
@@ -49,6 +49,7 @@ def create_daily_snapshots(
         else:
             current.stars = repository.stars
             current.forks = repository.forks
+            current.open_issues = repository.open_issues
             current.stars_delta = stars_delta
             current.forks_delta = forks_delta
 

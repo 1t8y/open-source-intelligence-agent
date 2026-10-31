@@ -179,5 +179,6 @@ class GitHubCollector:
             else (),
             stars=nonnegative_int(item.get("stargazers_count", 0), "stargazers_count"),
             forks=nonnegative_int(item.get("forks_count", 0), "forks_count"),
+            open_issues=nonnegative_int(item.get("open_issues_count", 0), "open_issues_count"),
             observed_at=observed_at,
         )

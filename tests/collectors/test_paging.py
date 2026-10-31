@@ -32,6 +32,7 @@ def github_item(identifier: int) -> dict[str, object]:
         "html_url": f"https://github.com/example/repo-{identifier}",
         "stargazers_count": 100,
         "forks_count": 5,
+        "open_issues_count": 12,
     }
 
 
@@ -86,6 +87,20 @@ def test_github_pages_with_page_and_per_page() -> None:
     assert seen[0].params["per_page"] == "25"
     assert page.page == 3
     assert page.has_more is True
+
+
+def test_github_normalizes_the_open_issue_count() -> None:
+    """GitHub's `open_issues_count` must flow into the normalized repository.
+
+    It was previously dropped on the floor, which is why every snapshot's `open_issues`
+    stayed null and the report had to confess a data-coverage gap.
+    """
+    collector = GitHubCollector(
+        build_http(httpx.MockTransport(lambda _request: github_response(link=None, total_count=1)))
+    )
+    page = collector.collect_page(page=1, per_page=1)
+
+    assert page.items[0].open_issues == 12
 
 
 def test_github_sort_is_configurable() -> None:
