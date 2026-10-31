@@ -156,6 +156,8 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T api python /a
 
 发布后按白名单投递到真实收件箱：`PUSH_DELIVERY=live` + SMTP（587 + STARTTLS）+ HMAC 签名（Webhook 通道）。每次投递落一行 `report_pushes`，成功记 `smtp:<host>:<port>` / `http:200`，失败记 `failed` + `error_code`（传输失败不抛异常，而是一行可重试的记录）。同一报告同一版本同一目标只发一次，重复请求即重试。
 
+连续五天的真实运营复盘（五封邮件、链路耗时、数据走势、以及对自身缺陷的判定）见 [docs/live-run-review.md](docs/live-run-review.md)。其中 10-30 与 10-31 两天是零人工干预的全自动投递，07:00 触发、07:13 落地。
+
 ### 5 变体消融评测（真实模型 `deepseek-chat`）
 
 对同一数据集跑 5 个变体，量化每个组件的增益（完整报告见 [docs/ablation-report-c1.md](docs/ablation-report-c1.md)）：
@@ -204,6 +206,7 @@ src/open_source_intelligence/
 | [docs/observability.md](docs/observability.md)                               | 监控指标口径、窗口语义与看板           |
 | [docs/backfill.md](docs/backfill.md)                                         | 历史回填：分页、限流、断点续传与并发守卫     |
 | [docs/development-process.md](docs/development-process.md)                   | 企业流程的个人精简执行版本            |
+| [docs/live-run-review.md](docs/live-run-review.md)                           | 五天真实投递复盘：链路实绩、数据走势与剩余缺陷 |
 | [ARCHITECTURE.md](ARCHITECTURE.md)                                           | 架构唯一真理源（设计理由、决策与实施清单）    |
 | [REQUIREMENTS.md](REQUIREMENTS.md) / [INTERFACES.md](INTERFACES.md)          | 需求与接口基线                  |
 
