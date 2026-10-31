@@ -132,7 +132,7 @@ def run_daily_pipeline(
     dispatch_payload: dict[str, Any] | None = None
     try:
         with httpx.Client(timeout=20, follow_redirects=True) as client:
-            collectors = build_collectors(provider, client)
+            collectors = build_collectors(provider, client, github_sort="updated")
             content_sources = build_content_sources(provider, client)
             with session_factory() as session:
                 result = execute_daily_pipeline(

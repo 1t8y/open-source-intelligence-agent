@@ -69,9 +69,11 @@ class GitHubCollector:
         token: SecretStr | None = None,
         query: str = "topic:llm stars:>100",
         base_url: str | None = None,
+        sort: str = "stars",
     ) -> None:
         self._http = http
         self._query = query
+        self._sort = sort
         self.base_url = base_url or self.base_url
         self._headers = {
             "Accept": "application/vnd.github+json",
@@ -86,14 +88,14 @@ class GitHubCollector:
         return list(self.collect_page(page=1, per_page=limit).items)
 
     def collect_page(self, *, page: int, per_page: int) -> CollectedPage:
-        """Return one 1-based page of GitHub search results, ordered by stars."""
+        """Return one 1-based page of GitHub search results, ordered by the configured sort."""
         require_page(page)
         clamp_per_page(per_page)
         response = self._http.get_json_response(
             f"{self.base_url}/search/repositories",
             params={
                 "q": self._query,
-                "sort": "stars",
+                "sort": self._sort,
                 "order": "desc",
                 "per_page": per_page,
                 "page": page,
@@ -117,7 +119,7 @@ class GitHubCollector:
 
     def describe_query(self) -> dict[str, Any]:
         """Return the search parameters this collector pages."""
-        return {"q": self._query, "sort": "stars", "order": "desc"}
+        return {"q": self._query, "sort": self._sort, "order": "desc"}
 
     def fetch_readme(self, full_name: str) -> FetchedContent | None:
         """Return one repository's README, or `None` when GitHub has none to serve.

@@ -101,9 +101,17 @@ dispatcher 签名从 `(topic_id)` 改为 `(ResearchTarget)`，worker 的 `enqueu
 `2026-10-30 23:00Z`，下一份报告将从那里开始，而不是回退到 10-24。新增 5 个回归测试
 （`tests/pipeline/test_research_dispatch.py`、`tests/workers/test_research_dispatch_task.py`）。
 
-**② 候选池固定，报告退化成同一批仓库的日更。** 五份报告的引用仓库集合 100% 相同，就是
-同样的 5 个（rea、ECC、ponytail、graphify、TradingAgents）。排名每日重算，但 top-5 从未
+**② 候选池固定，报告退化成同一批仓库的日更（已修复）。** 五份报告的引用仓库集合 100% 相同，
+就是同样的 5 个（rea、ECC、ponytail、graphify、TradingAgents）。排名每日重算，但 top-5 从未
 变化，所以每期报告只是同一组主体换了日期的数字。真正的「情报」应该是发现新进入者。
+
+根因不在排名公式，而在采集端：`collectors/github.py` 的搜索写死 `sort=stars`，每天拉的都是
+「topic:llm 里 stars 最大」的那一批，新崛起的小仓库根本进不了库——没有新面孔可选，排名再
+怎么算都只能在老面孔里排。修复（本复盘落地）：`GitHubCollector` 增加 `sort` 构造参数（默认
+`stars` 保持向后兼容），daily 采集路径显式传 `github_sort="updated"`，按「最近活跃」拉仓库；
+backfill 与一次性 CLI 仍用 `stars` 保持原有分页语义。真机验证：`sort=updated` 拉到了
+`AlysisAi/AlysisCode`、`bytechefhq/bytechef`、`Team-Commonly/commonly` 等 `sort=stars` 永远
+看不到的新面孔，同时 rea 仍因近期活跃而保留。新增 2 个测试（`tests/collectors/test_paging.py`）。
 
 **③ topic 41 连续四天研究失败，报告全部堆积。** 10-28、10-29、10-30、10-31 的 topic 41
 agent run 均为 `AGENT_EVIDENCE_INCOMPLETE`（10-28 还有一个 topic 42 同样原因）。
@@ -147,6 +155,6 @@ topic 41 会一直生报告、一直不发。对照 topic 44 的决策（`resolu
 作为一条无人值守的情报流水线，它已经通过了最基本也最难的一项检验：**连续两天，固定的
 时间、固定的窗口、零人工干预、邮件按时落地，并且内容随真实数据变化而不是复读模板。**
 
-作为产品它还差三步：候选池要允许新仓库顶掉老仓库（否则没有发现能力）、研究阶段要在写稿前
-兜底读一份 README（否则像 topic 41 那样反复产出不合格的证据）、首份报告的人审闸门要能放行
-一次（否则该主题永远死锁在「首份」）。窗口重叠这一条已随本复盘修复。
+作为产品它还差两步：研究阶段要在写稿前兜底读一份 README（否则像 topic 41 那样反复产出
+不合格的证据）、首份报告的人审闸门要能放行一次（否则该主题永远死锁在「首份」）。窗口重叠
+与候选池固定这两条已随本复盘修复。

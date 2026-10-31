@@ -17,8 +17,19 @@ from open_source_intelligence.persistence.session import (
 )
 
 
-def build_collectors(provider: str, client: httpx.Client) -> list[RepositoryCollector]:
-    """Build selected collectors using configured optional tokens."""
+def build_collectors(
+    provider: str,
+    client: httpx.Client,
+    *,
+    github_sort: str = "stars",
+) -> list[RepositoryCollector]:
+    """Build selected collectors using configured optional tokens.
+
+    `github_sort` chooses how GitHub search results are ordered. The daily pipeline passes
+    `"updated"` so it discovers recently active repositories instead of re-fetching the same
+    star leaders every day; backfill and the one-shot CLI keep the default `"stars"` so their
+    walk still pages the head of the distribution.
+    """
     settings = get_settings()
     http = RetryingHttpClient(client)
     collectors: dict[str, RepositoryCollector] = {
@@ -26,6 +37,7 @@ def build_collectors(provider: str, client: httpx.Client) -> list[RepositoryColl
             http,
             token=settings.github_token,
             base_url=settings.github_api_base,
+            sort=github_sort,
         ),
         "huggingface": HuggingFaceCollector(
             http,

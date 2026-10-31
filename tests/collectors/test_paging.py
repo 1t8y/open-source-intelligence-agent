@@ -88,6 +88,28 @@ def test_github_pages_with_page_and_per_page() -> None:
     assert page.has_more is True
 
 
+def test_github_sort_is_configurable() -> None:
+    """The sort dimension is a constructor knob, defaulting to `stars`.
+
+    The daily pipeline passes `updated` so it discovers recently active repositories; the
+    default keeps backfill and the one-shot CLI paging the star leaders as before.
+    """
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return github_response(link=None, total_count=0)
+
+    default = GitHubCollector(build_http(httpx.MockTransport(handler)))
+    default.collect_page(page=1, per_page=10)
+    assert seen[-1].params["sort"] == "stars"
+
+    updated = GitHubCollector(build_http(httpx.MockTransport(handler)), sort="updated")
+    updated.collect_page(page=1, per_page=10)
+    assert seen[-1].params["sort"] == "updated"
+    assert updated.describe_query()["sort"] == "updated"
+
+
 def test_github_reports_the_end_from_the_link_header_not_from_total_count() -> None:
     """A large `total_count` must not promise pages the search cap will refuse.
 
@@ -284,3 +306,18 @@ def test_each_adapter_describes_the_search_it_pages() -> None:
         "order": "desc",
     }
     assert huggingface.describe_query() == {"sort": "downloads", "direction": -1}
+
+
+def test_build_collectors_forwards_the_github_sort() -> None:
+    """`build_collectors` must hand its `github_sort` through to the GitHub adapter.
+
+    The daily pipeline passes `"updated"` to discover recently active repositories; the default
+    must remain `"stars"` so backfill and the one-shot CLI keep paging the star leaders.
+    """
+    from open_source_intelligence.collectors.cli import build_collectors
+
+    with httpx.Client() as client:
+        default = build_collectors("github", client)[0]
+        assert default.describe_query()["sort"] == "stars"
+        updated = build_collectors("github", client, github_sort="updated")[0]
+        assert updated.describe_query()["sort"] == "updated"
