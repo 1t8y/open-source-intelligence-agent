@@ -2,6 +2,7 @@
 
 import httpx
 import pytest
+from support import build_settings
 
 from open_source_intelligence.collectors.github import GitHubCollector, parse_link_header
 from open_source_intelligence.collectors.http import RetryingHttpClient
@@ -332,7 +333,9 @@ def test_build_collectors_forwards_the_github_sort() -> None:
     from open_source_intelligence.collectors.cli import build_collectors
 
     with httpx.Client() as client:
-        default = build_collectors("github", client)[0]
+        default = build_collectors("github", client, settings=build_settings())[0]
         assert default.describe_query()["sort"] == "stars"
-        updated = build_collectors("github", client, github_sort="updated")[0]
+        updated = build_collectors(
+            "github", client, github_sort="updated", settings=build_settings()
+        )[0]
         assert updated.describe_query()["sort"] == "updated"

@@ -10,7 +10,7 @@ from open_source_intelligence.collectors.http import RetryingHttpClient
 from open_source_intelligence.collectors.huggingface import HuggingFaceCollector
 from open_source_intelligence.collectors.service import collect_repositories
 from open_source_intelligence.collectors.types import RepositoryCollector, RepositoryContentSource
-from open_source_intelligence.core.config import get_settings
+from open_source_intelligence.core.config import Settings, get_settings
 from open_source_intelligence.persistence.session import (
     create_database_engine,
     create_session_factory,
@@ -22,6 +22,7 @@ def build_collectors(
     client: httpx.Client,
     *,
     github_sort: str = "stars",
+    settings: Settings | None = None,
 ) -> list[RepositoryCollector]:
     """Build selected collectors using configured optional tokens.
 
@@ -29,8 +30,11 @@ def build_collectors(
     `"updated"` so it discovers recently active repositories instead of re-fetching the same
     star leaders every day; backfill and the one-shot CLI keep the default `"stars"` so their
     walk still pages the head of the distribution.
+
+    `settings` is injectable so tests can build collectors with `Settings(_env_file=None)`
+    instead of reading the developer's real `.env`; production callers leave it as `None`.
     """
-    settings = get_settings()
+    settings = settings or get_settings()
     http = RetryingHttpClient(client)
     collectors: dict[str, RepositoryCollector] = {
         "github": GitHubCollector(
