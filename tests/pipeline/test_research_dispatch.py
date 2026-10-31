@@ -11,6 +11,7 @@ from open_source_intelligence.persistence.base import Base
 from open_source_intelligence.persistence.models.agent import AgentConfig, AgentRun
 from open_source_intelligence.persistence.models.identity import User
 from open_source_intelligence.persistence.models.intelligence import PipelineRun, Topic
+from open_source_intelligence.persistence.models.reporting import Report
 from open_source_intelligence.pipeline.research_dispatch import (
     ResearchTarget,
     dispatch_research_targets,
@@ -22,6 +23,7 @@ TIMEZONE = "Asia/Shanghai"
 # The business day starts at 2026-10-11T16:00Z in Asia/Shanghai.
 TODAY = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)
 YESTERDAY = datetime(2026, 10, 11, 1, 0, tzinfo=UTC)
+DAY_BEFORE = datetime(2026, 10, 10, 1, 0, tzinfo=UTC)
 
 
 def build_session_factory() -> sessionmaker[Session]:
@@ -130,6 +132,31 @@ def add_agent_run(
     return agent_run
 
 
+def add_published_report(
+    session: Session,
+    *,
+    topic_id: int,
+    agent_run: AgentRun,
+    published_at: datetime = TODAY,
+) -> Report:
+    """Insert one published report tied to the given agent run."""
+    report = Report(
+        topic_id=topic_id,
+        agent_run_id=agent_run.id,
+        title="weekly",
+        content_markdown="body",
+        status="published",
+        sensitivity="PUBLIC",
+        visibility="TEAM",
+        publish_mode="AUTO_WITH_DELAY",
+        generated_at=published_at,
+        published_at=published_at,
+    )
+    session.add(report)
+    session.commit()
+    return report
+
+
 def select_targets(session: Session, *, limit: int = 5):
     """Call the selector with the test's fixed business date and timezone."""
     return select_research_targets(
@@ -192,6 +219,63 @@ def test_todays_rank_run_is_not_trusted_yesterday() -> None:
         selection = select_targets(session)
 
     assert selection.targets == []
+
+
+def test_topic_without_published_history_has_no_window_start() -> None:
+    """A topic that has never published falls back to the trailing window (None)."""
+    with build_session_factory()() as session:
+        topic = add_topic(session, name="fresh")
+        add_rank_run(session, topic_id=topic.id, candidate_count=7)
+
+        selection = select_targets(session)
+
+    assert selection.targets == [
+        ResearchTarget(topic_id=topic.id, candidate_count=7, window_start=None)
+    ]
+
+
+def test_topic_with_published_history_carries_its_window_end() -> None:
+    """A topic's next window starts where its last published report's window ended.
+
+    This is the regression guard for the duplicate-delivery bug: two reports a day apart used to
+    share a sliding 7-day window, so a re-delivered run re-covered the same snapshots. The next
+    run must begin at the previous report's observed window end.
+    """
+    with build_session_factory()() as session:
+        topic = add_topic(session, name="active")
+        add_rank_run(session, topic_id=topic.id, candidate_count=7)
+        # A published report from a previous day, whose run observed up to TODAY (its window end).
+        previous_run = add_agent_run(session, topic_id=topic.id, started_at=YESTERDAY)
+        add_published_report(
+            session, topic_id=topic.id, agent_run=previous_run, published_at=YESTERDAY
+        )
+
+        selection = select_targets(session)
+
+    assert selection.targets == [
+        ResearchTarget(topic_id=topic.id, candidate_count=7, window_start=YESTERDAY)
+    ]
+
+
+def test_window_start_uses_the_newest_published_report() -> None:
+    """When several reports exist, the most recent one's window end decides the start."""
+    with build_session_factory()() as session:
+        topic = add_topic(session, name="active")
+        add_rank_run(session, topic_id=topic.id, candidate_count=7)
+        older_run = add_agent_run(session, topic_id=topic.id, started_at=DAY_BEFORE)
+        add_published_report(
+            session, topic_id=topic.id, agent_run=older_run, published_at=DAY_BEFORE
+        )
+        newer_run = add_agent_run(session, topic_id=topic.id, started_at=YESTERDAY)
+        add_published_report(
+            session, topic_id=topic.id, agent_run=newer_run, published_at=YESTERDAY
+        )
+
+        selection = select_targets(session)
+
+    assert selection.targets == [
+        ResearchTarget(topic_id=topic.id, candidate_count=7, window_start=YESTERDAY)
+    ]
 
 
 def test_eligible_topic_is_selected_with_its_candidate_count() -> None:
@@ -295,9 +379,9 @@ def test_dispatch_records_the_task_id_per_topic() -> None:
     """The report must map each topic to what the transport handed back."""
     dispatched: list[int] = []
 
-    def dispatcher(topic_id: int) -> str:
-        dispatched.append(topic_id)
-        return f"task-{topic_id}"
+    def dispatcher(target: ResearchTarget) -> str:
+        dispatched.append(target.topic_id)
+        return f"task-{target.topic_id}"
 
     report = dispatch_research_targets(
         [
@@ -312,13 +396,30 @@ def test_dispatch_records_the_task_id_per_topic() -> None:
     assert report.errors == {}
 
 
+def test_dispatcher_receives_the_window_start() -> None:
+    """A topic with published history must hand its window start through to the dispatcher."""
+    seen: list[datetime | None] = []
+
+    def dispatcher(target: ResearchTarget) -> str:
+        seen.append(target.window_start)
+        return "t"
+
+    report = dispatch_research_targets(
+        [ResearchTarget(topic_id=9, candidate_count=1, window_start=TODAY)],
+        dispatcher,
+    )
+
+    assert seen == [TODAY]
+    assert report.dispatched == {9: "t"}
+
+
 def test_one_topic_failing_to_enqueue_does_not_stop_the_others() -> None:
     """One broken enqueue must not leave the remaining topics unresearched."""
 
-    def dispatcher(topic_id: int) -> str:
-        if topic_id == 3:
+    def dispatcher(target: ResearchTarget) -> str:
+        if target.topic_id == 3:
             raise RuntimeError("broker unavailable")
-        return f"task-{topic_id}"
+        return f"task-{target.topic_id}"
 
     report = dispatch_research_targets(
         [
@@ -336,7 +437,7 @@ def test_one_topic_failing_to_enqueue_does_not_stop_the_others() -> None:
 def test_dispatch_payload_uses_string_keys() -> None:
     """A JSON object cannot carry integer keys; the conversion must happen before serialising."""
     report = dispatch_research_targets(
-        [ResearchTarget(topic_id=9, candidate_count=1)], lambda tid: "t"
+        [ResearchTarget(topic_id=9, candidate_count=1)], lambda t: "t"
     )
 
     payload = report.to_dict()

@@ -16,22 +16,29 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from open_source_intelligence.persistence.models.agent import AgentRun
 from open_source_intelligence.persistence.models.intelligence import PipelineRun, Topic
+from open_source_intelligence.persistence.models.reporting import Report
 from open_source_intelligence.pipeline.contents import business_day_start
 
 
 @dataclass(frozen=True, slots=True)
 class ResearchTarget:
-    """One topic that should get a research run today, with the evidence for why."""
+    """One topic that should get a research run today, with the evidence for why.
+
+    `window_start` is where the run's observation window should begin, so a topic that already
+    published a report does not re-cover the same period. It is `None` when the topic has no
+    published history, in which case the run falls back to the topic's trailing `window_days`.
+    """
 
     topic_id: int
     candidate_count: int
+    window_start: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +73,24 @@ class ResearchDispatchReport:
             "dispatched": {str(topic_id): task_id for topic_id, task_id in self.dispatched.items()},
             "errors": {str(topic_id): message for topic_id, message in self.errors.items()},
         }
+
+
+def _latest_published_window(session: Session, *, topic_id: int) -> datetime | None:
+    """Return the window end of the topic's most recent published report, if any.
+
+    The report's own `agent_run` records the window it actually observed (`window_end`), so using
+    that as the next run's `window_start` makes consecutive reports abut rather than overlap. A
+    topic with no published history returns `None`, which lets `resolve_window` fall back to the
+    trailing `window_days` window.
+    """
+    row = session.scalars(
+        select(AgentRun.window_end)
+        .join(Report, Report.agent_run_id == AgentRun.id)
+        .where(Report.topic_id == topic_id, Report.status == "published")
+        .order_by(Report.published_at.desc(), Report.id.desc())
+        .limit(1)
+    ).first()
+    return row
 
 
 def select_research_targets(
@@ -136,7 +161,11 @@ def select_research_targets(
         candidate_counts[topic_id] = int((metrics or {}).get("candidate_count") or 0)
 
     eligible = [
-        ResearchTarget(topic_id=topic_id, candidate_count=count)
+        ResearchTarget(
+            topic_id=topic_id,
+            candidate_count=count,
+            window_start=_latest_published_window(session, topic_id=topic_id),
+        )
         for topic_id, count in sorted(candidate_counts.items())
         if count > 0 and topic_id not in busy
     ]
@@ -149,19 +178,23 @@ def select_research_targets(
 
 def dispatch_research_targets(
     targets: Sequence[ResearchTarget],
-    dispatcher: Callable[[int], str],
+    dispatcher: Callable[[ResearchTarget], str],
 ) -> ResearchDispatchReport:
     """Hand each target to `dispatcher`, surviving one topic's failure.
 
-    The dispatcher returns whatever identifier the transport hands back (a Celery task id, a
-    synchronous run marker). A target that raises is recorded in `errors` and the rest are still
-    attempted: one topic failing to enqueue must not leave the others unresearched, which is the
-    same rule the collector stage follows for one unavailable source.
+    The dispatcher receives the full `ResearchTarget` rather than just the topic id, because the
+    window the run should observe is part of what is dispatched: two topics can be eligible on
+    the same day yet need different `window_start` values, and collapsing that to an id would
+    push the window decision back into the caller. The dispatcher returns whatever identifier
+    the transport hands back (a Celery task id, a synchronous run marker). A target that raises
+    is recorded in `errors` and the rest are still attempted: one topic failing to enqueue must
+    not leave the others unresearched, which is the same rule the collector stage follows for one
+    unavailable source.
     """
     report = ResearchDispatchReport()
     for target in targets:
         try:
-            report.dispatched[target.topic_id] = dispatcher(target.topic_id)
+            report.dispatched[target.topic_id] = dispatcher(target)
         except Exception as exc:  # noqa: BLE001 - recorded per topic, never fatal to the batch
             report.errors[target.topic_id] = f"{type(exc).__name__}: {exc}"[:200]
     return report

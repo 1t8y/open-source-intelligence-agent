@@ -9,13 +9,16 @@ from sqlalchemy.pool import StaticPool
 from open_source_intelligence.core.config import Settings
 from open_source_intelligence.persistence import models  # noqa: F401
 from open_source_intelligence.persistence.base import Base
+from open_source_intelligence.persistence.models.agent import AgentConfig, AgentRun
 from open_source_intelligence.persistence.models.identity import User
 from open_source_intelligence.persistence.models.intelligence import PipelineRun, Topic
+from open_source_intelligence.persistence.models.reporting import Report
 from open_source_intelligence.workers.celery_app import RESEARCH_AGENT_TASK, build_beat_schedule
 from open_source_intelligence.workers.tasks import _dispatch_research
 
 BUSINESS_DATE = date(2026, 10, 12)
 TODAY = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)
+YESTERDAY = datetime(2026, 10, 11, 1, 0, tzinfo=UTC)
 
 
 def build_settings(*, auto_research: bool, limit: int = 2) -> Settings:
@@ -76,14 +79,70 @@ def add_ready_topic(session: Session, *, name: str, candidates: int = 4) -> Topi
     return topic
 
 
+def add_published_history(session: Session, *, topic_id: int, window_end: datetime) -> None:
+    """Insert a published report whose run observed up to `window_end`."""
+    config = AgentConfig(
+        name="default",
+        version="v1",
+        provider="offline",
+        model="offline-deterministic-v1",
+        prompt_version="v1",
+        tool_policy_json={"tools": []},
+        max_loops=4,
+        max_model_calls=6,
+        max_tool_calls=10,
+        max_tokens=30000,
+        max_cost=0.5,
+        enabled=True,
+    )
+    session.add(config)
+    session.flush()
+    pipeline_run = PipelineRun(
+        topic_id=topic_id,
+        run_type="agent",
+        status="succeeded",
+        started_at=window_end,
+        finished_at=window_end,
+        attempt=1,
+    )
+    session.add(pipeline_run)
+    session.flush()
+    agent_run = AgentRun(
+        pipeline_run_id=pipeline_run.id,
+        topic_id=topic_id,
+        agent_config_id=config.id,
+        status="completed",
+        window_start=window_end,
+        window_end=window_end,
+        started_at=window_end,
+    )
+    session.add(agent_run)
+    session.flush()
+    session.add(
+        Report(
+            topic_id=topic_id,
+            agent_run_id=agent_run.id,
+            title="weekly",
+            content_markdown="body",
+            status="published",
+            sensitivity="PUBLIC",
+            visibility="TEAM",
+            publish_mode="AUTO_WITH_DELAY",
+            generated_at=window_end,
+            published_at=window_end,
+        )
+    )
+    session.commit()
+
+
 class RecordingApp:
     """Celery-app double that records the tasks it was asked to send."""
 
     def __init__(self, error: Exception | None = None) -> None:
-        self.sent: list[tuple[str, dict[str, int]]] = []
+        self.sent: list[tuple[str, dict[str, object]]] = []
         self._error = error
 
-    def send_task(self, name: str, *, kwargs: dict[str, int]) -> object:
+    def send_task(self, name: str, *, kwargs: dict[str, object]) -> object:
         if self._error is not None:
             raise self._error
         self.sent.append((name, kwargs))
@@ -111,6 +170,30 @@ def test_dispatch_queues_one_research_task_per_eligible_topic() -> None:
     assert payload["dispatched"] == {str(topic.id): "task-1"}
     assert payload["eligible"] == 1
     assert payload["deferred"] == 0
+
+
+def test_dispatch_passes_the_window_start_to_a_topic_with_history() -> None:
+    """A topic that already published must hand its next window start to the queued task.
+
+    This is the worker-side half of the duplicate-delivery fix: the window start computed by
+    `select_research_targets` has to reach the Celery task, otherwise the research run silently
+    falls back to the full trailing window and re-covers the same snapshots.
+    """
+    with build_session_factory()() as session:
+        topic = add_ready_topic(session, name="active")
+        add_published_history(session, topic_id=topic.id, window_end=YESTERDAY)
+        app = RecordingApp()
+
+        _dispatch_research(
+            session,
+            business_date=BUSINESS_DATE,
+            settings=build_settings(auto_research=True),
+            app=app,
+        )
+
+    assert app.sent == [
+        (RESEARCH_AGENT_TASK, {"topic_id": topic.id, "window_start": YESTERDAY.isoformat()})
+    ]
 
 
 def test_dispatch_payload_reports_a_broker_failure_without_raising() -> None:

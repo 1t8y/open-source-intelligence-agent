@@ -30,6 +30,7 @@ from open_source_intelligence.persistence.session import (
 from open_source_intelligence.pipeline.contents import business_day_start
 from open_source_intelligence.pipeline.daily import run_daily_pipeline as execute_daily_pipeline
 from open_source_intelligence.pipeline.research_dispatch import (
+    ResearchTarget,
     dispatch_research_targets,
     select_research_targets,
 )
@@ -192,8 +193,11 @@ def _dispatch_research(
         limit=settings.agent_daily_research_limit,
     )
 
-    def enqueue(topic_id: int) -> str:
-        async_result = app.send_task(RESEARCH_AGENT_TASK, kwargs={"topic_id": topic_id})
+    def enqueue(target: ResearchTarget) -> str:
+        kwargs: dict[str, Any] = {"topic_id": target.topic_id}
+        if target.window_start is not None:
+            kwargs["window_start"] = target.window_start.isoformat()
+        async_result = app.send_task(RESEARCH_AGENT_TASK, kwargs=kwargs)
         return str(async_result.id)
 
     report = dispatch_research_targets(selection.targets, enqueue)

@@ -18,6 +18,7 @@ from open_source_intelligence.persistence.session import (
 from open_source_intelligence.pipeline.contents import business_day_start, run_contents_stage
 from open_source_intelligence.pipeline.daily import run_daily_pipeline, run_rank_all_topics
 from open_source_intelligence.pipeline.research_dispatch import (
+    ResearchTarget,
     dispatch_research_targets,
     select_research_targets,
 )
@@ -149,8 +150,13 @@ def run_research_inline(
         limit=limit,
     )
 
-    def run_one(topic_id: int) -> str:
-        outcome = execute_research_agent(session, topic_id=topic_id, settings=settings)
+    def run_one(target: ResearchTarget) -> str:
+        outcome = execute_research_agent(
+            session,
+            topic_id=target.topic_id,
+            settings=settings,
+            window_start=target.window_start,
+        )
         return f"agent_run:{outcome.agent_run_id}:{outcome.status}"
 
     report = dispatch_research_targets(selection.targets, run_one)
