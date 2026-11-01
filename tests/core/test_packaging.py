@@ -26,13 +26,21 @@ def test_ci_installs_the_exact_toolchain_and_runs_clean_mypy() -> None:
     project_root = Path(__file__).resolve().parents[2]
     workflow = (project_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     lock = (project_root / "requirements-ci.txt").read_text(encoding="utf-8")
+    runtime = (project_root / "requirements.txt").read_text(encoding="utf-8")
 
     assert "python -m pip install --no-cache-dir -r requirements-ci.txt" in workflow
     assert "python -m pytest -p no:cacheprovider" in workflow
     assert "python -m mypy --no-incremental src" in workflow
     assert workflow.count("runs-on: ubuntu-24.04") == 2
     assert "runs-on: ubuntu-latest" not in workflow
+    # The runtime pins live in `requirements.txt`, which `requirements-ci.txt` pulls in with
+    # `-r`; the test-only tools stay in `requirements-ci.txt` so the image never carries them.
+    assert "-r requirements.txt" in lock
     assert "mypy==1.11.2" in lock
     assert "pytest==7.4.4" in lock
-    assert "sqlalchemy==2.0.34" in lock
-    assert "pydantic==2.10.6" in lock
+    assert "sqlalchemy==2.0.34" in runtime
+    assert "pydantic==2.10.6" in runtime
+    # The runtime image must install the same pins (via requirements.txt), not the CI lock.
+    dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")
+    assert "-r requirements.txt" in dockerfile
+    assert "--no-deps" in dockerfile
