@@ -249,8 +249,22 @@ def check_endpoints() -> Check:
     """Compare the contract's endpoint headings against the registered routes."""
     check = Check("endpoints")
     from open_source_intelligence.api.app import create_app
+    from open_source_intelligence.core.config import Settings
 
-    app = create_app()
+    # Enumerating routes must not depend on a populated `.env`. `create_app()` falls back to
+    # `get_settings()`, which builds `Settings` from the gitignored `.env` and demands three
+    # fields with no default (`database_url`, `redis_url`, `secret_key`). A clean CI checkout has
+    # no `.env`, so the check would raise `ValidationError` before it could compare anything.
+    # Inject an explicit test configuration instead: the engine is only constructed, never
+    # connected, so the connection targets are placeholders.
+    app = create_app(
+        settings=Settings(
+            database_url="mysql+pymysql://app:secret@127.0.0.1:3306/osint",
+            redis_url="redis://127.0.0.1:6379/0",
+            secret_key="drift-check-secret-key-0123456789abcdef",
+            app_env="test",
+        )
+    )
     registered: dict[str, set[str]] = {}
     for path, methods in _registered_routes(app.routes):
         if path in FRAMEWORK_PATHS or path.startswith("/ui/static"):
