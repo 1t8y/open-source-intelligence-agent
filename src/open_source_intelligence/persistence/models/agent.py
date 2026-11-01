@@ -56,7 +56,10 @@ class AgentConfig(Base):
     tool_policy_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     max_loops: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
     max_model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
-    max_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    #: Mirrors `Settings.agent_max_tool_calls`. Both sit above the evidence floor
+    #: (`2 x candidates + 2` = 12 at the default five candidates) on purpose: a budget equal to
+    #: the floor leaves no room for a wasted call. See `agent/runtime.py:evidence_tool_floor`.
+    max_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=12000)
     max_cost: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
