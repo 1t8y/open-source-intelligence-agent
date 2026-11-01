@@ -312,6 +312,22 @@ def test_the_tool_budget_floor_matches_the_evidence_the_verifier_demands() -> No
     assert evidence_tool_floor(5) == 12
 
 
+def test_the_default_tool_budget_leaves_headroom_above_the_evidence_floor() -> None:
+    """The shipped default has to sit *above* the floor, not on it.
+
+    Aligning the two looks tidy and is wrong: at the default five candidates the floor is 12, and
+    12 is exactly enough - measured, the run spends all twelve on 5 profiles, 5 metric series, one
+    prior-report query and one README, and the second README is denied with
+    `TOOL_BUDGET_EXCEEDED`. A real model wastes calls (a repeated query, a bad argument), and every
+    one of those comes straight out of the evidence bar, so a run that starts on the floor passes
+    only if it also plans perfectly. The floor's job is to stop a *too small* config from deciding
+    the outcome; the default's job is to leave room to work.
+    """
+    settings = build_settings()
+
+    assert settings.agent_max_tool_calls > evidence_tool_floor(settings.agent_max_candidates)
+
+
 def test_a_tight_tool_budget_is_lifted_to_what_the_evidence_bar_needs(
     session: Session,
     workspace: Workspace,

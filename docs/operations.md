@@ -261,6 +261,8 @@ docker compose ... exec -T api python -m open_source_intelligence.agent.cli --ac
 
 `AGENT_MAX_TOOL_CALLS` 需要和候选数一起看，不能单独调小。验证器要的证据是「每个候选一份 profile + 一份 metrics，另加至少一份 README、至少一次历史报告查询」，即 `候选数 × 2 + 2` 次调用；预算低于它，这一次运行**无论模型多想干也过不了**，只会白花模型费用并留下一条 `AGENT_EVIDENCE_INCOMPLETE`。`agent/runtime.py:evidence_tool_floor` 在运行开始时把预算抬到这个下限（工具调用本身不计费，只有请求它的模型轮次计费），所以要压成本请压 `AGENT_MAX_MODEL_CALLS` 或 `AGENT_MAX_CANDIDATES`，而不是压工具预算。
 
+默认值刻意留在下限之上，而不是与下限持平：`AGENT_MAX_TOOL_CALLS=20` 对默认 5 候选的下限 12，余量 8。持平看着更「一致」，实测却刚好够——预算 12 时一次运行正好用满（5 份画像、5 份指标、1 次历史报告、1 份 README），第二份 README 就被 `TOOL_BUDGET_EXCEEDED` 拒掉；真实模型会浪费调用（重复查询、参数错），而每一次浪费都直接从证据额度里扣，于是「刚好够」只在计划完美的前提下成立。这条差距由 `test_the_default_tool_budget_leaves_headroom_above_the_evidence_floor` 钉住（改成 12 时该用例红）。floor 本身不变：配置更小、或候选数更大，运行开始时照样抬到 `2n + 2`。注意默认候选数只有 5，与主题的 `max_candidates`（本机两个启用主题都是 10）不是一回事——排序选 10 个，研究只用前 5 个。
+
 ### 自动派发（T24）
 
 `AGENT_AUTO_RESEARCH_ENABLED=false`（默认）时，每日任务在四个阶段之后什么都不做，载荷里 `research_dispatched` 为 `null`。改成 `true` 之后，任务会对**同时满足三条**的主题各派发一个研究任务：
