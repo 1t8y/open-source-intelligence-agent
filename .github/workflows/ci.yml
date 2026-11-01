@@ -129,6 +129,7 @@ jobs:
           # /health is process liveness only; the required Settings fields must be present
           # with valid formats, but the endpoint never actually connects to them.
           docker run --rm -d --name osint-health \
+            -p 8000:8000 \
             -e SECRET_KEY=ci-smoke-test-secret-key-0123456789abcdef \
             -e DATABASE_URL=mysql+pymysql://app:secret@127.0.0.1:3306/osint \
             -e REDIS_URL=redis://127.0.0.1:6379/0 \
