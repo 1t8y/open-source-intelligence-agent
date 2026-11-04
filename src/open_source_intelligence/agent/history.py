@@ -1,4 +1,4 @@
-"""Read-only queries over the Agent run trail."""
+"""对 Agent 运行轨迹的只读查询。"""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ RUN_LIMIT_MAX = 200
 
 
 def _iso(value: datetime | None) -> str | None:
-    """Render an optional timestamp as ISO 8601."""
+    """把可选时间戳渲染成 ISO 8601。"""
     return None if value is None else value.isoformat()
 
 
 def get_agent_run(session: Session, run_id: int) -> AgentRun | None:
-    """Return one Agent run by id."""
+    """按 id 返回一条 Agent 运行。"""
     return session.get(AgentRun, run_id)
 
 
@@ -31,7 +31,7 @@ def list_agent_runs(
     status: str | None = None,
     limit: int = DEFAULT_RUN_LIMIT,
 ) -> list[AgentRun]:
-    """Return the newest Agent runs matching the given filters."""
+    """返回符合给定筛选条件的最新 Agent 运行。"""
     statement = select(AgentRun)
     if topic_id is not None:
         statement = statement.where(AgentRun.topic_id == topic_id)
@@ -42,7 +42,7 @@ def list_agent_runs(
 
 
 def list_agent_steps(session: Session, run_id: int) -> list[AgentStep]:
-    """Return every step of one run in execution order."""
+    """按执行顺序返回一次运行的所有步骤。"""
     return list(
         session.scalars(
             select(AgentStep)
@@ -53,7 +53,7 @@ def list_agent_steps(session: Session, run_id: int) -> list[AgentStep]:
 
 
 def list_tool_calls(session: Session, run_id: int) -> list[ToolCall]:
-    """Return every recorded tool invocation of one run in call order."""
+    """按调用顺序返回一次运行记录在案的所有工具调用。"""
     return list(
         session.scalars(
             select(ToolCall).where(ToolCall.agent_run_id == run_id).order_by(ToolCall.id.asc())
@@ -62,7 +62,7 @@ def list_tool_calls(session: Session, run_id: int) -> list[ToolCall]:
 
 
 def summarize_agent_run(run: AgentRun) -> dict[str, Any]:
-    """Return a JSON-safe summary of one Agent run."""
+    """返回一次 Agent 运行的 JSON 安全摘要。"""
     return {
         "id": run.id,
         "pipeline_run_id": run.pipeline_run_id,
@@ -83,7 +83,7 @@ def summarize_agent_run(run: AgentRun) -> dict[str, Any]:
 
 
 def summarize_agent_steps(steps: list[AgentStep]) -> list[dict[str, Any]]:
-    """Return JSON-safe summaries of the steps in a run."""
+    """返回一次运行中各步骤的 JSON 安全摘要。"""
     return [
         {
             "step_index": step.step_index,
@@ -97,7 +97,7 @@ def summarize_agent_steps(steps: list[AgentStep]) -> list[dict[str, Any]]:
 
 
 def summarize_tool_calls(calls: list[ToolCall]) -> list[dict[str, Any]]:
-    """Return JSON-safe summaries of the tool calls in a run."""
+    """返回一次运行中各工具调用的 JSON 安全摘要。"""
     return [
         {
             "id": call.id,

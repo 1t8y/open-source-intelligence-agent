@@ -1,25 +1,23 @@
-"""Run T12 report API and admin UI smoke checks against MySQL.
+"""针对 MySQL 跑 T12 的报告 API 与后台管理界面冒烟。
 
-The script reuses the T8 seeding helpers and the T11 CLI runner, then drives the *real*
-FastAPI application — the JSON report API and the Jinja2/HTMX admin UI — against MySQL rather
-than in-memory SQLite. It exercises the T12 acceptance path end to end:
+脚本复用 T8 的种子辅助函数与 T11 的 CLI 运行器，然后把*真正的* FastAPI 应用 ——
+JSON 报告 API 与 Jinja2/HTMX 管理界面 —— 跑在 MySQL 上，而不是内存 SQLite 里。
+它端到端覆盖 T12 的验收路径：
 
-1. **View** — the list is filtered by the caller's visibility scope in the database, and the
-   detail page carries the verdict, the citations, and the version history;
-2. **Edit** — a content edit appends an immutable version, copies the citation set, and parks
-   the report for re-verification;
-3. **Review** — `MANUAL` parks the report, `request_changes` sends it back, and an approval is
-   what finally unlocks the release;
-4. **Publish** — the approved report is released through the same policy engine the CLI uses;
-5. **Roll back** — a historical version is restored as a *new* version rather than a rewind.
+1. **查看** —— 列表按调用方在数据库里的可见范围过滤，详情页带着验证结论、引用
+   与版本历史；
+2. **编辑** —— 内容编辑会追加一个不可变的版本、复制引用集，并把报告打回待验证；
+3. **审核** —— `MANUAL` 先把报告挂起，`request_changes` 把它退回，真正解锁放行
+   的是那次批准；
+4. **发布** —— 已批准的报告经 CLI 用的同一个策略引擎放行；
+5. **回滚** —— 历史版本被还原成一个*新*版本，而不是把时间倒回去。
 
-Two guards the UI adds on top of the API are checked as well: the cookie session (including
-the double-submit CSRF token) and the read-only role.
+界面在 API 之上多加的两道守卫也一并核对：Cookie 会话（含双提交的 CSRF 令牌）与
+只读角色。
 
-`TestClient` runs the real ASGI application in process, so the real routers, dependencies,
-middleware, templates, and static files are exercised. Every database read the script asserts
-on goes through a *fresh* short-lived session, so a passing assertion cannot be explained by
-the identity map of the session that wrote the row.
+`TestClient` 在进程内跑真正的 ASGI 应用，因此真实的路由、依赖、中间件、模板与
+静态文件都会被走到。脚本断言的每一次数据库读取都经过一个*全新的*短生命周期会话，
+所以断言通过不可能是靠写行那个会话的身份映射解释掉的。
 """
 
 import argparse
@@ -60,9 +58,8 @@ SMOKE_PASSWORD = "t12-smoke-password-not-for-production"
 ACTOR_PREFIX = "__t12_"
 PRIVATE_TITLE = "__T12 private sibling__"
 
-#: Appended by the UI edit form. Deliberately digit-free: a section that states a number must
-#: cite a metric snapshot, so this note must not turn a clean report into a
-#: `NUMBER_WITHOUT_METRIC` failure.
+#: 由界面编辑表单追加。刻意不带任何数字：陈述数字的小节必须引用指标快照，所以这段
+#: 说明不能把一份干净的报告变成 `NUMBER_WITHOUT_METRIC` 失败。
 EDIT_NOTE = "\n\n编辑说明：人工复核了来源链接与数字口径，未做其他改动。\n"
 SECOND_EDIT_NOTE = "\n\n补充说明：趋势对比已纳入正文复核范围。\n"
 
@@ -71,12 +68,12 @@ SCOPES = {"admin": "personal", "editor": "team", "viewer": "personal"}
 
 
 def _username(suffix: str) -> str:
-    """Return the smoke username for one role."""
+    """返回某个角色的冒烟用户名。"""
     return f"{ACTOR_PREFIX}{suffix}__"
 
 
 def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
-    """Remove every row a previous T12 smoke run created, then the T8 records underneath."""
+    """删掉上一轮 T12 冒烟创建的全部行，再删它们底下的 T8 记录。"""
     ids = list(actor_ids.values())
     if ids:
         report_ids = list(session.scalars(select(Report.id).where(Report.owner_id.in_(ids))).all())
@@ -100,7 +97,7 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
 
 
 def _actor_ids(session: Session) -> dict[str, int]:
-    """Return the ids of the three T12 smoke users, creating them when missing."""
+    """返回三个 T12 冒烟用户的 id；缺失的当场建出来。"""
     found: dict[str, int] = {}
     for suffix, role in ROLES.items():
         username = _username(suffix)
@@ -122,12 +119,12 @@ def _actor_ids(session: Session) -> dict[str, int]:
 
 
 def _client(settings: Settings) -> TestClient:
-    """Build a client over the real application and the real database."""
+    """在真正的应用与真正的数据库之上建一个客户端。"""
     return TestClient(create_app(settings))
 
 
 def _csrf(client: TestClient) -> str:
-    """Return the CSRF value the browser currently holds."""
+    """返回浏览器此刻持有的 CSRF 值。"""
     token = client.cookies.get(CSRF_COOKIE)
     if not token:
         raise RuntimeError("the UI never issued a CSRF cookie")
@@ -135,7 +132,7 @@ def _csrf(client: TestClient) -> str:
 
 
 def _login(client: TestClient, suffix: str) -> Any:
-    """Sign one smoke user in through the real login form."""
+    """通过真正的登录表单登录一个冒烟用户。"""
     page = client.get("/ui/login", follow_redirects=False)
     if page.status_code != 200:
         raise RuntimeError(f"login page returned {page.status_code}")
@@ -152,7 +149,7 @@ def _login(client: TestClient, suffix: str) -> Any:
 
 
 def _bearer(client: TestClient, suffix: str) -> dict[str, str]:
-    """Return the bearer header for one smoke user."""
+    """返回某个冒烟用户的 Bearer 请求头。"""
     response = client.post(
         "/api/v1/auth/login",
         json={"username": _username(suffix), "password": SMOKE_PASSWORD},
@@ -163,7 +160,7 @@ def _bearer(client: TestClient, suffix: str) -> dict[str, str]:
 
 
 def _snapshot(factory: sessionmaker[Session], report_id: int) -> dict[str, Any]:
-    """Read one report's state through a fresh session and flatten it to plain values."""
+    """经一个全新会话读出一份报告的状态，并摊平成普通值。"""
     with factory() as session:
         report = session.get(Report, report_id)
         if report is None:
@@ -198,7 +195,7 @@ def _snapshot(factory: sessionmaker[Session], report_id: int) -> dict[str, Any]:
 
 
 def _verdict(factory: sessionmaker[Session], report_id: int, version: int) -> str | None:
-    """Return the stored verdict for one report version."""
+    """返回某个报告版本已存下的验证结论。"""
     with factory() as session:
         row = session.scalar(
             select(ReportVerification).where(
@@ -210,13 +207,13 @@ def _verdict(factory: sessionmaker[Session], report_id: int, version: int) -> st
 
 
 def _rows(factory: sessionmaker[Session], entity: Any, report_id: int) -> int:
-    """Return how many rows of one report-scoped table exist for a report."""
+    """返回某张按报告归属的表里，属于这份报告的行数。"""
     with factory() as session:
         return len(session.scalars(select(entity).where(entity.report_id == report_id)).all())
 
 
 def _audit_actions(factory: sessionmaker[Session], report_id: int) -> list[str]:
-    """Return the distinct report actions recorded against one report."""
+    """返回针对某份报告记录下来的去重操作名。"""
     with factory() as session:
         rows = session.scalars(
             select(AuditLog.action).where(
@@ -228,7 +225,7 @@ def _audit_actions(factory: sessionmaker[Session], report_id: int) -> list[str]:
 
 
 def _api_list_ids(client: TestClient, headers: dict[str, str]) -> list[int]:
-    """Return every report id the caller may read, walking the paginated list."""
+    """翻完分页列表，返回调用方有权读取的全部报告 id。"""
     collected: list[int] = []
     page = 1
     while True:
@@ -247,7 +244,7 @@ def _seed_report(
     ids: dict[str, int],
     actor_ids: dict[str, int],
 ) -> tuple[int, int]:
-    """Generate a report through the real Agent plus CLI, then add a private sibling."""
+    """先用真正的 Agent 加 CLI 生成一份报告，再补一份私有同主题报告。"""
     agent_result = run_research_agent(
         session,
         topic_id=ids["topic_id"],
@@ -287,7 +284,7 @@ def _seed_report(
 
 
 def _check_access(client: TestClient, report_id: int, private_id: int) -> dict[str, Any]:
-    """Anonymous, viewer, editor, and admin access — through the UI and the API."""
+    """匿名、只读、编辑与管理员四种身份，界面与 API 两条入口都走一遍。"""
     anonymous = client.get(UI, follow_redirects=False)
     anonymous_location = anonymous.headers.get("location", "")
     anonymous_redirect = anonymous.status_code == 303 and anonymous_location.startswith("/ui/login")
@@ -342,7 +339,7 @@ def _edit_and_roll_back(
     factory: sessionmaker[Session],
     report_id: int,
 ) -> dict[str, Any]:
-    """Verify, edit the content, then restore the first version as a new one."""
+    """先验证、再改正文，然后把第一版还原成一个新版本。"""
     token = {"csrf_token": _csrf(client)}
     before = _snapshot(factory, report_id)
 
@@ -390,7 +387,7 @@ def _review_and_publish(
     factory: sessionmaker[Session],
     report_id: int,
 ) -> dict[str, Any]:
-    """Drive the `MANUAL` review loop, the approval, the release, and a post-publish rollback."""
+    """走完 `MANUAL` 审核回路、批准、放行，以及发布之后的回滚。"""
     report = session.get(Report, report_id)
     if report is None:
         raise RuntimeError("report vanished before the review loop")
@@ -408,7 +405,7 @@ def _review_and_publish(
     )
     returned_state = _snapshot(factory, report_id)
 
-    # A returned report is editable again, which puts it back in the draft queue.
+    # 被退回的报告重新可编辑，于是又回到草稿队列。
     edited = client.post(
         f"{UI}/{report_id}/edit",
         data={**token, "content_markdown": returned_state["content"] + SECOND_EDIT_NOTE},
@@ -462,7 +459,7 @@ def run_checks(
     ids: dict[str, int],
     actor_ids: dict[str, int],
 ) -> dict[str, Any]:
-    """Drive the real application through the whole T12 acceptance path."""
+    """让真正的应用走完整条 T12 验收路径。"""
     report_id, private_id = _seed_report(session, ids, actor_ids)
     access = _check_access(client, report_id, private_id)
 
@@ -486,7 +483,7 @@ def run_checks(
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run T12 report API and admin UI smoke checks")
     parser.add_argument(
         "--cleanup-only",
@@ -497,7 +494,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the T12 smoke checks on real MySQL and print the assertion payload."""
+    """在真实 MySQL 上跑 T12 冒烟，并打印断言结果。"""
     args = _parse_args()
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
@@ -507,8 +504,8 @@ def main() -> None:
     payload: dict[str, Any] = {}
     try:
         with factory() as session:
-            # `create_user` is keyed by username, so the previous run's actors must go first;
-            # their reports go with them.
+            # `create_user` 以用户名为键，所以上一轮的角色必须先删掉；它们名下的报告
+            # 也一并删掉。
             actor_ids = _actor_ids(session)
             _cleanup(session, actor_ids)
 

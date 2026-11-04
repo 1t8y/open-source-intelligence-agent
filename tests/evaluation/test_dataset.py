@@ -1,4 +1,4 @@
-"""Dataset parsing, validation, and versioned import."""
+"""守护数据集解析、校验与带版本导入。"""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from open_source_intelligence.persistence.models.intelligence import Topic
 
 
 def test_the_shipped_dataset_loads_and_covers_three_samples() -> None:
-    """The dataset in the repository must parse and describe its three sample kinds."""
+    """证明仓库里的数据集能解析，且写明了它的三类样本。"""
     spec = load_dataset_file(DATASET_PATH)
     assert spec.name == "weekly-agent-quality"
     assert spec.version == "v1"
@@ -49,7 +49,7 @@ def test_the_shipped_dataset_loads_and_covers_three_samples() -> None:
 
 
 def test_the_shipped_dataset_is_discoverable_on_disk() -> None:
-    """`datasets/*.json` must be picked up without an explicit path."""
+    """证明不显式给路径也能发现 `datasets/*.json`。"""
     paths = [path.name for path in discover_dataset_files()]
     assert "weekly-agent-quality.v1.json" in paths
 
@@ -84,7 +84,7 @@ def test_the_shipped_dataset_is_discoverable_on_disk() -> None:
     ],
 )
 def test_invalid_documents_are_refused(mutate, message: str) -> None:
-    """A malformed dataset must be rejected with a message naming the problem."""
+    """证明畸形的数据集会被拒，且消息点明问题所在。"""
     document = build_dataset_document()
     mutate(document)
     with pytest.raises(DatasetInvalid) as excinfo:
@@ -93,7 +93,7 @@ def test_invalid_documents_are_refused(mutate, message: str) -> None:
 
 
 def test_a_naive_window_is_refused() -> None:
-    """A window without a timezone would make the same dataset behave differently per host."""
+    """证明没带时区的窗口会被拒：否则同一份数据集在不同主机上行为不一。"""
     document = build_dataset_document()
     assert isinstance(document["cases"], list)
     document["cases"][0]["window"]["start"] = "2026-10-05T00:00:00"
@@ -103,17 +103,17 @@ def test_a_naive_window_is_refused() -> None:
 
 
 def test_a_non_object_document_is_refused() -> None:
-    """A JSON array or scalar is not a dataset."""
+    """证明 JSON 数组或标量不算数据集。"""
     with pytest.raises(DatasetInvalid):
         parse_dataset([1, 2, 3])
 
 
 def _import_dataset(session: Session, spec, **kwargs):
-    """Import a dataset after making sure the topic it names exists.
+    """先确保数据集点名的主题存在，再执行导入。
 
-    Since T25 `import_dataset` refuses an enabled case whose topic this deployment does not have,
-    so the import-mechanics tests need a world that satisfies that precondition. Giving them one
-    is not a workaround: production imports always happen in a deployment that has the topic.
+    自 T25 起，`import_dataset` 会拒绝掉本部署没有对应主题的启用用例，
+    所以导入机制相关的用例需要一个满足该前置条件的世界。
+    给它造一个不是变通：生产上的导入本来就发生在拥有该主题的部署里。
     """
     workspace = Workspace(session)
     for name in sorted({case.topic for case in spec.cases if case.enabled}):
@@ -123,7 +123,7 @@ def _import_dataset(session: Session, spec, **kwargs):
 
 
 def test_import_creates_then_replays_an_identical_document(session: Session) -> None:
-    """Re-importing the same content must be a no-op that reports `replayed`."""
+    """证明导入同样内容必须是空操作，并报告 `replayed`。"""
     spec = parse_dataset(build_dataset_document())
     first = _import_dataset(session, spec)
     assert (first.created, first.replayed, first.case_count) == (True, False, 1)
@@ -136,7 +136,7 @@ def test_import_creates_then_replays_an_identical_document(session: Session) -> 
 
 
 def test_importing_a_changed_case_under_the_same_version_is_refused(session: Session) -> None:
-    """Versions are immutable, so changed content must bump the version instead."""
+    """版本不可变，所以内容改了就必须升版本，而不是原地覆盖。"""
     _import_dataset(session, parse_dataset(build_dataset_document()))
     changed = build_dataset_document(
         cases=[build_case_document(facts=[{"repo": "acme/rocket", "field": "stars", "value": 1}])]
@@ -147,7 +147,7 @@ def test_importing_a_changed_case_under_the_same_version_is_refused(session: Ses
 
 
 def test_a_new_version_creates_a_separate_dataset(session: Session) -> None:
-    """Bumping the version must produce a second, independently addressable dataset."""
+    """证明升版本会产出一个独立的、可单独寻址的数据集。"""
     first = _import_dataset(session, parse_dataset(build_dataset_document(version="v1")))
     second = _import_dataset(session, parse_dataset(build_dataset_document(version="v2")))
     assert first.dataset_id != second.dataset_id
@@ -158,7 +158,7 @@ def test_a_new_version_creates_a_separate_dataset(session: Session) -> None:
 def test_the_reference_and_rubric_survive_a_round_trip(
     session: Session, workspace: Workspace
 ) -> None:
-    """Guards against a driver-dependent JSON comparison breaking replay detection."""
+    """守护重放判定不会被依赖驱动的 JSON 比较差异打坏。"""
     spec = load_dataset_file(DATASET_PATH)
     first = _import_dataset(session, spec)
     second = _import_dataset(session, load_dataset_file(DATASET_PATH))
@@ -179,13 +179,13 @@ def test_the_reference_and_rubric_survive_a_round_trip(
 
 
 def test_import_rejects_a_missing_file() -> None:
-    """A missing path must be a dataset error rather than a raw `FileNotFoundError`."""
+    """证明文件不存在时报的是数据集错误，而不是裸的 `FileNotFoundError`。"""
     with pytest.raises(DatasetInvalid):
         load_dataset_file("datasets/does-not-exist.json")
 
 
 def test_import_rejects_malformed_json(tmp_path) -> None:
-    """Invalid JSON must be reported as a dataset error."""
+    """证明非法 JSON 会被报成数据集错误。"""
     path = tmp_path / "broken.json"
     path.write_text("{not json", encoding="utf-8")
     with pytest.raises(DatasetInvalid) as excinfo:
@@ -194,7 +194,7 @@ def test_import_rejects_malformed_json(tmp_path) -> None:
 
 
 def test_resolve_dataset_by_id_and_by_name_version(session: Session) -> None:
-    """Both addressing modes must find the same row, and a miss must be a `404`-style error."""
+    """证明两种寻址方式找到同一行，而查不到时是 `404` 那类错误。"""
     spec = parse_dataset(build_dataset_document(name="resolve-me", version="v9"))
     imported = _import_dataset(session, spec)
     assert resolve_dataset(session, dataset_id=imported.dataset_id).name == "resolve-me"
@@ -208,7 +208,7 @@ def test_resolve_dataset_by_id_and_by_name_version(session: Session) -> None:
 
 
 def test_a_disabled_case_is_stored_but_excluded_when_requested(session: Session) -> None:
-    """A parked case must stay in the dataset without being run."""
+    """证明停用的用例仍留在数据集里，只是不会被运行。"""
     document = build_dataset_document(
         cases=[
             build_case_document(case_key="live"),
@@ -222,7 +222,7 @@ def test_a_disabled_case_is_stored_but_excluded_when_requested(session: Session)
 
 
 def test_import_records_the_actor(session: Session) -> None:
-    """`created_by` must be persisted so a dataset has an accountable owner."""
+    """证明 `created_by` 会落库，数据集因此有一个可追责的建立者。"""
     spec = parse_dataset(build_dataset_document())
     imported = _import_dataset(session, spec, created_by=None)
     dataset = resolve_dataset(session, dataset_id=imported.dataset_id)
@@ -232,7 +232,7 @@ def test_import_records_the_actor(session: Session) -> None:
 def test_the_seeded_world_matches_the_shipped_dataset(
     session: Session, workspace: Workspace
 ) -> None:
-    """Every topic and fact the shipped dataset asserts must exist in the seeded world."""
+    """证明随附数据集断言的每个主题与事实，在灌好的世界里都存在。"""
     seed_eval_world(session, workspace)
     spec = load_dataset_file(DATASET_PATH)
     stored = json.dumps(spec.cases[0].to_input_json(), ensure_ascii=False)
@@ -242,11 +242,12 @@ def test_the_seeded_world_matches_the_shipped_dataset(
 def test_import_refuses_an_enabled_case_whose_topic_is_missing(
     session: Session, workspace: Workspace
 ) -> None:
-    """Importing a dataset bound to somebody else's topic must fail here, not at run time.
+    """证明绑在别人主题上的数据集要在这里失败，而不是等到运行时。
 
-    The failure mode this prevents is expensive: every variant of every case runs, and each one
-    comes back `failed` with `EVAL_TOPIC_NOT_FOUND`. Fifteen red rows read like a broken model,
-    and the actual cause - a dataset written for another deployment - is one line in a JSON file.
+    它挡住的失败模式很贵：每个用例的每个变体都跑一遍，
+    每一条都带着 `EVAL_TOPIC_NOT_FOUND` 回来。
+    十五行红字读起来像模型坏了，而真正的原因 ——
+    一份为别的部署写的数据集 —— 只是 JSON 文件里的一行。
     """
     spec = parse_dataset(build_dataset_document())
 
@@ -260,7 +261,7 @@ def test_import_refuses_an_enabled_case_whose_topic_is_missing(
 def test_import_does_not_check_the_topic_of_a_disabled_case(
     session: Session, workspace: Workspace
 ) -> None:
-    """A parked scenario is allowed to name a topic nobody has yet."""
+    """证明停用的场景可以点一个谁都没有的主题。"""
     workspace.add_topic(name=GROWTH_TOPIC)
     document = build_dataset_document()
     document["cases"].append(
@@ -279,11 +280,10 @@ def test_import_does_not_check_the_topic_of_a_disabled_case(
 def test_replaying_a_version_does_not_recheck_topics(
     session: Session, workspace: Workspace
 ) -> None:
-    """A replay is a content check, not a readiness check.
+    """重放是内容比对，不是就绪检查。
 
-    Disabling a topic after its dataset was imported must not turn "nothing changed" into an
-    error - otherwise a routine no-op import starts failing for a reason that has nothing to do
-    with the file.
+    数据集导入之后再把主题停用，不能把「什么都没变」变成报错 ——
+    否则一次例行空操作导入，会因为一个跟文件毫无关系的原因开始失败。
     """
     workspace.add_topic(name=GROWTH_TOPIC)
     spec = parse_dataset(build_dataset_document())
@@ -299,7 +299,7 @@ def test_replaying_a_version_does_not_recheck_topics(
 
 
 def test_the_v2_dataset_binds_one_enabled_case_to_a_real_topic_name() -> None:
-    """The shipped v2 file must be importable as written: one live case, two parked ones."""
+    """证明随附的 v2 文件按原样就能导入：一个启用的用例，两个停用。"""
     spec = load_dataset_file("datasets/weekly-agent-quality.v2.json")
 
     enabled = [case for case in spec.cases if case.enabled]

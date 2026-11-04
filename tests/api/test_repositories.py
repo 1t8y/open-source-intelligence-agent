@@ -1,12 +1,12 @@
-"""Integration tests for the repository catalog and trend endpoints.
+"""守护仓库目录与趋势端点：这条需求落地之后到底长什么样。
 
-`REQUIREMENTS.md` FR-D-05 requires "报告、**仓库**、Agent、评测和审计 API"; T18 added the two
-repository routes and the audit route, so these tests pin what the requirement means in practice:
-the catalog is the shared public metadata, the trend window includes both days the caller named,
-and the one filter that carries an authorization decision (`topic_id`) actually carries it.
+`REQUIREMENTS.md` FR-D-05 要求「报告、**仓库**、Agent、评测和审计 API」；
+T18 补上了两条仓库路由和审计路由，于是这组用例把需求钉成可执行的定义：目录是
+共享的公开元数据，趋势窗口把调用方点名的两天都算进去，而唯一带授权判断的那个
+筛选器（`topic_id`）确实把判断执行到底。
 
-Seeding goes through one session and commits, because the shared in-memory database lends a
-single connection to every session - an open seeding transaction would block the application's.
+写入只用一个 session 并提交，因为共享的内存数据库只把一条连接借给每个 session ——
+留着未提交的写入事务会挡住应用自己的事务。
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ CATALOG = "/api/v1/repositories"
 
 @dataclass(frozen=True, slots=True)
 class Catalog:
-    """The seeded catalog plus the ids the assertions need."""
+    """夹具写入的目录，外加断言要用到的那些 id。"""
 
     open_topic_id: int
     closed_topic_id: int
@@ -41,31 +41,31 @@ class Catalog:
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def admin(session: Session) -> Actor:
-    """An administrator, who reads every topic including a disabled one."""
+    """管理员：连被停用的主题也读得到。"""
     return create_actor(session, username="admin", role="ADMIN")
 
 
 @pytest.fixture()
 def viewer(session: Session) -> Actor:
-    """A read-only user: the catalog is public, the disabled topic is not."""
+    """只读用户：目录是公开的，被停用的主题则不是。"""
     return create_actor(session, username="viewer", role="VIEWER")
 
 
 @pytest.fixture()
 def catalog(session: Session, workspace: Workspace) -> Catalog:
-    """Seed two sources, three repositories, two topics and a short snapshot series."""
+    """写入两个来源、三个仓库、两个主题，以及一小段快照序列。"""
     github = workspace.add_source(source_type="github")
     huggingface = workspace.add_source(source_type="huggingface")
 
-    # Stars are deliberately out of alphabetical order so a test that asserted "the order looks
-    # right" would still fail if the sort were dropped.
+    # 星数刻意不按字母序排列：这样即使排序被去掉，一个只会说「顺序看着对」的
+    # 测试仍然会失败。
     ranked = workspace.add_repository(
         source_id=github.id,
         provider_repo_id="r-1",
@@ -121,7 +121,7 @@ def catalog(session: Session, workspace: Workspace) -> Catalog:
 
 
 def test_catalog_requires_a_session(client: TestClient) -> None:
-    """The catalog is authenticated even though everything in it is public metadata."""
+    """目录里全是公开元数据，但它仍然要求登录。"""
     assert client.get(CATALOG).status_code == 401
 
 
@@ -130,7 +130,7 @@ def test_catalog_returns_the_provider_and_public_metadata(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """`provider` comes from the source row, not from the repository."""
+    """`provider` 来自来源表那一行，而不是来自仓库本身。"""
     response = client.get(CATALOG, headers=auth_headers(client, viewer))
     assert response.status_code == 200, response.text
     body = response.json()
@@ -147,9 +147,9 @@ def test_ranking_is_absent_unless_the_list_is_sliced_by_topic(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """Score, rank and the selection flag are a topic's output, so without a topic they are null.
+    """分数、名次和入选标记是某次主题排序的产物，所以不带主题时它们是空值。
 
-    Returning `0` or `false` instead would be a claim about a ranking pass that never happened.
+    换成返回 `0` 或 `false`，就等于宣称跑过一次从未发生的排序。
     """
     response = client.get(CATALOG, headers=auth_headers(client, viewer))
     assert response.status_code == 200
@@ -164,7 +164,7 @@ def test_catalog_is_sorted_by_stars_and_pages_stably(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """Sorting is descending by stars, with the id tiebreaker keeping pages disjoint."""
+    """按星数倒序，并用 id 作为决胜键，让相邻两页不会重叠。"""
     headers = auth_headers(client, viewer)
     first = client.get(CATALOG, headers=headers, params={"page_size": 2}).json()
     second = client.get(CATALOG, headers=headers, params={"page_size": 2, "page": 2}).json()
@@ -178,7 +178,7 @@ def test_unknown_sort_is_refused_rather_than_defaulted(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """A caller that asked for an ordering they did not get has no way to notice."""
+    """调用方要求了某种排序却没得到，它自己没有任何办法察觉。"""
     response = client.get(
         CATALOG,
         headers=auth_headers(client, viewer),
@@ -193,7 +193,7 @@ def test_page_size_is_bounded(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """The platform-wide 1-100 page bound applies here too."""
+    """平台统一的 1–100 页长上限在这里同样生效。"""
     over = client.get(
         CATALOG,
         headers=auth_headers(client, viewer),
@@ -207,7 +207,7 @@ def test_catalog_filters_narrow_the_total_as_well_as_the_page(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """`total` has to obey the same filters, or a caller pages into emptiness."""
+    """`total` 必须服从同一组筛选，否则调用方会一页页翻进空白。"""
     headers = auth_headers(client, viewer)
     by_language = client.get(CATALOG, headers=headers, params={"language": "rust"}).json()
     assert by_language["total"] == 1
@@ -223,8 +223,8 @@ def test_catalog_filters_narrow_the_total_as_well_as_the_page(
     by_query = client.get(CATALOG, headers=headers, params={"q": "COMPILER"}).json()
     assert [item["full_name"] for item in by_query["items"]] == ["globex/compiler"]
 
-    # `description` is nullable, so a substring search must not drop the null-description row
-    # from every query - only from the ones that do not match it.
+    # `description` 可以为空，所以子串搜索不能把「描述为空」的行从每一次查询
+    # 里都剔掉 —— 只能从确实不匹配的那些查询里剔掉。
     null_description = client.get(CATALOG, headers=headers, params={"q": "dataset"}).json()
     assert [item["full_name"] for item in null_description["items"]] == ["initech/dataset"]
 
@@ -240,13 +240,12 @@ def test_a_text_filter_is_a_literal_substring_rather_than_a_like_pattern(
     catalog: Catalog,
     workspace: Workspace,
 ) -> None:
-    """`q` is a substring search, so `%` and `_` are characters and not `LIKE` wildcards.
+    """`q` 是子串搜索，所以 `%` 与 `_` 是普通字符，不是 `LIKE` 通配符。
 
-    Passed straight into `LIKE`, `q=_` becomes `LIKE '%_%'` and matches every row that has at
-    least one character, while `q=%` matches the entire catalog - so a caller searching for the
-    literal character is answered with the opposite of what they asked for. The third case is the
-    other half: a name that really contains the character still has to be found, otherwise
-    "escape everything so nothing ever matches" would satisfy this test as well.
+    直接塞进 `LIKE` 时，`q=_` 会变成 `LIKE '%_%'`，匹配所有至少含一个字符的行，
+    而 `q=%` 会匹配整个目录 —— 调用方明明在搜一个字面字符，得到的却正好相反。
+    第三种情况是另一半：名字里真的含这个字符时仍然必须找得到，否则「全部转义、
+    让什么都匹配不上」也能让这个用例通过。
     """
     gitlab = workspace.add_source(source_type="gitlab")
     workspace.add_repository(
@@ -275,10 +274,10 @@ def test_a_timestamp_without_an_offset_is_refused_at_the_boundary(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """A naive timestamp is a `422` that names the fix, not a `500` from inside the query.
+    """朴素时间戳会得到指出修法的 `422`，而不是查询内部抛出的 `500`。
 
-    `UTCDateTime` refuses to guess the zone, which is right; without the shared parameter type
-    that refusal reaches the caller as an internal error and reads like an outage.
+    `UTCDateTime` 拒绝猜测时区，这是对的；但没有共享参数类型时，这种拒绝会以内
+    部错误的形式到达调用方，看起来就像一次故障。
     """
     response = client.get(
         CATALOG,
@@ -295,7 +294,7 @@ def test_topic_slice_carries_the_ranking(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """Slicing by a topic returns that topic's candidates with their ranking attached."""
+    """按主题切片时，返回该主题的候选，并带上它们的排序结果。"""
     response = client.get(
         CATALOG,
         headers=auth_headers(client, viewer),
@@ -318,10 +317,10 @@ def test_a_disabled_topic_is_refused_and_audited(
     catalog: Catalog,
     session: Session,
 ) -> None:
-    """Membership is the part of the catalog that needs adjudicating, and a refusal is recorded.
+    """目录里需要裁定的是「成员关系」，而拒绝要被记录下来。
 
-    The `403` body says nothing about the topic; the audit row names it. Same mirror as the
-    report ACL: the caller learns nothing, the operator can still investigate.
+    `403` 的响应体对那个主题只字不提，审计行里则点了它的名。这与报告 ACL 那面
+    镜子一样：调用方一无所获，运维者仍然查得下去。
     """
     response = client.get(
         CATALOG,
@@ -348,7 +347,7 @@ def test_an_administrator_may_slice_by_a_disabled_topic(
     admin: Actor,
     catalog: Catalog,
 ) -> None:
-    """`ADMIN` reads every topic; that is the whole of the rule."""
+    """`ADMIN` 读得到每一个主题，规则就这一条。"""
     response = client.get(
         CATALOG,
         headers=auth_headers(client, admin),
@@ -363,7 +362,7 @@ def test_missing_topic_is_a_not_found(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """A topic that does not exist is `404`, distinct from the `403` of an invisible one."""
+    """不存在的主题是 `404`，与「看不见的主题」那个 `403` 分开。"""
     response = client.get(
         CATALOG,
         headers=auth_headers(client, viewer),
@@ -378,7 +377,7 @@ def test_snapshot_window_includes_both_named_days(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """The closed window is the one thing this route does differently, so it is pinned here."""
+    """闭区间窗口是这条路由唯一与众不同的地方，所以在这里钉死。"""
     headers = auth_headers(client, viewer)
     response = client.get(
         f"{CATALOG}/{catalog.ranked_repository_id}/snapshots",
@@ -394,7 +393,7 @@ def test_snapshot_window_includes_both_named_days(
         "2026-09-21",
         "2026-09-22",
     ]
-    # The first day has no predecessor, so its delta is absent rather than zero.
+    # 第一天没有前一天可比，所以它的增量是缺席，而不是零。
     assert body["items"][0]["stars_delta"] is None
     assert body["items"][1]["stars_delta"] == 20
 
@@ -404,7 +403,7 @@ def test_snapshot_window_edge_days_are_included(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """Naming a single day returns that day; a half-open range would return nothing."""
+    """只点一天就返回那一天；换成半开区间则会返回空。"""
     response = client.get(
         f"{CATALOG}/{catalog.ranked_repository_id}/snapshots",
         headers=auth_headers(client, viewer),
@@ -419,7 +418,7 @@ def test_empty_snapshot_window_is_an_answer_not_an_error(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """A repository with no snapshots in range is still a repository."""
+    """区间内没有快照，也仍然是一个仓库，答案就是空列表。"""
     response = client.get(
         f"{CATALOG}/{catalog.ranked_repository_id}/snapshots",
         headers=auth_headers(client, viewer),
@@ -434,7 +433,7 @@ def test_snapshot_window_bounds_are_refused_not_clamped(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """A clamped window silently answers about a different period."""
+    """被悄悄夹到合法范围的窗口，等于在回答另一个时间段。"""
     headers = auth_headers(client, viewer)
     path = f"{CATALOG}/{catalog.ranked_repository_id}/snapshots"
     inverted = client.get(
@@ -457,7 +456,7 @@ def test_unknown_granularity_is_refused(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """Only `day` is implemented, so only `day` is accepted."""
+    """目前只实现了 `day`，所以也只接受 `day`。"""
     response = client.get(
         f"{CATALOG}/{catalog.ranked_repository_id}/snapshots",
         headers=auth_headers(client, viewer),
@@ -471,7 +470,7 @@ def test_unknown_repository_is_a_not_found(
     viewer: Actor,
     catalog: Catalog,
 ) -> None:
-    """The repository is the resource here, so its absence is the `404`."""
+    """这里的资源就是仓库本身，所以它不存在时给出的那个码就是 `404`。"""
     response = client.get(
         f"{CATALOG}/{catalog.ranked_repository_id + 999}/snapshots",
         headers=auth_headers(client, viewer),

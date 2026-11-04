@@ -1,7 +1,7 @@
-"""Persist the Agent run trail: one ordered step per node plus live counters.
+"""持久化 Agent 运行轨迹：每个节点一条有序步骤，外加实时计数器。
 
-Every step is committed immediately, so a crash mid-run still leaves the evidence that
-the run got that far. Summaries are redacted before they are stored (INV-8).
+每条步骤都会立即提交，因此运行中途崩溃时，仍会留下「运行走到过这里」的证据。
+摘要在入库之前先做脱敏（INV-8）。
 """
 
 from __future__ import annotations
@@ -20,17 +20,17 @@ from open_source_intelligence.persistence.models.agent import AgentRun, AgentSte
 
 StepType = Literal["plan", "tool", "observe", "verify", "write"]
 
-#: Step summaries are diagnostics, not payload storage, so they are capped.
+#: 步骤摘要用于诊断而非存储载荷，因此有长度上限。
 STEP_SUMMARY_CHARS = 1000
 
 
 def digest_text(value: str) -> str:
-    """Return a stable SHA-256 digest for one step input or output."""
+    """返回某条步骤输入或输出的稳定 SHA-256 摘要。"""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class StepRecorder:
-    """Append ordered `agent_steps` rows and keep the owning run row in sync."""
+    """追加有序的 `agent_steps` 行，并让所属运行行保持同步。"""
 
     def __init__(self, session: Session, agent_run: AgentRun) -> None:
         self._session = session
@@ -38,7 +38,7 @@ class StepRecorder:
         self._next_index = self._current_max_index() + 1
 
     def _current_max_index(self) -> int:
-        """Return the highest step index already stored for this run."""
+        """返回本次运行已存储的最高步骤序号。"""
         current = self._session.scalar(
             select(func.max(AgentStep.step_index)).where(
                 AgentStep.agent_run_id == self._agent_run.id
@@ -47,7 +47,7 @@ class StepRecorder:
         return int(current) if current is not None else 0
 
     def mark_running(self) -> None:
-        """Flag the run as in progress with a start timestamp."""
+        """把运行标记为进行中，并记下开始时间。"""
         self._agent_run.status = "running"
         self._agent_run.started_at = utc_now()
         self._session.commit()
@@ -62,7 +62,7 @@ class StepRecorder:
         output_digest: str | None = None,
         latency_ms: int | None = None,
     ) -> AgentStep:
-        """Append one step row and commit it immediately."""
+        """追加一条步骤行并立即提交。"""
         step = AgentStep(
             agent_run_id=self._agent_run.id,
             step_index=self._next_index,
@@ -79,12 +79,12 @@ class StepRecorder:
         return step
 
     def link_tool_calls(self, step_id: int, call_ids: Sequence[int]) -> None:
-        """Attach the tool calls of one node to the step that node just wrote.
+        """把某个节点的工具调用挂到该节点刚写下的那条步骤上。
 
-        The order is fixed by the graph: tool calls are executed and committed first (each one is
-        evidence that must survive a crash), and only then is the `agent_steps` row written, so the
-        step id does not exist while the calls run. Without this the calls kept a null
-        `agent_step_id` forever and the run page reported every step as having no tool calls.
+        顺序由图固定：工具调用先执行并提交（每一条都是必须扛过崩溃的证据），之后
+        才写 `agent_steps` 行，因此调用执行时步骤 id 还不存在。没有这一步，这些
+        调用会一直留着空的 `agent_step_id`，运行页面就会报告每条步骤都没有
+        工具调用。
         """
         if not call_ids:
             return
@@ -103,7 +103,7 @@ class StepRecorder:
         completion_tokens: int,
         estimated_cost: Decimal,
     ) -> None:
-        """Mirror the in-graph counters onto the run row for queryability."""
+        """把图内计数器镜像到运行行上，方便直接查询。"""
         self._agent_run.loop_count = loop_count
         self._agent_run.tool_call_count = tool_call_count
         self._agent_run.model_call_count = model_call_count
@@ -113,7 +113,7 @@ class StepRecorder:
         self._session.commit()
 
     def finish(self, *, status: str, error_code: str | None = None) -> None:
-        """Write the terminal status of the run."""
+        """写入运行的终态状态。"""
         self._agent_run.status = status
         self._agent_run.error_code = error_code
         self._agent_run.finished_at = utc_now()

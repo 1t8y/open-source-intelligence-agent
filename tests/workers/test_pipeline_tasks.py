@@ -1,4 +1,4 @@
-"""Tests for daily pipeline scheduling, retry policy, and business dates."""
+"""守护每日流水线的调度、重试策略与业务日期。"""
 
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -24,7 +24,7 @@ def build_settings(
     collect_limit: int = 7,
     backoff_seconds: int = 30,
 ) -> Settings:
-    """Create deterministic worker settings for scheduling tests."""
+    """为调度用例构造一套确定的 Worker 配置。"""
     return Settings(
         _env_file=None,
         app_env="test",
@@ -41,7 +41,7 @@ def build_settings(
 
 
 def test_beat_schedule_registers_the_daily_pipeline() -> None:
-    """The daily deterministic pipeline must run on the configured hour and minute."""
+    """证明每日确定性流水线按配置的小时与分钟运行。"""
     schedule = build_beat_schedule(build_settings())
 
     assert set(schedule) == {
@@ -62,7 +62,7 @@ def test_beat_schedule_registers_the_daily_pipeline() -> None:
 
 
 def test_beat_schedule_defaults_to_two_in_the_morning() -> None:
-    """The documented default must stay at 02:00 local time."""
+    """证明文档里承诺的默认值仍然是本地时间 02:00。"""
     settings = Settings(
         _env_file=None,
         app_env="test",
@@ -79,7 +79,7 @@ def test_beat_schedule_defaults_to_two_in_the_morning() -> None:
 
 
 def test_beat_schedule_can_disable_the_daily_pipeline() -> None:
-    """Operators must be able to keep Beat on without scheduling the pipeline."""
+    """证明运维可以只关掉流水线调度，而让 Beat 继续运行。"""
     schedule = build_beat_schedule(build_settings(schedule_enabled=False))
 
     assert set(schedule) == {
@@ -91,7 +91,7 @@ def test_beat_schedule_can_disable_the_daily_pipeline() -> None:
 
 
 def test_daily_pipeline_task_is_registered() -> None:
-    """The scheduled task name must resolve to a registered Celery task."""
+    """证明调度表里的任务名确实指向一个已注册的 Celery 任务。"""
     app = create_celery_app(build_settings())
 
     assert DAILY_PIPELINE_TASK in app.tasks
@@ -100,7 +100,7 @@ def test_daily_pipeline_task_is_registered() -> None:
 
 
 def test_retry_countdown_backs_off_exponentially() -> None:
-    """Retries must wait longer after each failed attempt."""
+    """证明每失败一次，重试前的等待就要更长。"""
     settings = build_settings(backoff_seconds=30)
 
     assert pipeline_retry_countdown(retries=0, settings=settings) == 30
@@ -110,7 +110,7 @@ def test_retry_countdown_backs_off_exponentially() -> None:
 
 
 def test_resolve_business_date_uses_configured_timezone() -> None:
-    """An explicit date wins, otherwise today comes from the configured timezone."""
+    """证明显式日期优先，否则「今天」取自配置的时区。"""
     settings = build_settings()
 
     assert resolve_business_date("2026-10-12", settings) == date(2026, 10, 12)

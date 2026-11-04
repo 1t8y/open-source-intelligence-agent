@@ -1,4 +1,10 @@
-"""Run T5 snapshot and ranking CLI smoke checks against MySQL."""
+"""针对 MySQL 跑 T5 的快照与排名 CLI 冒烟。
+
+脚本先插入一个临时用户和临时主题，然后真的去调 `pipeline.cli` 的 `snapshot` 与
+`rank` 两次同参调用，最后核对：两天的快照行数都等于仓库数、第二天增量全为 0、
+候选行数与排名连续、全部候选都被选中、审计至少 5 条。运行前需导出 `DATABASE_URL`，
+通过判据是脚本打印一段 JSON 且不抛 `RuntimeError`。
+"""
 
 import json
 import subprocess
@@ -29,7 +35,7 @@ SNAPSHOT_DATES = (date(2099, 1, 1), date(2099, 1, 2))
 
 
 def run_pipeline_cli(action: str, business_date: date) -> dict[str, Any]:
-    """Execute the real pipeline CLI and parse its JSON output."""
+    """执行真正的 pipeline CLI，并解析它输出的 JSON。"""
     completed = subprocess.run(
         [
             sys.executable,
@@ -53,7 +59,7 @@ def run_pipeline_cli(action: str, business_date: date) -> dict[str, Any]:
 
 
 def cleanup_verification_records(session: Any) -> None:
-    """Remove records created by previous or current T5 verification runs."""
+    """清掉上一轮或本轮 T5 验证留下的记录。"""
     session.execute(delete(RepoSnapshot).where(RepoSnapshot.snapshot_date.in_(SNAPSHOT_DATES)))
     topic = session.scalar(select(Topic).where(Topic.name == TEMPORARY_TOPIC_NAME))
     if topic is not None:
@@ -66,7 +72,7 @@ def cleanup_verification_records(session: Any) -> None:
 
 
 def main() -> None:
-    """Verify CLI idempotency, deltas, ranking, and audit records on MySQL."""
+    """在 MySQL 上核对 CLI 幂等性、增量、排名与审计记录。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)

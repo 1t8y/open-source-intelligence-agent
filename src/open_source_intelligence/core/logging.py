@@ -1,4 +1,9 @@
-"""Structured console and JSON logging with secret redaction."""
+"""结构化日志：控制台与 JSON 两种格式，出站前统一脱敏。
+
+脱敏发生在**最后一步**（渲染后的字符串），而不是在每个调用点：只要有一条日志路径忘了
+`redact_text`，密钥就会落到磁盘。规则表 `_REDACTION_RULES` 覆盖 `key=value` 形态的
+凭据、Bearer 头、URL 内的用户名密码，以及 `sk-` / `ghp_` / `github_pat_` 三种已知前缀。
+"""
 
 import json
 import logging
@@ -44,7 +49,7 @@ _MANAGED_LOGGERS = (
 
 
 def redact_text(value: str) -> str:
-    """Replace common credential patterns before a value is logged."""
+    """在写入日志前，把常见的凭据形态替换成 `[REDACTED]`。"""
     redacted = value
     for pattern, replacement in _REDACTION_RULES:
         redacted = pattern.sub(replacement, redacted)
@@ -52,14 +57,14 @@ def redact_text(value: str) -> str:
 
 
 class ConsoleFormatter(logging.Formatter):
-    """Human-readable formatter that redacts the final rendered message."""
+    """人类可读的控制台格式器：对渲染完成的整条消息再做一次脱敏。"""
 
     def format(self, record: logging.LogRecord) -> str:
         return redact_text(super().format(record))
 
 
 class JsonFormatter(logging.Formatter):
-    """Emit one JSON object per log record."""
+    """每条日志记录输出一个 JSON 对象，附带可选的 `request_id` 与 `event`。"""
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -80,7 +85,11 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(settings: Settings) -> None:
-    """Install one stdout handler with the configured format and level."""
+    """把唯一的 stdout handler 装到根 logger 上，格式与级别取自配置。
+
+    uvicorn / celery 自带的 handler 会被清空并改为向根 logger 传播，否则同一个进程里会出现
+    两套格式（容器里就是两行一条日志，一行 JSON 一行纯文本）。
+    """
     formatter: logging.Formatter
     if settings.log_format == "json":
         formatter = JsonFormatter()

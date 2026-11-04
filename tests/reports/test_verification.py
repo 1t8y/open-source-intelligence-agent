@@ -1,4 +1,4 @@
-"""Tests for the pre-publish Verifier and its persisted verdicts."""
+"""守护发布前的校验器，以及它落库的判定结果。"""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _sources(session: Session, report_id: int, section_key: str) -> Sequence[Rep
 
 
 def test_verify_passes_and_is_idempotent(session: Session, report_case: SeededReport) -> None:
-    """A freshly generated report clears all four A-004 checks, and re-running reuses the row."""
+    """刚生成的报告能通过 A-004 的四项检查，重跑还复用同一行。"""
     outcome = verify_report(session, report_id=report_case.report_id, now=NOW)
 
     assert outcome.verdict == VERDICT_PASSED
@@ -71,7 +71,7 @@ def test_missing_section_heading_fails_structure(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Truncating a rendered report is caught before anyone can publish it."""
+    """被截断的成稿要在任何人发布它之前就被拦下。"""
     report = report_case.reload(session)
     report.content_markdown = report.content_markdown.replace(f"## {SUMMARY_TITLE}", "## 摘要", 1)
     session.commit()
@@ -88,7 +88,7 @@ def test_unresolved_citation_is_detected(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A citation whose source row disappeared blocks publication."""
+    """引用的来源行已经消失时，必须挡住发布。"""
     source = _sources(session, report_case.report_id, "summary")[0]
     source.source_type = "metric"
     source.source_ref = "repo_snapshots:999999:2099-01-01"
@@ -106,7 +106,7 @@ def test_number_without_metric_citation_is_detected(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A section that states a number but only cites READMEs must not pass."""
+    """某一节写了数字、却只引了 README，不能算通过。"""
     repository_id = report_case.repositories[0].id
     report = report_case.reload(session)
     report.content_markdown = report.content_markdown.replace(
@@ -131,7 +131,7 @@ def test_credential_shaped_text_is_flagged_as_sensitive(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """The shared redaction rules define what counts as unacceptable content."""
+    """共用的脱敏规则定义了什么样的内容不可接受。"""
     report = report_case.reload(session)
     report.content_markdown = report.content_markdown.replace(
         f"## {SUMMARY_TITLE}\n",
@@ -151,7 +151,7 @@ def test_confidential_report_must_not_be_internally_visible(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A confidential report cannot be readable across the whole internal network."""
+    """机密报告不能在整个内网范围内可读。"""
     report = report_case.reload(session)
     report.sensitivity = "CONFIDENTIAL"
     report.visibility = "INTERNAL"
@@ -167,7 +167,7 @@ def test_low_citation_coverage_is_flagged(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Pruning a section's sources drops coverage below the configured floor."""
+    """删掉某一节的来源，会让覆盖率掉到配置的下限之下。"""
     for source in _sources(session, report_case.report_id, "appendix"):
         session.delete(source)
     session.commit()
@@ -183,7 +183,7 @@ def test_verification_honours_a_relaxed_coverage_floor(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Operators can accept a lower coverage floor without losing the other checks."""
+    """运维可以放低覆盖率下限，而不必牺牲其它检查。"""
     for source in _sources(session, report_case.report_id, "appendix"):
         session.delete(source)
     session.commit()
@@ -200,7 +200,7 @@ def test_verification_honours_a_relaxed_coverage_floor(
 
 
 def test_verification_rejects_an_unknown_report(session: Session) -> None:
-    """Verifying a missing report is a caller error, not a silent pass."""
+    """给不存在的报告做校验是调用方的错误，不是悄悄通过。"""
     with pytest.raises(ReportGenerationError, match="does not exist"):
         verify_report(session, report_id=987654, now=NOW)
     assert int(session.scalar(select(func.count()).select_from(Report)) or 0) == 0

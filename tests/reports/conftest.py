@@ -1,4 +1,4 @@
-"""Fixtures for Verifier and publishing tests."""
+"""校验器与发布测试共用的夹具。"""
 
 from __future__ import annotations
 
@@ -12,5 +12,5 @@ from support import Workspace
 
 @pytest.fixture
 def report_case(session: Session, workspace: Workspace) -> Iterator[SeededReport]:
-    """Provide a generated report whose topic uses `AUTO_WITH_DELAY`."""
+    """提供一个已生成好的报告，其主题使用 `AUTO_WITH_DELAY`。"""
     yield build_report(session, workspace, publish_mode=AUTO_WITH_DELAY)

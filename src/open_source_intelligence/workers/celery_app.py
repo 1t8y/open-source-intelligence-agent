@@ -1,4 +1,4 @@
-"""Celery application factory and shared runtime configuration."""
+"""Celery 应用工厂与共享运行时配置。"""
 
 from datetime import timedelta
 from typing import Any
@@ -17,27 +17,23 @@ BACKFILL_TASK = "open_source_intelligence.workers.tasks.run_backfill"
 
 BACKFILL_TIME_LIMIT_SECONDS = 1800
 BACKFILL_SOFT_TIME_LIMIT_SECONDS = 1740
-"""A paced walk outgrows the worker's five-minute default on purpose.
+"""带节流的走查会超出 Worker 默认的五分钟上限，这是刻意的。
 
-Its own bounds are what stop it: `MAX_TARGET_PAGES` pages, each held back by the source's
-configured request budget. A hundred pages at the default thirty requests per minute is
-already over three minutes before any request latency, and a source configured down to ten
-per minute needs ten. Killing the walk at five minutes would abort a job that was behaving
-exactly as configured - and because the job is resumable that would be survivable, but it
-would burn the rate-limit budget of an attempt that could never finish."""
+真正约束它的是自身的边界：`MAX_TARGET_PAGES` 页，每一页都受数据源配置的请求预算限制。
+默认每分钟 30 次请求时，一百页光排队就超过三分钟，还没算任何请求延迟；把数据源配到每分钟
+10 次，则需要十分钟。在第五分钟杀掉走查，会中断一个完全按配置正常工作的作业 —— 作业可续跑，
+所以还活得下来，但这一次尝试已经注定跑不完，却把限流预算烧掉了。"""
 
 
 def build_beat_schedule(settings: Settings) -> dict[str, dict[str, Any]]:
-    """Return the periodic schedule for the pipeline, the publishing sweep, and push retries.
+    """返回流水线、发布清扫与推送重试的周期调度。
 
-    The publishing sweep is always on: releasing reports whose withdrawal window has
-    elapsed consumes no model budget, and leaving it manual would defeat the point of
-    `AUTO_WITH_DELAY`. Push retries are scheduled separately so a slow or unavailable mail
-    server cannot delay a release that is already due.
+    发布清扫始终开启：释放已过撤回窗口的报告不消耗任何模型预算，把它留作手动操作会毁掉
+    `AUTO_WITH_DELAY` 的意义。推送重试单独调度，这样一台缓慢或不可用的邮件服务器无法拖延
+    一次已经到期的发布。
 
-    The backfill is deliberately absent. It is an operator's deliberate, one-off, expensive
-    act against a shared public API, so it is dispatched on demand rather than by a clock
-    that would start walking history nobody asked for.
+    回填被刻意排除在外。它是操作员针对共享公共 API 的一次有意、一次性、昂贵的动作，所以
+    按需派发，而不是交给一个会去翻没人要求的历史的时钟。
     """
     schedule: dict[str, dict[str, Any]] = {
         "system-healthcheck": {
@@ -69,7 +65,7 @@ def build_beat_schedule(settings: Settings) -> dict[str, dict[str, Any]]:
 
 
 def create_celery_app(settings: Settings | None = None) -> Celery:
-    """Create and configure a Celery application without connecting to Redis."""
+    """创建并配置 Celery 应用，且不连接 Redis。"""
     resolved_settings = settings or get_settings()
     app = Celery("open_source_intelligence")
     app.conf.update(

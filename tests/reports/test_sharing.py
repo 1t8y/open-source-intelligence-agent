@@ -1,8 +1,7 @@
-"""Tests for the no-login share link: the sensitivity gate, the token digest, and expiry.
+"""守护免登录分享链接：敏感度闸门、令牌摘要与过期。
 
-The property that carries the security weight is not "a link works" but "only a report that is
-allowed to leave the building can get one, and the row cannot be turned back into a link". Both
-are asserted directly against the database rather than through the service's return value.
+真正承载安全性的性质不是「链接能用」，而是「只有被允许外流的报告才能拿到链接，
+而且那一行无法被反推回链接」。这两点都直接对数据库断言，而不是看服务的返回值。
 """
 
 from __future__ import annotations
@@ -39,11 +38,10 @@ def seed_report(
     status: str = "published",
     sensitivity: str = "PUBLIC",
 ) -> Report:
-    """Seed a report in a chosen publishing state and sensitivity.
+    """按指定的发布状态与敏感度播种一份报告。
 
-    The row is constructed in its final state rather than transitioned into it: these tests are
-    about the share gate, and driving the publish policy would make them fail for reasons that
-    have nothing to do with sharing.
+    这一行直接以终态构造出来，而不是一路迁移过去：这些用例关心的是分享闸门，
+    若还去驱动发布策略，失败的原因就会和分享毫无关系。
     """
     case: SeededReport = build_report(session, workspace, publish_mode=AUTO_WITH_DELAY)
     report = Report(
@@ -65,7 +63,7 @@ def seed_report(
 
 
 def test_a_public_published_report_gets_a_link(session: Session, workspace: Workspace) -> None:
-    """The happy path: a token comes back, and it is long enough to be unguessable."""
+    """顺利路径：拿回一个令牌，且它足够长，猜不出来。"""
     report = seed_report(session, workspace)
 
     created = create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
@@ -76,10 +74,10 @@ def test_a_public_published_report_gets_a_link(session: Session, workspace: Work
 
 
 def test_only_the_digest_is_stored(session: Session, workspace: Workspace) -> None:
-    """A database that cannot store the plaintext cannot leak it.
+    """存不下明文的数据库，也就泄不出明文。
 
-    This is the whole reason the table exists in this shape, so it is asserted against the row
-    itself: if a future change adds a plaintext column "for convenience", this fails.
+    这张表长成这个样子正是为了这一点，所以断言直接落在那一行上：将来若有人
+    「图方便」加一个明文列，这里就会失败。
     """
     report = seed_report(session, workspace)
 
@@ -93,7 +91,7 @@ def test_only_the_digest_is_stored(session: Session, workspace: Workspace) -> No
 
 
 def test_listing_never_returns_a_token(session: Session, workspace: Workspace) -> None:
-    """The list payload has no field that could carry the plaintext."""
+    """列表载荷里没有任何字段可以承载明文。"""
     report = seed_report(session, workspace)
     created = create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
 
@@ -109,10 +107,10 @@ def test_listing_never_returns_a_token(session: Session, workspace: Workspace) -
 def test_a_non_public_report_is_refused(
     session: Session, workspace: Workspace, sensitivity: str
 ) -> None:
-    """The gate is sensitivity, not visibility.
+    """闸门看的是敏感度，而不是可见性。
 
-    `visibility` is INTERNAL on every one of these reports - readable by any logged-in user,
-    which reads as "harmless" right up until a link makes it readable by anyone with the URL.
+    这些报告的 `visibility` 一律是 INTERNAL —— 任何登录用户都能读，看上去
+    「无害」，直到一条链接把它变成任何拿到 URL 的人都能读。
     """
     report = seed_report(session, workspace, sensitivity=sensitivity)
 
@@ -126,7 +124,7 @@ def test_a_non_public_report_is_refused(
 def test_a_public_report_that_is_not_published_is_refused(
     session: Session, workspace: Workspace
 ) -> None:
-    """A draft is not a statement the organisation has agreed to."""
+    """草稿不是组织已经认可的对外表述。"""
     report = seed_report(session, workspace, status="draft", sensitivity="PUBLIC")
 
     with pytest.raises(ShareNotPublished) as excinfo:
@@ -139,7 +137,7 @@ def test_a_public_report_that_is_not_published_is_refused(
 def test_a_valid_token_resolves_and_counts_the_visit(
     session: Session, workspace: Workspace
 ) -> None:
-    """Resolution returns the report and records usage without touching the token."""
+    """解析会返回报告并记下访问次数，但不去改动令牌本身。"""
     report = seed_report(session, workspace)
     created = create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
 
@@ -154,7 +152,7 @@ def test_a_valid_token_resolves_and_counts_the_visit(
 
 
 def test_an_unknown_token_resolves_to_nothing(session: Session, workspace: Workspace) -> None:
-    """No row means no answer, and the route turns every `None` into one 404."""
+    """没有行就没有答案，路由把每个 `None` 都变成一个 404。"""
     report = seed_report(session, workspace)
     create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
 
@@ -162,7 +160,7 @@ def test_an_unknown_token_resolves_to_nothing(session: Session, workspace: Works
 
 
 def test_a_revoked_link_stops_resolving(session: Session, workspace: Workspace) -> None:
-    """Revocation is immediate: the next read fails, with no cache to wait out."""
+    """吊销立即生效：下一次读取就失败，没有缓存需要等。"""
     report = seed_report(session, workspace)
     created = create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
 
@@ -174,7 +172,7 @@ def test_a_revoked_link_stops_resolving(session: Session, workspace: Workspace) 
 
 
 def test_revoking_twice_is_idempotent(session: Session, workspace: Workspace) -> None:
-    """The intent ("make sure it stops working") is already satisfied, so no error."""
+    """意图（「确保它失效」）已经满足，因此不该报错。"""
     report = seed_report(session, workspace)
     created = create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
     first = revoke_share_link(
@@ -199,7 +197,7 @@ def test_revoking_twice_is_idempotent(session: Session, workspace: Workspace) ->
 def test_revoking_a_link_of_another_report_is_not_found(
     session: Session, workspace: Workspace
 ) -> None:
-    """A share id is scoped to its report, so a guessed id cannot be revoked through another."""
+    """分享 id 限定在它所属的报告内，猜到的 id 无法经由另一份报告吊销。"""
     report = seed_report(session, workspace)
     other = seed_report(session, workspace)
     created = create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
@@ -211,7 +209,7 @@ def test_revoking_a_link_of_another_report_is_not_found(
 
 
 def test_an_expired_link_stops_resolving(session: Session, workspace: Workspace) -> None:
-    """The clock is a parameter, so "expired" is tested without waiting."""
+    """时钟是参数，所以测「过期」不必真的等到过期。"""
     report = seed_report(session, workspace)
     created = create_share_link(session, report_id=report.id, actor_id=None, ttl_hours=1, now=NOW)
 
@@ -220,7 +218,7 @@ def test_an_expired_link_stops_resolving(session: Session, workspace: Workspace)
 
 
 def test_a_link_with_no_expiry_never_expires(session: Session, workspace: Workspace) -> None:
-    """`ttl_hours=None` is an explicit choice, not a missing value."""
+    """`ttl_hours=None` 是明确的「不过期」，不是漏填。"""
     report = seed_report(session, workspace)
     created = create_share_link(
         session, report_id=report.id, actor_id=None, ttl_hours=None, now=NOW
@@ -233,10 +231,9 @@ def test_a_link_with_no_expiry_never_expires(session: Session, workspace: Worksp
 def test_a_report_that_stops_being_public_kills_its_link(
     session: Session, workspace: Workspace
 ) -> None:
-    """Reclassifying the content takes effect on the next read, not on the next link.
+    """内容被重新定级，在下一次读取时生效，而不是在下一条链接上生效。
 
-    This is why the report-side conditions are re-checked at resolution time instead of being
-    frozen when the link is minted.
+    这正是报告侧的条件要在解析时重新检查、而不是在签发链接时冻结下来的原因。
     """
     report = seed_report(session, workspace)
     created = create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
@@ -248,7 +245,7 @@ def test_a_report_that_stops_being_public_kills_its_link(
 
 
 def test_a_retracted_report_kills_its_link(session: Session, workspace: Workspace) -> None:
-    """Withdrawing a report must withdraw the address that points at it."""
+    """撤回一份报告，也要同时撤回指向它的那个地址。"""
     report = seed_report(session, workspace)
     created = create_share_link(session, report_id=report.id, actor_id=None, now=NOW)
 
@@ -262,7 +259,7 @@ def test_a_retracted_report_kills_its_link(session: Session, workspace: Workspac
 def test_a_lifetime_outside_the_bounds_is_refused(
     session: Session, workspace: Workspace, ttl_hours: int
 ) -> None:
-    """A bad lifetime is a caller mistake and must not mint a row."""
+    """非法的有效期是调用方的错误，不能因此落一行数据。"""
     report = seed_report(session, workspace)
 
     with pytest.raises(ShareError) as excinfo:
@@ -273,7 +270,7 @@ def test_a_lifetime_outside_the_bounds_is_refused(
 
 
 def test_minting_and_revoking_are_audited(session: Session, workspace: Workspace) -> None:
-    """The operator's action is the only thing anyone can be held to later, so it is recorded."""
+    """日后唯一能追责的是操作者的动作，所以要记下来。"""
     from open_source_intelligence.persistence.models.audit import AuditLog
 
     report = seed_report(session, workspace)
@@ -290,7 +287,7 @@ def test_minting_and_revoking_are_audited(session: Session, workspace: Workspace
 
 
 def test_reading_a_share_is_not_audited(session: Session, workspace: Workspace) -> None:
-    """Anonymous reads have no actor to attribute, so they must not flood the audit table."""
+    """匿名读取没有主体可归属，因此不能把审计表刷爆。"""
     from open_source_intelligence.persistence.models.audit import AuditLog
 
     report = seed_report(session, workspace)

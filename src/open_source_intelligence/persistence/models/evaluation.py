@@ -1,22 +1,21 @@
-"""Evaluation dataset, case, run, and result persistence models.
+"""评测数据集、用例、运行与结果的持久化模型。
 
-The four tables answer one question each, and the split matters:
+这四张表各回答一个问题，这种拆分本身就有意义：
 
-* `eval_datasets` is the *identity* of a frozen dataset. `(name, version)` is unique and a
-  dataset is never edited in place - changing a case means publishing a new version - so a
-  result row can always be traced back to the exact sample set that produced it.
-* `eval_cases` is one sample: its input snapshot, the human reference, and the rubric. A case
-  owns no results; the same case is measured by many runs.
-* `eval_runs` is one execution of one dataset against one *target variant*
-  (`baseline_single_prompt`, `agent_full`, and the three ablations). `summary_json` is where
-  the unified comparison report lives, so an operator reads one row per variant instead of
-  re-aggregating hundreds of result rows.
-* `eval_results` is the per-case measurement. `(eval_run_id, eval_case_id)` is unique, so a
-  re-run of a case overwrites its own measurement instead of appending a duplicate.
+* `eval_datasets` 是一个已冻结数据集的*身份*。`(name, version)` 唯一，数据集永远
+  不做原地修改 —— 改用例就意味着发布新版本 —— 因此任何一行结果都能回溯到产生它的
+  那批确切样本。
+* `eval_cases` 是一个样本：它的输入快照、人工参考答案与评分细则。用例不拥有结果；
+  同一个用例会被多次运行测量。
+* `eval_runs` 是拿一个数据集对一个*目标变体*的一次执行
+  （`baseline_single_prompt`、`agent_full`，以及三个消融变体）。`summary_json`
+  存放统一对比报告，运维因此只需读每个变体一行，而不必重新聚合上百行结果。
+* `eval_results` 是按用例的测量结果。`(eval_run_id, eval_case_id)` 唯一，因此重跑
+  某个用例会覆盖它自己的测量值，而不是追加一条重复记录。
 
-The three metric columns that `docs/data-model.md` §7 fixes (`citation_coverage`,
-`factual_consistency`, `task_completion`) are promoted to real columns because they are the
-gated release criteria; every other metric stays in `details_json`.
+`docs/data-model.md` §7 定下的三个指标列（`citation_coverage`、
+`factual_consistency`、`task_completion`）被提升为真实列，因为它们正是发布门禁的
+判据；其余指标一律留在 `details_json` 中。
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ from ..base import (
     unsigned_bigint,
 )
 
-#: The five variants `docs/evaluation.md` §1 requires, byte-identical to that table.
+#: `docs/evaluation.md` §1 要求的五个变体，与那张表逐字节一致。
 EVAL_TARGET_TYPES = (
     "baseline_single_prompt",
     "agent_full",
@@ -59,10 +58,10 @@ EVAL_RUN_STATUSES = ("pending", "running", "succeeded", "failed")
 
 
 class EvalDataset(Base, TimestampMixin):
-    """One immutable version of an evaluation dataset.
+    """评测数据集的一个不可变版本。
 
-    `(name, version)` is the identity: raising the version is the only way to change a
-    dataset, which keeps every historical result reproducible.
+    `(name, version)` 就是身份：提升版本号是修改数据集的唯一方式，这样每一条历史结果
+    都保持可复现。
     """
 
     __tablename__ = "eval_datasets"
@@ -83,11 +82,11 @@ class EvalDataset(Base, TimestampMixin):
 
 
 class EvalCase(Base, TimestampMixin):
-    """One sample inside a dataset version.
+    """数据集某个版本内的一个样本。
 
-    `input_json` is the frozen snapshot the target reads; `reference_json` and `rubric_json`
-    are what the deterministic scorers compare against. `enabled` lets a case be parked
-    without deleting it, and a disabled case is skipped by the runner rather than scored zero.
+    `input_json` 是被测目标读取的冻结快照；`reference_json` 与 `rubric_json` 是确定性
+    评分器用来比对的依据。`enabled` 允许把一个用例搁置起来而不删除它，被禁用的用例会
+    被运行器跳过，而不是记零分。
     """
 
     __tablename__ = "eval_cases"
@@ -110,10 +109,10 @@ class EvalCase(Base, TimestampMixin):
 
 
 class EvalRun(Base, TimestampMixin):
-    """One dataset-against-target execution, and the holder of the unified report.
+    """一次「数据集对目标变体」的执行，同时也是统一报告的存放处。
 
-    `finished_at >= started_at` is enforced the same way `pipeline_runs` enforces it, because
-    a run whose clock runs backwards is a broken record rather than a slow one.
+    `finished_at >= started_at` 的约束方式与 `pipeline_runs` 完全一致：时钟倒着走的
+    运行是一条坏记录，而不是一条慢记录。
     """
 
     __tablename__ = "eval_runs"
@@ -155,12 +154,12 @@ class EvalRun(Base, TimestampMixin):
 
 
 class EvalResult(Base, TimestampMixin):
-    """One case's measured outcome inside one run.
+    """某一个用例在某一次运行内的测量结果。
 
-    Rates are stored as `Numeric(5, 4)` because every one of them is a `0.0`-`1.0` ratio; the
-    extra metrics that have no gated threshold (`source_accuracy`, `tool_success_rate`,
-    `prompt_injection_block_rate`) live in `details_json` so the schema stays tied to the
-    release criteria instead of chasing every new score.
+    比率一律存为 `Numeric(5, 4)`，因为每一个都是 `0.0`-`1.0` 的比值；没有发布门槛的
+    额外指标（`source_accuracy`、`tool_success_rate`、
+    `prompt_injection_block_rate`）放在 `details_json` 里，好让表结构紧扣发布判据，
+    而不是每来一个新分数就改一次结构。
     """
 
     __tablename__ = "eval_results"

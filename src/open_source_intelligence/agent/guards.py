@@ -1,18 +1,18 @@
-"""Runtime guard for untrusted external text.
+"""针对不可信外部文本的运行时守卫。
 
-README and other external content remain useful evidence, but instruction-like lines are
-never treated as trusted control input. The guard blocks those lines before the model sees
-them and raises a deterministic risk signal for the verifier and run record.
+README 等外部内容仍然是有用的证据，但其中的指令式语句绝不当作可信的控制输入。
+守卫在模型看到这些行之前就把它们拦下，并为验证器与运行记录给出一个确定性的风险
+信号。
 
-Two rules keep the guard both effective and quiet:
+两条规则让守卫既有效又不吵：
 
-* **The surface is every provider-controlled field**, not just a README body. A repository's
-  `description`, its `topics`, and a prior report's `title`/`summary` are written by the same
-  strangers who write the README, so they are scanned too — `UNTRUSTED_TEXT_FIELDS`.
-* **Wording that normal documentation also uses needs an addressee.** "Run the command below" is
-  how every README explains installation; "you must run the command" is an instruction aimed at
-  the reader. Patterns in `_ADDRESSED_PATTERNS` only fire when the line addresses an agent, so
-  an install section is not scored as an injection attempt.
+* **扫描面是每一个由供应商控制的字段**，而不只是 README 正文。仓库的
+  `description`、它的 `topics`，以及历史报告的 `title`/`summary`，都出自写
+  README 的同一批陌生人，所以它们一并被扫描 —— 见 `UNTRUSTED_TEXT_FIELDS`。
+* **普通文档也会用的措辞需要一个受话人。**「Run the command below」是每份
+  README 讲安装的说法；「you must run the command」则是冲着读者下的指令。
+  `_ADDRESSED_PATTERNS` 里的模式只有在该行在对 Agent 说话时才会命中，因此
+  一个安装小节不会被判成注入尝试。
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from typing import Any
 
 BLOCKED_LINE = "[BLOCKED_UNTRUSTED_INSTRUCTION]"
 
-#: Payload fields that carry provider-controlled free text. Scanned wherever they appear.
+#: 承载供应商可控自由文本的载荷字段。无论出现在哪里都会被扫描。
 UNTRUSTED_TEXT_FIELDS: frozenset[str] = frozenset(
     {"content", "description", "summary", "title", "topics"}
 )
 
-#: Unconditional injection signals: phrasing that has no innocent use in a project README.
+#: 无条件的注入信号：在项目 README 里绝无正当用法的措辞。
 _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "ignore_instructions",
@@ -57,8 +57,8 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("zh_secret_exfiltration", re.compile(r"(泄露|输出|发送).{0,12}(密钥|令牌|密码|系统提示)")),
 )
 
-#: Signals that share their wording with ordinary documentation, so they only count when the
-#: line addresses an agent rather than a human reader.
+#: 与普通文档共用措辞的信号，因此只有当该行在对 Agent 而非人类读者说话时
+#: 才算数。
 _ADDRESSED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "tool_override",
@@ -84,8 +84,8 @@ _ADDRESSED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.I,
         ),
     ),
-    # Deliberately no `命令`: "请执行以下命令安装依赖" is what an install section says. A real
-    # tool-directed instruction names a tool or a script, and adds a directive to the reader.
+    # 特意不含「命令」二字：「请执行以下命令安装依赖」正是安装小节的惯用
+    # 说法。真正的工具定向指令会点名某个工具或脚本，并对读者附加一条要求。
     (
         "zh_tool_override",
         re.compile(r"(请|你|您|必须|立即|立刻|现在).{0,6}(调用|执行|运行).{0,6}(工具|函数|脚本)"),
@@ -99,7 +99,7 @@ _ADDRESSED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 @dataclass(frozen=True, slots=True)
 class GuardDecision:
-    """Outcome of scanning one untrusted content payload."""
+    """扫描一份不可信内容载荷的结果。"""
 
     triggered: bool
     blocked_line_count: int
@@ -107,14 +107,14 @@ class GuardDecision:
 
 
 def _line_reasons(line: str) -> tuple[str, ...]:
-    """Return every reason one line trips, or an empty tuple when it is clean."""
+    """返回某一行触发的所有原因；该行干净时返回空元组。"""
     reasons = [reason for reason, pattern in _INJECTION_PATTERNS if pattern.search(line)]
     reasons.extend(reason for reason, pattern in _ADDRESSED_PATTERNS if pattern.search(line))
     return tuple(reasons)
 
 
 def inspect_untrusted_text(text: str) -> GuardDecision:
-    """Return whether untrusted text contains instruction-like content."""
+    """判断不可信文本是否含有指令式内容。"""
     reasons: set[str] = set()
     blocked_line_count = 0
     for line in text.splitlines():
@@ -130,7 +130,7 @@ def inspect_untrusted_text(text: str) -> GuardDecision:
 
 
 def sanitize_untrusted_text(text: str) -> tuple[str, GuardDecision]:
-    """Replace instruction-like lines and wrap the remaining text as untrusted data."""
+    """替换指令式语句，并把余下文本包成不可信数据。"""
     safe_lines: list[str] = []
     reasons: set[str] = set()
     blocked_line_count = 0
@@ -153,7 +153,7 @@ def sanitize_untrusted_text(text: str) -> tuple[str, GuardDecision]:
 
 
 def _redact_lines(text: str, decisions: list[GuardDecision]) -> str:
-    """Replace instruction-like lines in one short field, leaving clean text untouched."""
+    """替换某个短字段里的指令式语句；干净文本原样返回。"""
     decision = inspect_untrusted_text(text)
     if not decision.triggered:
         return text
@@ -162,7 +162,7 @@ def _redact_lines(text: str, decisions: list[GuardDecision]) -> str:
 
 
 def _guard_field(value: Any, decisions: list[GuardDecision]) -> Any:
-    """Redact one provider-controlled field, which may be a string or a list of strings."""
+    """净化一个由供应商控制的字段，它可能是字符串或字符串列表。"""
     if isinstance(value, str):
         return _redact_lines(value, decisions)
     if isinstance(value, list):
@@ -171,7 +171,7 @@ def _guard_field(value: Any, decisions: list[GuardDecision]) -> Any:
 
 
 def _merge(decisions: list[GuardDecision]) -> GuardDecision:
-    """Fold per-field decisions into the single decision the graph records."""
+    """把逐字段的判定合并成图记录的那一个判定。"""
     triggered = [item for item in decisions if item.triggered]
     if not triggered:
         return GuardDecision(False, 0)
@@ -183,16 +183,16 @@ def _merge(decisions: list[GuardDecision]) -> GuardDecision:
 
 
 def guard_tool_payload(payload: Any) -> tuple[Any, GuardDecision]:
-    """Sanitize an untrusted tool payload before it enters the model conversation.
+    """在不可信工具载荷进入模型对话之前对它做净化。
 
-    Every field named in `UNTRUSTED_TEXT_FIELDS` is scanned, at any depth, because the guard's
-    job is to cover the surface rather than the one field a caller remembered to mark. A README
-    body keeps its `<untrusted_content>` wrapper; a short field such as a description or a
-    summary only has its offending lines replaced.
+    `UNTRUSTED_TEXT_FIELDS` 里点名的每个字段都会在任意深度被扫描，因为
+    守卫的职责是覆盖整个扫描面，而不是调用方恰好记得标记的那一个字段。README
+    正文会保留 `<untrusted_content>` 外壳；描述、摘要这类短字段只替换掉其中
+    出格的行。
     """
     if isinstance(payload, list):
-        # Tools that return a collection (prior report summaries, topics) hand back a list of
-        # records, so the list itself has to be walked or those records are never scanned.
+        # 返回集合的工具（历史报告摘要、主题）交回的一串记录，列表本身必须
+        # 遍历，否则这些记录永远不会被扫描。
         item_decisions: list[GuardDecision] = []
         items: list[Any] = []
         list_changed = False

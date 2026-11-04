@@ -7,11 +7,11 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $projectRoot
 
-# The smoke prints its payload as UTF-8 with `ensure_ascii=False`, because a report title is
-# Chinese ('<topic> 开源技术情报周报（<date>）'). A native command's stdout is decoded using the
-# console code page rather than UTF-8, so without this the title arrives as mangled bytes and
-# `ConvertFrom-Json` fails part-way through the string. Both sides are pinned rather than one:
-# `PYTHONIOENCODING` decides what the child *writes*, the console encoding what PowerShell *reads*.
+# smoke 脚本以 `ensure_ascii=False` 按 UTF-8 打印其载荷，因为报告标题是中文
+# （'<topic> 开源技术情报周报（<date>）'）。原生命令的 stdout 会按控制台代码页而非 UTF-8
+# 解码，若不这样做，标题就会以乱码字节的形式到达，`ConvertFrom-Json` 会在字符串中间解析
+# 失败。两端都要固定而不是只固定一端：`PYTHONIOENCODING` 决定子进程*写入*什么，
+# 控制台编码决定 PowerShell *读取*什么。
 $previousOutputEncoding = [Console]::OutputEncoding
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = 'utf-8'
@@ -62,18 +62,15 @@ $mountArgs = @(
     'api'
 )
 
-# The fixture mode exists because this repository is developed on a machine whose Docker engine
-# cannot start. It runs the *same* smoke module and the *same* assertion block below against a
-# real SQLite file instead of MySQL, so the checks are exercised rather than merely written. The
-# container mode remains the authoritative path: it is the one that also proves the migration
-# that adds `backfill_jobs`, the Compose wiring, and MySQL's own constraint semantics.
+# 固件模式的存在是因为本仓库在一台 Docker 引擎无法启动的机器上开发。它会用*同一个* smoke 模块
+# 和下方*同一块*断言，改为针对一个真实的 SQLite 文件而非 MySQL 运行，这样这些检查是真正被执行的，
+# 而不只是被写出来。容器模式仍是权威路径：只有它才能同时证明新增 `backfill_jobs` 表的那次迁移、
+# Compose 接线和 MySQL 自身的约束语义。
 #
-# One hazard the container path inherits from its siblings: the smoke step mounts the host project
-# root at /workspace and runs with that as its working directory, so a root `.env` is visible to
-# the container. A `.env` copied verbatim from `.env.example` carries the compose-only `MYSQL_*`
-# keys, which `Settings` refuses with `extra_forbidden` - and dotenv contributes keys
-# independently, so the compose environment does not mask it. Remove those keys before running
-# this path, or run the fixture mode.
+# 容器路径从它的兄弟脚本继承了一个隐患：smoke 步骤把宿主项目根目录挂载到 /workspace 并以它为
+# 工作目录运行，因此根目录的 `.env` 对容器可见。一份从 `.env.example` 原样复制的 `.env` 带有仅供
+# compose 使用的 `MYSQL_*` 键，`Settings` 会以 `extra_forbidden` 拒绝它们——而且 dotenv 是独立
+# 注入键的，compose 环境无法掩盖它。运行此路径前请移除那些键，或者改跑固件模式。
 $fixtureDir = Join-Path ([System.IO.Path]::GetTempPath()) 'osia-t16-fixture'
 $fixtureDb = Join-Path $fixtureDir 't16_smoke.db'
 
@@ -94,8 +91,8 @@ Assert-LastCommandSucceeded 'mypy'
 if ($SqliteFixture) {
     Write-Host "==> Prepare the SQLite fixture at $fixtureDir"
     New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
-    # `_env_file=None` is load-bearing: without it the fixture would read the developer's `.env`,
-    # and a filled-in provider would turn this into a live, billable, non-reproducible run.
+    # `_env_file=None` 是关键所在：没有它，固件会读取开发者的 `.env`，
+    # 而一旦其中填写了某个供应商配置，就会把这次运行变成一次真实计费且不可复现的运行。
     $sitecustomize = @'
 """Repoint the T16 smoke at a SQLite file, standing in for the unavailable MySQL container."""
 
@@ -177,9 +174,9 @@ else {
     Assert-LastCommandSucceeded 'alembic upgrade head'
     docker @composeArgs exec -T api alembic check
     Assert-LastCommandSucceeded 'alembic check'
-    # T16 is the only stage that adds both a table and a value to an existing CHECK constraint, so
-    # the round trip is asserted rather than assumed: a downgrade that forgot the `backfill` rows
-    # would fail here, not in production.
+    # T16 是唯一一个既加表又给既有 CHECK 约束加值的阶段，因此往返（降级再升级）是被
+    # 断言的而不是被默认成立的：忘了处理 `backfill` 行的降级会在这里失败，
+    # 而不是在生产环境里失败。
     docker @composeArgs exec -T api alembic downgrade -1
     Assert-LastCommandSucceeded 'alembic downgrade -1'
     docker @composeArgs exec -T api alembic upgrade head
@@ -190,8 +187,8 @@ else {
     Assert-LastCommandSucceeded 'T16 MySQL smoke'
 }
 
-# The smoke drives the real application, so its stdout also carries the application log; the
-# payload is the last JSON object it prints.
+# smoke 脚本驱动的是真实应用，因此其 stdout 同时带有应用日志；
+# 载荷是它打印的最后一个 JSON 对象。
 $smokeJson = $smokeOutput |
     Where-Object { $_.TrimStart().StartsWith('{') } |
     Select-Object -Last 1
@@ -205,10 +202,9 @@ $report = $smoke.report
 $cli = $smoke.cli
 $readback = $smoke.readback
 
-# Criterion 1: a walk stops where the source stops, not where the source's count says it should.
-# The mock endpoint advertises 4210 results - roughly 1400 pages at three per page - and serves
-# four. A walker that derived its last page from `total_count` would request pages that will never
-# be answered; this one has to notice the absent `rel="next"`.
+# 判据 1：遍历在源头停止处停止，而不是在源头声称的数量处停止。模拟端点宣称有 4210 条
+# 结果——按每页三条约合 1400 页——却只服务四页。一个用 `total_count` 推导末页的遍历器
+# 会去请求永远不会被应答的页；而这一版必须注意到 `rel="next"` 的缺失。
 Assert-Equal $backfill.wide_exhausted $true 'the walk reached the end the Link header declared'
 Assert-Equal ($backfill.wide_pages_requested -join ',') '1,2,3,4' 'every page the source served was requested exactly once'
 Assert-Equal $backfill.wide_next_page 5 'the cursor stops one past the last page served'
@@ -217,7 +213,7 @@ Assert-Equal $backfill.wide_repository_rows 12 'every ingested item became a rep
 Assert-Equal ($backfill.wide_sleeps -join ',') '1,1,1' 'the walk paced one interval between consecutive requests'
 Assert-Equal $backfill.wide_paced_seconds 3 'three gaps were spent across four pages'
 
-# Criterion 2: an interruption costs the page in flight, not the history.
+# 判据 2：中断只损失正在传输的那一页，不损失历史。
 Assert-Equal $backfill.failed_error_code 'COLLECTOR_FAILED' 'a source refusal is classified as a collector failure, not a bug'
 Assert-Equal $backfill.failed_page 3 'the failing page is the one the smoke broke'
 Assert-Equal $backfill.failed_next_page 3 'the cursor stops on the page that failed'
@@ -232,7 +228,7 @@ Assert-Equal $backfill.failed_run_status 'failed' 'the failed walk leaves a fail
 Assert-Equal $backfill.failed_run_error_code 'COLLECTOR_FAILED' 'the run row carries the stable code'
 Assert-Equal $backfill.runs_before_resume 1 'one attempt leaves one run row'
 
-# Criterion 3: the resume walks the rest, and only the rest.
+# 判据 3：续走会走完剩余部分，且只走剩余部分。
 Assert-Equal ($backfill.resumed_pages_requested -join ',') '3,4' 'the resume requests pages 3 and 4 and nothing else'
 Assert-Equal $backfill.resumed_started_page 3 'the resume starts where the walk stopped'
 Assert-Equal $backfill.resumed_attempt 2 'the resume is recorded as the second attempt'
@@ -249,36 +245,36 @@ Assert-Equal $backfill.repository_rows_after_resume 12 'the resume completed the
 Assert-Equal $backfill.runs_after_resume 2 'each attempt leaves its own run row'
 Assert-Equal ($backfill.run_statuses_after_resume -join ',') 'failed,succeeded' 'the two attempts are recorded separately'
 
-# Criterion 4: the crash window is harmless, not merely survivable. Replaying a walk cannot
-# duplicate a row, because ingestion is idempotent on (source, provider_repo_id).
+# 判据 4：崩溃窗口是无害的，而不仅仅是可幸存。重放一次遍历不会
+# 产生重复行，因为摄入在 (source, provider_repo_id) 上是幂等的。
 Assert-Equal $backfill.repository_rows_after_replay 12 'replaying the same walk adds no repository row'
 
-# Criterion 5: the page budget is a budget, and a budget stop is distinguishable from the end of
-# the source.
+# 判据 5：页预算就是预算，且预算停止可与
+# 源头结束区分开。
 Assert-Equal $backfill.budget_walk_pages 2 'a walk stops on its page budget'
 Assert-Equal $backfill.budget_walk_exhausted $false 'a budget stop does not claim the source was exhausted'
 
-# Criterion 6: the budget configured on the data source row is the budget the walk spends.
+# 判据 6：数据源行上配置的预算就是遍历实际花费的预算。
 Assert-Equal ($backfill.derived_limiter_budgets -join ',') $backfill.source_rate_limit_per_minute 'the walk built its limiter from the source row'
 Assert-Equal $backfill.source_rate_limit_per_minute 30 'the deployed default request budget'
 
-# Criterion 7: one cursor, one walker. Two walkers on one cursor do not merely duplicate work:
-# each advances the same counter as if it were alone.
+# 判据 7：一个游标，一个遍历器。两个遍历器共用一个游标不只是重复劳动：
+# 每一个都会像独自运行一样推进同一个计数器。
 Assert-Equal $backfill.busy_held_since '2099-06-06T09:00:00+00:00' 'a live heartbeat refuses a second walker'
 Assert-Equal $backfill.stale_takeover_attempt 2 'a stale heartbeat hands the cursor on'
 
-# Criterion 8: refusals happen before anything is written, and the refusal says why.
+# 判据 8：拒绝发生在任何写入之前，且拒绝会说明原因。
 Assert-Equal $backfill.unsupported_collector "collector 't16_not_paginated' cannot be walked page by page" 'a source that cannot page is refused by name'
 Assert-True ($backfill.bound_refusals -join '|').Contains('target_pages must be between 1 and 100') 'an oversized page budget is refused'
 Assert-True ($backfill.bound_refusals -join '|').Contains('per_page must be between 1 and 100') 'an oversized page is refused'
 Assert-Equal $backfill.jobs_created 5 'the five walks created five jobs and the four refusals created none'
 Assert-True $backfill.not_resumable_message.Contains('already completed its pages') 'resuming a finished walk is refused by name'
 
-# Criterion 9: the ledger tells the two kinds of failure apart. `COLLECTOR_FAILED` means the
-# source refused; a bug in our own writing would land on `PIPELINE_UNEXPECTED_ERROR`.
+# 判据 9：台账能区分两种失败。`COLLECTOR_FAILED` 表示源头拒绝；我们自身写入的缺陷
+# 会落到 `PIPELINE_UNEXPECTED_ERROR` 上。
 Assert-Equal ($backfill.audit_results -join ',') 'success,failed,success,success,success' 'every walk and only every walk left an audit row'
 
-# Criterion 10: the weekly report is generated end to end, through the real pipeline.
+# 判据 10：周报经由真实流水线端到端生成。
 Assert-Equal $report.daily_status 'succeeded' 'the daily pipeline succeeded'
 Assert-Equal (($report.daily_stages | ForEach-Object { $_ -join ':' }) -join ',') 'collect:succeeded,snapshot:succeeded,rank:succeeded' 'collect, snapshot, and rank all ran'
 Assert-Equal $report.daily_provider_counts.github 4 'the collect stage ingested the page it collected'
@@ -301,7 +297,7 @@ Assert-AtLeast $report.report_source_count 6 'the report carries its citation se
 Assert-Equal $report.verification_passed $true 'the verifier accepted the report'
 Assert-Equal $report.verification_reasons.Count 0 'the verifier named no reason to hold it back'
 
-# Criterion 11: the publishing state machine, not a direct write, carries it out.
+# 判据 11：由发布状态机而非直接写入来完成发布。
 Assert-Equal $report.decision_status 'pending_review' 'a first report is parked for a human'
 Assert-Equal ($report.decision_reasons -join ',') 'FIRST_RUN' 'the policy names why'
 Assert-Equal $report.review_status 'approved' 'an approval moves it to approved'
@@ -309,7 +305,7 @@ Assert-Equal $report.released_count 1 'the release sweep picked up exactly this 
 Assert-Equal $report.report_status 'published' 'the report ends up published'
 Assert-Equal $report.report_published_at '2099-06-07T12:00:00+00:00' 'the release is stamped at the pinned instant'
 
-# Criterion 12: the CLI is the operator's interface, and it agrees with the service.
+# 判据 12：CLI 是运维者的界面，且与服务层结论一致。
 Assert-Equal $cli.listed_jobs 5 'the CLI lists the jobs'
 Assert-Equal $cli.listed_first_job 5 'the CLI lists newest first'
 Assert-Equal $cli.status_job $backfill.first_job_id 'the CLI reports the requested job'
@@ -320,8 +316,8 @@ Assert-Equal $cli.over_budget_message 'target_pages must be between 1 and 100' '
 Assert-Equal $cli.already_done_exit_code 1 'resuming a finished walk exits non-zero'
 Assert-Equal $cli.already_done_message 'backfill job 1 has already completed its pages' 'the CLI names the job it refused'
 
-# Criterion 13: the durable rows are readable by a session that wrote nothing. The identity map
-# of the writing session cannot make an uncommitted change look committed.
+# 判据 13：持久化的行可被一个未写入过任何内容的会话读取。写入会话的标识映射
+# 无法把未提交的更改伪装成已提交。
 Assert-Equal $readback.finished_job_status 'succeeded' 'the finished job survives a re-read'
 Assert-Equal $readback.finished_job_next_page 5 'its cursor survives a re-read'
 Assert-Equal $readback.finished_job_items 12 'its item count survives a re-read'

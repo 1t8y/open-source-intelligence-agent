@@ -1,4 +1,4 @@
-"""Daily repository snapshot generation."""
+"""生成仓库的每日快照。"""
 
 from collections.abc import Sequence
 from datetime import date
@@ -15,7 +15,7 @@ def create_daily_snapshots(
     *,
     snapshot_date: date,
 ) -> int:
-    """Create or update one snapshot per repository for the supplied date."""
+    """为给定日期创建或更新每个仓库的一条快照。"""
     repositories = session.scalars(select(Repository).order_by(Repository.id)).all()
     for repository in repositories:
         previous = session.scalar(
@@ -74,7 +74,7 @@ def get_snapshot_series(
     start_date: date,
     end_date: date,
 ) -> Sequence[RepoSnapshot]:
-    """Return snapshots for a repository ordered by date."""
+    """按日期升序返回某个仓库的快照序列。"""
     return session.scalars(
         select(RepoSnapshot)
         .where(

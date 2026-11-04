@@ -1,4 +1,4 @@
-"""Import all ORM models so metadata is complete for Alembic."""
+"""导入全部 ORM 模型，使 Alembic 看到完整的 metadata。"""
 
 from .agent import AgentConfig, AgentRun, AgentRunReview, AgentStep, ToolCall
 from .audit import AuditLog

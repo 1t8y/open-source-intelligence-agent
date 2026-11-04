@@ -1,4 +1,7 @@
-"""add report owner and versioned report sources
+"""新增报告所有者，并让报告引用按版本归属
+
+给 `reports` 增加 `owner_id`，让 `PRIVATE` 可见性有明确归属；给 `report_sources`
+增加 `version`，使引用集合跟着不可变版本走。
 
 Revision ID: b7d2f4a91c63
 Revises: e5b1c8a3f7d2
@@ -18,26 +21,26 @@ depends_on: str | Sequence[str] | None = None
 
 
 def uint64() -> sa.BigInteger:
-    """Return the project unsigned BIGINT type."""
+    """返回项目统一的无符号 `BIGINT` 类型。"""
     return sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 def _has_column(table_name: str, column_name: str) -> bool:
-    """Return whether a column already exists."""
+    """返回该列是否已经存在。"""
     return column_name in {
         column["name"] for column in sa.inspect(op.get_bind()).get_columns(table_name)
     }
 
 
 def _has_index(table_name: str, index_name: str) -> bool:
-    """Return whether an index already exists."""
+    """返回该索引是否已经存在。"""
     return index_name in {
         index["name"] for index in sa.inspect(op.get_bind()).get_indexes(table_name)
     }
 
 
 def _index_columns(table_name: str, index_name: str) -> list[str] | None:
-    """Return one index's column order, or None when the index is absent."""
+    """返回某个索引的列顺序；索引不存在时返回 `None`。"""
     for index in sa.inspect(op.get_bind()).get_indexes(table_name):
         if index["name"] == index_name:
             return [str(column) for column in index["column_names"]]
@@ -45,7 +48,7 @@ def _index_columns(table_name: str, index_name: str) -> list[str] | None:
 
 
 def _has_constraint(table_name: str, constraint_name: str) -> bool:
-    """Return whether a named check or foreign-key constraint exists."""
+    """返回具名的 `CHECK` 或外键约束是否存在。"""
     value = (
         op.get_bind()
         .execute(
@@ -62,29 +65,26 @@ def _has_constraint(table_name: str, constraint_name: str) -> bool:
 
 
 def _drop_index_if_exists(table_name: str, index_name: str) -> None:
-    """Drop an index only when it is present."""
+    """索引存在时才删除。"""
     if _has_index(table_name, index_name):
         op.drop_index(index_name, table_name=table_name)
 
 
 def _drop_constraint_if_exists(table_name: str, constraint_name: str) -> None:
-    """Drop a foreign-key constraint only when it is present."""
+    """外键约束存在时才删除。"""
     if _has_constraint(table_name, constraint_name):
         op.drop_constraint(constraint_name, table_name, type_="foreignkey")
 
 
 def upgrade() -> None:
-    """Add the report owner and make report citations version-scoped.
+    """新增报告所有者，并让报告引用按版本归档。
 
-    `owner_id` is what gives the `PRIVATE` visibility a meaning; existing rows keep
-    `owner_id = NULL` and therefore stay `ADMIN`-only, the safe reading of "private" for a
-    report whose owner was never recorded.
+    `owner_id` 才让 `PRIVATE` 可见性有实际含义；已有行保持 `owner_id = NULL`，因而
+    仍然只有 `ADMIN` 可见 —— 对于从未记录过所有者的报告，这是对「私有」最安全的读法。
 
-    `report_sources.version` moves the citation set from "the current version" to "this
-    version". Rolling back to an earlier immutable version has to restore the evidence that
-    backed that version, and `INV-10` has to be checkable against the version being
-    published. Existing rows are backfilled to their report's current version, which is
-    exactly what they described before this revision.
+    `report_sources.version` 把引用集合从「当前版本」挪到「本版本」。回滚到更早的
+    不可变版本时，必须能还原支撑那个版本的证据；`INV-10` 也必须能针对正在发布的
+    版本校验。已有行按所属报告的当前版本回填，这正是本次修订之前它们所描述的内容。
     """
     owner_fk = op.f("fk_reports_owner_id_users")
     if not _has_column("reports", "owner_id"):
@@ -150,7 +150,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove the report owner column and collapse citations back onto the report."""
+    """删除报告所有者列，并把引用收回到报告粒度。"""
     final_index = "ix_report_sources_report_section"
     temporary_index = "ix_report_sources_report_id_section_tmp"
     previous_columns = ["report_id", "section_key"]

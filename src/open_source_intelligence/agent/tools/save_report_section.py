@@ -1,4 +1,4 @@
-"""`save_report_section` implementation: idempotent draft-section persistence."""
+"""`save_report_section` 的实现：幂等的草稿章节持久化。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .outcome import ToolOutcome
 
 
 def _load_or_create_draft(session: Session, ctx: ToolContext) -> ReportDraft:
-    """Return the run's single draft, creating it on first write."""
+    """返回本次运行唯一的草稿，首次写入时创建它。"""
     draft = session.scalar(select(ReportDraft).where(ReportDraft.agent_run_id == ctx.agent_run_id))
     if draft is None:
         draft = ReportDraft(
@@ -32,7 +32,7 @@ def save_report_section(
     ctx: ToolContext,
     payload: SaveReportSectionInput,
 ) -> ToolOutcome:
-    """Store a section version; identical content returns the existing version."""
+    """保存一个章节版本；内容摘要相同时直接返回已有版本。"""
     draft = _load_or_create_draft(session, ctx)
     existing = session.scalar(
         select(ReportSection).where(

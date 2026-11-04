@@ -1,32 +1,30 @@
-"""Run T13 email/Webhook push smoke checks against MySQL.
+"""针对 MySQL 跑 T13 的邮件 / Webhook 推送冒烟。
 
-The script reuses the T8 seeding helpers and the T11 CLI runner, then drives the *real* report
-CLI, the *real* FastAPI application, and the *real* Jinja2/HTMX admin UI on MySQL rather than
-in-memory SQLite. It exercises the T13 acceptance criteria end to end:
+脚本复用 T8 的种子辅助函数与 T11 的 CLI 运行器，然后把*真正的*报告 CLI、
+*真正的* FastAPI 应用与*真正的* Jinja2/HTMX 管理界面跑在 MySQL 上，而不是内存
+SQLite 里。它端到端覆盖 T13 的验收标准：
 
-1. **Only an approved or published report may be pushed** — `draft` and `pending_review` are
-   both refused, each with the same stable error code;
-2. **Only an allowlisted destination receives anything** — an unknown target, a disabled one,
-   and a channel that disagrees with the target row are all refused;
-3. **Sensitive material needs an approval** — a `PRIVATE`/`CONFIDENTIAL` report is refused until
-   a human approves it *and* the target was explicitly cleared for both; a `CONFIDENTIAL` report
-   with a cleared target but no approval is still refused;
-4. **Delivery is idempotent and recorded** — the same (report, version, target) triple is
-   delivered once, replays on a repeat request, and leaves a trail;
-5. **A failed delivery is retryable** — the API sweep and the CLI sweep each redeliver a failed
-   row on the same row, advance its attempt count, skip an unusable row without stopping the
-   batch, and leave a row that spent its budget alone;
-6. **A release fans out automatically** — publishing pushes to every enabled target with no
-   manual step, and the report still ends up published.
+1. **只有 `approved` 或 `published` 的报告可以推送** —— `draft` 与
+   `pending_review` 都会被拒，且各自返回同一个稳定的错误码；
+2. **只有白名单里的目的地能收到东西** —— 未知目标、已停用的目标，以及渠道与
+   目标行不符的请求，一律拒绝；
+3. **敏感材料需要审批** —— `PRIVATE`/`CONFIDENTIAL` 报告在人工批准*且*目标被
+   显式放行这两项都满足之前都会被拒；一份 `CONFIDENTIAL` 报告即使目标已放行、
+   但没有审批，仍然会被拒；
+4. **投递幂等且有记录** —— 同一个（报告、版本、目标）三元组只投递一次，重复
+   请求走重放，并留下轨迹；
+5. **失败的投递可以重试** —— API 清扫与 CLI 清扫都会在原行上重新投递失败行、
+   推进它的尝试次数、跳过不可用的行且不中断整批，并且不去碰已经耗尽预算的行；
+6. **放行会自动扇出** —— 发布无需人工介入就推送到每个启用目标，报告最后仍然
+   处于已发布状态。
 
-The default `push_delivery="offline"` transport is used throughout. That is deliberate: it is
-the deployment default, and it keeps the payload deterministic without reachable SMTP or HTTP
-infrastructure. The `live` transport is covered at its configuration boundary instead — an
-unconfigured live channel must be refused *before* a delivery row is written, because a
-misconfigured deployment is a request error rather than a retryable transport failure.
+脚本全程使用默认的 `push_delivery="offline"` 传输。这是刻意的：它是部署默认值，
+而且不依赖可达的 SMTP 或 HTTP 设施，好让载荷保持确定性。`live` 传输改在它的
+配置边界上覆盖 —— 未配置的 live 渠道必须在写入投递行*之前*就被拒，因为配置错误
+的部署属于请求错误，而不是可重试的传输失败。
 
-Every database read the script asserts on goes through a *fresh* session, so a passing
-assertion cannot be explained by the identity map of the session that wrote the row.
+脚本断言的每一次数据库读取都经过一个*全新的*会话，所以断言通过不可能是靠写行
+那个会话的身份映射解释掉的。
 """
 
 import argparse
@@ -79,9 +77,9 @@ PRIVATE_TITLE = "__T13 private confidential report__"
 PUBLISHED_TITLE = "__T13 published report__"
 CONFIDENTIAL_TITLE = "__T13 confidential without approval__"
 
-#: `(suffix, channel, destination, enabled, allow_private, allow_confidential)`.
-#: The two `allow_*` switches are off for every target except the explicitly cleared one, which
-#: is what makes the "cleared target" and "uncleared target" assertions meaningful.
+#: `(suffix, channel, destination, enabled, allow_private, allow_confidential)`。
+#: 除那个显式放行的目标外，所有目标的两个 `allow_*` 开关都是关的 —— 这正是「已放行
+#: 目标」与「未放行目标」两条断言能成立的原因。
 TARGET_SPECS = (
     ("email", "email", "t13-ops@example.com", True, False, False),
     ("webhook", "webhook", "https://hooks.example.com/t13", True, False, False),
@@ -95,33 +93,33 @@ SCOPES = {"admin": "personal", "editor": "team", "viewer": "personal"}
 
 
 def _target_name(suffix: str) -> str:
-    """Return the smoke target name for one entry of the allowlist."""
+    """返回白名单里某一项的冒烟目标名。"""
     return f"{TARGET_PREFIX} {suffix}__"
 
 
 def _username(suffix: str) -> str:
-    """Return the smoke username for one role."""
+    """返回某个角色的冒烟用户名。"""
     return f"{ACTOR_PREFIX}{suffix}__"
 
 
 def _refresh(session: Session) -> None:
-    """Drop cached rows after the CLI wrote from another process.
+    """CLI 在另一个进程里写入之后，丢弃本地缓存的行。
 
-    `rollback()` alone leaves already-loaded instances holding their old attribute values, so a
-    later query can return a row whose ORM state no longer matches the SQL predicate.
-    Production runs one short-lived session per task and is not exposed to this.
+    只调 `rollback()` 不够：已经加载过的实例仍攥着旧的属性值，后续查询可能返回一行，
+    而它的 ORM 状态早已和 SQL 谓词对不上。生产环境每个任务用一个短生命周期会话，
+    不会暴露在这个问题下。
     """
     session.rollback()
     session.expire_all()
 
 
 # --------------------------------------------------------------------------------------
-# Seeding and cleanup
+# 播种与清理
 # --------------------------------------------------------------------------------------
 
 
 def _t13_report_ids(session: Session, actor_ids: dict[str, int]) -> list[int]:
-    """Return the reports a previous or current T13 run owns."""
+    """返回上一轮或本轮 T13 运行名下的报告 id。"""
     ids = list(actor_ids.values())
     if not ids:
         return []
@@ -131,10 +129,10 @@ def _t13_report_ids(session: Session, actor_ids: dict[str, int]) -> list[int]:
 
 
 def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
-    """Remove every row a T13 smoke run created, then the T8 records underneath.
+    """删掉一轮 T13 冒烟创建的全部行，再删它们底下的 T8 记录。
 
-    The order matters: `report_pushes.target_id` is `ON DELETE RESTRICT`, so the delivery rows
-    have to go before the allowlist entries they point at.
+    顺序有讲究：`report_pushes.target_id` 是 `ON DELETE RESTRICT`，所以投递行必须
+    先于它们指向的白名单条目被删掉。
     """
     report_ids = _t13_report_ids(session, actor_ids)
     if report_ids:
@@ -164,7 +162,7 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
 
 
 def _actor_ids(session: Session) -> dict[str, int]:
-    """Return the ids of the three T13 smoke users, creating them when missing."""
+    """返回三个 T13 冒烟用户的 id；缺失的当场建出来。"""
     found: dict[str, int] = {}
     for suffix, role in ROLES.items():
         username = _username(suffix)
@@ -195,7 +193,7 @@ def _add_target(
     allow_private: bool = False,
     allow_confidential: bool = False,
 ) -> int:
-    """Create one allowlist entry (or return the existing one) and return its id."""
+    """建一条白名单条目（已存在就复用），并返回它的 id。"""
     name = _target_name(suffix)
     target = session.scalar(select(PushTarget).where(PushTarget.name == name))
     if target is None:
@@ -215,7 +213,7 @@ def _add_target(
 
 
 def _targets(session: Session) -> dict[str, int]:
-    """Create the T13 allowlist in one pass and return each entry's id by suffix."""
+    """一次建好 T13 的白名单，并按后缀返回每条的 id。"""
     found: dict[str, int] = {}
     for suffix, channel, destination, enabled, allow_private, allow_confidential in TARGET_SPECS:
         found[suffix] = _add_target(
@@ -235,12 +233,11 @@ def _seed_reports(
     ids: dict[str, int],
     actor_ids: dict[str, int],
 ) -> dict[str, int]:
-    """Generate one report through the real Agent plus CLI, then park three siblings.
+    """先用真正的 Agent 加 CLI 生成一份报告，再停放三份同主题的兄弟报告。
 
-    The three inserted siblings stand in for reports that already travelled the publishing
-    workflow. They are written directly because these checks are about the *push* guards; the
-    states they need are produced by the real workflow in the T11 smoke, and re-driving it here
-    would only make this script slower without covering anything new.
+    插入的这三份兄弟报告，替代的是已经走完发布流程的报告。这里直接写入，是因为本组
+    检查针对的是*推送*守卫；它们需要的状态在 T11 冒烟里由真实流程产出，在这里再跑
+    一遍只会让脚本更慢，并不会多覆盖什么。
     """
     agent_result = run_research_agent(
         session,
@@ -293,12 +290,11 @@ def _seed_reports(
         visibility="PRIVATE",
         sensitivity="CONFIDENTIAL",
     )
-    # Report C is seeded `published` rather than `approved` on purpose. `publish_due_reports`
-    # legitimately sweeps *every* `approved` report, and these siblings carry neither the
-    # `passed` verification nor the `approve` review that a real approval leaves behind, so the
-    # sweep would (correctly) terminate any `approved` sibling as `failed`. A `published` report
-    # is the honest shape for "already travelled the publishing workflow", and it keeps the
-    # delivery checks that run after the release pointed at a pushable report.
+    # 报告 C 刻意种成 `published` 而不是 `approved`。`publish_due_reports` 会合法地
+    # 扫过*每一份* `approved` 报告，而这些兄弟报告既没有真实审批留下的 `passed`
+    # 验证、也没有 `approve` 审核记录，于是那趟清扫会（正确地）把任何 `approved`
+    # 兄弟报告终结为 `failed`。`published` 才是「已经走完发布流程」的诚实形态，
+    # 也让它之后的投递检查始终指着一份可推送的报告。
     published = sibling(
         PUBLISHED_TITLE,
         status="published",
@@ -323,12 +319,12 @@ def _seed_reports(
 
 
 # --------------------------------------------------------------------------------------
-# Reading state through fresh sessions
+# 用全新会话读取状态
 # --------------------------------------------------------------------------------------
 
 
 def _report_state(factory: sessionmaker[Session], report_id: int) -> dict[str, Any]:
-    """Read one report's status and version through a fresh session."""
+    """经一个全新会话读出一份报告的状态与版本。"""
     with factory() as session:
         report = session.get(Report, report_id)
         if report is None:
@@ -337,7 +333,7 @@ def _report_state(factory: sessionmaker[Session], report_id: int) -> dict[str, A
 
 
 def _push_rows(factory: sessionmaker[Session], report_id: int) -> list[dict[str, Any]]:
-    """Read one report's delivery trail as plain values, oldest first."""
+    """把一份报告的投递轨迹读成普通值，按从旧到新排列。"""
     with factory() as session:
         rows = session.scalars(
             select(ReportPush).where(ReportPush.report_id == report_id).order_by(ReportPush.id)
@@ -357,7 +353,7 @@ def _push_rows(factory: sessionmaker[Session], report_id: int) -> list[dict[str,
 
 
 def _push_run_types(factory: sessionmaker[Session], report_id: int) -> list[str]:
-    """Read the `run_type` values of the pipeline runs one report's pushes created."""
+    """读出一份报告的推送所创建的流水线运行的 `run_type` 值。"""
     with factory() as session:
         push_ids = select(ReportPush.pipeline_run_id).where(ReportPush.report_id == report_id)
         return sorted(
@@ -371,7 +367,7 @@ def _push_run_types(factory: sessionmaker[Session], report_id: int) -> list[str]
 
 
 def _push_audit(factory: sessionmaker[Session], report_id: int) -> list[dict[str, Any]]:
-    """Read the `report.push` audit entries recorded against one report."""
+    """读出针对一份报告记录的 `report.push` 审计条目。"""
     with factory() as session:
         rows = session.scalars(
             select(AuditLog).where(
@@ -401,7 +397,7 @@ def _plant_failed_row(
     attempt: int,
     updated_at: datetime,
 ) -> int:
-    """Insert a failed delivery row, standing in for a transport that refused the last try."""
+    """插入一条失败的投递行，替代一次被传输方拒掉的尝试。"""
     row = ReportPush(
         report_id=report_id,
         target_id=target_id,
@@ -426,7 +422,7 @@ def _plant_failed_row(
 
 
 # --------------------------------------------------------------------------------------
-# Criterion checks
+# 判据核对
 # --------------------------------------------------------------------------------------
 
 
@@ -436,7 +432,7 @@ def _status_guard_checks(
     targets: dict[str, int],
     reviewer_id: int,
 ) -> dict[str, Any]:
-    """Criterion 1 through the real CLI: `draft` and `pending_review` cannot be pushed."""
+    """判据 1，走真正的 CLI：`draft` 与 `pending_review` 都不能被推送。"""
     draft_push = t11.run_cli_expecting_failure(
         "--report-id",
         str(report_a),
@@ -469,8 +465,7 @@ def _status_guard_checks(
         "--reviewer-id",
         str(reviewer_id),
     )
-    # Report B is only parked for review, so the status guard has to answer before the
-    # visibility guard can be reached at all.
+    # 报告 B 只是停在待审核，所以状态守卫必须先给出答案，才轮得到可见性守卫。
     report_b_push = t11.run_cli_expecting_failure(
         "--report-id",
         str(report_b),
@@ -492,7 +487,7 @@ def _status_guard_checks(
 
 
 def _allowlist_guard_checks(report_a: int, targets: dict[str, int]) -> dict[str, Any]:
-    """Criterion 2 through the real CLI: only a matching, enabled target is deliverable."""
+    """判据 2，走真正的 CLI：只有渠道相符且启用的目标才可投递。"""
     delivered = t11.run_cli(
         "--report-id",
         str(report_a),
@@ -560,12 +555,11 @@ def _allowlist_guard_checks(report_a: int, targets: dict[str, int]) -> dict[str,
 
 
 def _live_channel_check(session: Session, report_c: int, target_id: int) -> dict[str, Any]:
-    """The live transport must refuse an unconfigured channel before a row is written.
+    """live 传输必须在写入任何行之前拒掉未配置的渠道。
 
-    This is the one part of the live path that can be checked without reachable
-    infrastructure: a misconfigured deployment is a request error, not a delivery failure, so
-    it has to stay distinguishable from a retryable transport problem — and it must not leave a
-    push row behind for the retry sweep to keep tripping over.
+    这是 live 路径上唯一能在不依赖可达设施的前提下核对的部分：配置错误的部署属于
+    请求错误，而不是投递失败，因此它必须与可重试的传输问题保持可区分 —— 也不能留下
+    一条推送行，让重试清扫反复在它上面绊倒。
     """
     settings = get_settings()
     live = settings.model_copy(
@@ -606,11 +600,10 @@ def _ui_checks(
     report_c: int,
     targets: dict[str, int],
 ) -> dict[str, Any]:
-    """Drive the push card through the real admin UI, including its two extra guards.
+    """通过真正的管理界面驱动推送卡片，含界面附加的两道守卫。
 
-    The two destinations are added *after* the release on purpose: they must have no delivery
-    history for report A, so a successful panel push proves the UI actually sends rather than
-    replaying an earlier row.
+    两个目的地是刻意在放行*之后*才加的：它们对报告 A 必须没有任何投递历史，这样
+    面板推送成功才能证明界面确实发出了请求，而不是重放了早先那一行。
     """
     late_email = _add_target(
         session,
@@ -636,7 +629,7 @@ def _ui_checks(
     pushed = client.post(f"{UI}/{report_a}/push", data={**token, "target_id": late_email})
     replayed = client.post(f"{UI}/{report_a}/push", data={**token, "target_id": late_email})
     unknown = client.post(f"{UI}/{report_c}/push", data={**token, "target_id": "987654321"})
-    # The channel is taken from the target row, so a forged form field cannot pick a transport.
+    # 渠道取自目标行，所以伪造的表单字段挑不了传输方式。
     forged = client.post(
         f"{UI}/{report_a}/push",
         data={**token, "target_id": late_webhook, "channel": "email"},
@@ -677,7 +670,7 @@ def run_checks(
     targets: dict[str, int],
     reports: dict[str, int],
 ) -> dict[str, Any]:
-    """Drive the real CLI, API, and UI through the whole T13 acceptance path."""
+    """让真正的 CLI、API 与界面走完整条 T13 验收路径。"""
     del ids
     report_a = reports["report_a"]
     report_b = reports["report_b"]
@@ -691,15 +684,15 @@ def run_checks(
     editor = _bearer(client, "editor")
     viewer = _bearer(client, "viewer")
 
-    # The allowlist itself is readable, and the channel filter narrows it.
+    # 白名单本身可读，渠道筛选还能把它收窄。
     target_list = client.get(f"{PUSH_API}/targets", headers=admin).json()["items"]
     webhook_only = client.get(
         f"{PUSH_API}/targets", params={"channel": "webhook"}, headers=admin
     ).json()["items"]
     viewer_targets = client.get(f"{PUSH_API}/targets", headers=viewer)
 
-    # Criterion 3: report B is parked for review, then approved, then refused for an uncleared
-    # target, then delivered to one that was cleared for both `PRIVATE` and `CONFIDENTIAL`.
+    # 判据 3：报告 B 先停在待审核，再被批准，然后因为目标未放行而被拒，最后投递到
+    # 一个对 `PRIVATE` 与 `CONFIDENTIAL` 都放行的目标上。
     b_before = client.post(
         f"{API}/{report_b}/push",
         json={"channel": "email", "target_id": targets["cleared"]},
@@ -726,14 +719,14 @@ def run_checks(
         headers=admin,
     )
 
-    # A `CONFIDENTIAL` report with a cleared target but no approval is still refused.
+    # 一份 `CONFIDENTIAL` 报告，目标已放行但没有审批，仍然会被拒。
     d_guarded = client.post(
         f"{API}/{report_d}/push",
         json={"channel": "email", "target_id": targets["cleared"]},
         headers=admin,
     )
 
-    # Criterion 4 on the HTTP surface, on a report with no other pushes in the way.
+    # 判据 4 在 HTTP 层再验一遍，用一份没有其他推送挡路的报告。
     c_state = _report_state(factory, report_c)
     c_first = client.post(
         f"{API}/{report_c}/push",
@@ -758,8 +751,8 @@ def run_checks(
     live = _live_channel_check(session, report_c, targets["secondary"])
     c_run_types = _push_run_types(factory, report_c)
 
-    # Criterion 5 on the HTTP surface: one failed row is redelivered, an unusable one is skipped
-    # without stopping the batch, and one that spent its budget is left alone.
+    # 判据 5 在 HTTP 层再验一遍：一条失败行被重投，一条不可用的行被跳过且不中断
+    # 整批，一条已经耗尽预算的行则原样留着。
     version = c_state["version"]
     _plant_failed_row(
         session,
@@ -803,7 +796,7 @@ def run_checks(
         entry for entry in _push_audit(factory, report_c) if entry["result"] == "denied"
     ]
 
-    # The CLI sweep needs a row of its own to pick up, so one more failure is planted.
+    # CLI 清扫要有一条自己的行可捡，所以再种一次失败。
     _plant_failed_row(
         session,
         report_id=report_c,
@@ -816,7 +809,7 @@ def run_checks(
     )
     cli_sweep = t11.run_cli("--action", "push-retry", "--limit", "50")
 
-    # Criterion 6: releasing report A fans out to every enabled target with no manual step.
+    # 判据 6：放行报告 A 会扇出到每个启用目标，全程无需人工步骤。
     audit_before_release = _push_audit(factory, report_a)
     rows_before_release = _push_rows(factory, report_a)
     scheduled = t11.run_cli("--report-id", str(report_a), "--action", "publish")
@@ -897,12 +890,12 @@ def run_checks(
 
 
 def _client(settings: Settings) -> TestClient:
-    """Build a client over the real application and the real database."""
+    """在真正的应用与真正的数据库之上建一个客户端。"""
     return TestClient(create_app(settings))
 
 
 def _csrf(client: TestClient) -> str:
-    """Return the CSRF value the browser currently holds."""
+    """返回浏览器此刻持有的 CSRF 值。"""
     token = client.cookies.get(CSRF_COOKIE)
     if not token:
         raise RuntimeError("the UI never issued a CSRF cookie")
@@ -910,7 +903,7 @@ def _csrf(client: TestClient) -> str:
 
 
 def _login(client: TestClient, suffix: str) -> Any:
-    """Sign one smoke user in through the real login form."""
+    """通过真正的登录表单登录一个冒烟用户。"""
     page = client.get("/ui/login", follow_redirects=False)
     if page.status_code != 200:
         raise RuntimeError(f"login page returned {page.status_code}")
@@ -927,7 +920,7 @@ def _login(client: TestClient, suffix: str) -> Any:
 
 
 def _bearer(client: TestClient, suffix: str) -> dict[str, str]:
-    """Return the bearer header for one smoke user."""
+    """返回某个冒烟用户的 Bearer 请求头。"""
     response = client.post(
         "/api/v1/auth/login",
         json={"username": _username(suffix), "password": SMOKE_PASSWORD},
@@ -938,7 +931,7 @@ def _bearer(client: TestClient, suffix: str) -> dict[str, str]:
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run T13 push smoke checks")
     parser.add_argument(
         "--cleanup-only",
@@ -949,7 +942,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the T13 smoke checks on real MySQL and print the assertion payload."""
+    """在真实 MySQL 上跑 T13 冒烟，并打印断言结果。"""
     args = _parse_args()
     settings = get_settings()
     engine = create_database_engine(settings.database_url)

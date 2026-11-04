@@ -7,11 +7,11 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $projectRoot
 
-# The smoke prints its payload as UTF-8 with `ensure_ascii=False`, because a report title is
-# Chinese ('<topic> 开源技术情报周报（<date>）'). A native command's stdout is decoded using the
-# console code page rather than UTF-8, so without this the title arrives as mangled bytes and
-# `ConvertFrom-Json` fails part-way through the string. Both sides are pinned rather than one:
-# `PYTHONIOENCODING` decides what the child *writes*, the console encoding what PowerShell *reads*.
+# smoke 脚本以 `ensure_ascii=False` 按 UTF-8 打印其载荷，因为报告标题是中文
+# （'<topic> 开源技术情报周报（<date>）'）。原生命令的 stdout 会按控制台代码页而非 UTF-8
+# 解码，若不这样做，标题就会以乱码字节的形式到达，`ConvertFrom-Json` 会在字符串中间解析
+# 失败。两端都要固定而不是只固定一端：`PYTHONIOENCODING` 决定子进程*写入*什么，
+# 控制台编码决定 PowerShell *读取*什么。
 $previousOutputEncoding = [Console]::OutputEncoding
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = 'utf-8'
@@ -54,11 +54,10 @@ $mountArgs = @(
     'api'
 )
 
-# The fixture mode exists because this repository is developed on a machine whose Docker engine
-# cannot start. It runs the *same* smoke module and the *same* assertion block below against a
-# real SQLite file instead of MySQL, so the checks are exercised rather than merely written. The
-# container mode remains the authoritative path: it is the one that also proves the migrations,
-# the Compose wiring, and MySQL's own semantics.
+# 固件模式的存在是因为本仓库在一台 Docker 引擎无法启动的机器上开发。它会用*同一个* smoke 模块和
+# 下方*同一块*断言，改为针对一个真实的 SQLite 文件而非 MySQL 运行，这样这些检查是真正被执行的，而不
+# 只是被写出来。容器模式仍是权威路径：只有它才能同时证明迁移、
+# Compose 接线和 MySQL 自身的语义。
 $fixtureDir = Join-Path ([System.IO.Path]::GetTempPath()) 'osia-t15-fixture'
 $fixtureDb = Join-Path $fixtureDir 't15_smoke.db'
 
@@ -79,8 +78,8 @@ Assert-LastCommandSucceeded 'mypy'
 if ($SqliteFixture) {
     Write-Host "==> Prepare the SQLite fixture at $fixtureDir"
     New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
-    # `_env_file=None` is load-bearing: without it the fixture would read the developer's `.env`,
-    # and a filled-in provider would turn this into a live, billable, non-reproducible run.
+    # `_env_file=None` 是关键所在：没有它，固件会读取开发者的 `.env`，
+    # 而一旦其中填写了某个供应商配置，就会把这次运行变成一次真实计费且不可复现的运行。
     $sitecustomize = @'
 """Repoint the T15 smoke at a SQLite file, standing in for the unavailable MySQL container."""
 
@@ -168,8 +167,8 @@ else {
     Assert-LastCommandSucceeded 'T15 MySQL smoke'
 }
 
-# The smoke drives the real application, so its stdout also carries the application log; the
-# payload is the last JSON object it prints.
+# smoke 脚本驱动的是真实应用，因此其 stdout 同时带有应用日志；
+# 载荷是它打印的最后一个 JSON 对象。
 $smokeJson = $smokeOutput |
     Where-Object { $_.TrimStart().StartsWith('{') } |
     Select-Object -Last 1
@@ -183,8 +182,8 @@ Assert-Equal $smoke.eval_enabled $true 'the evaluation subsystem is enabled'
 Assert-Equal ($smoke.metrics_roles -join ',') 'ADMIN,EDITOR' 'the roles that may read the overview'
 Assert-Equal $smoke.seeded_agent_runs 3 'the smoke seeded its own run rows'
 
-# Criterion 1: the aggregation is correct. Every headline number is checked against a second
-# implementation that recomputes it from the raw rows.
+# 判据 1：聚合是正确的。每个头条数字都会与另一个从原始行重新计算它的
+# 实现进行核对。
 Assert-Equal $smoke.all_headline_numbers_agree $true 'every headline number matches an independent recomputation'
 foreach ($metric in @(
         'pipeline_total', 'pipeline_by_status', 'pipeline_success_rate', 'pipeline_p50_ms',
@@ -232,7 +231,7 @@ Assert-Equal $smoke.report_by_status.pending_review 1 'reports parked for a huma
 Assert-Equal $smoke.report_by_status.published 1 'published reports'
 Assert-Equal $smoke.report_manual_block_rate '0.5000' 'manual block rate per ARCHITECTURE 12'
 
-# Criterion 3: the window is adjustable, bounded, and actually filters.
+# 判据 3：窗口可调、有界、并且真的在过滤。
 Assert-Equal $smoke.window_span_days $true 'the window spans the requested number of days'
 Assert-Equal $smoke.window_is_half_open $true 'the window is half-open'
 Assert-Equal $smoke.window_clamped $true 'the aggregation clamps a window wider than the bound'
@@ -248,7 +247,7 @@ Assert-Equal $smoke.report_total_7d 2 'reports inside 7 days'
 Assert-Equal $smoke.report_total_30d 3 'reports inside 30 days'
 Assert-Equal $smoke.report_total_90d 4 'reports inside 90 days'
 
-# Criterion 4: a metric that was never exercised is absent, not zero.
+# 判据 4：从未被触发过的指标是缺失，而不是零。
 Assert-Equal $smoke.empty_window_expected_is_zero $true 'the empty window truly holds no rows'
 Assert-Equal $smoke.empty_window_agent_total 0 'no Agent runs in the empty window'
 Assert-Equal $null $smoke.empty_window_agent_success_rate 'an unmeasured success rate is null'
@@ -261,7 +260,7 @@ Assert-Equal $smoke.empty_window_p50_is_none $true 'an unmeasured percentile is 
 Assert-Equal $smoke.empty_window_json_keeps_null $true 'the JSON payload keeps the distinction'
 Assert-Equal $smoke.empty_window_dash_differs_from_zero $true 'absent is not rendered as zero'
 
-# Criterion 5: a failed run is traceable to the exact tool call.
+# 判据 5：失败的运行可追溯到确切的工具调用。
 Assert-Equal $smoke.trace_topic_name '__T15 Topic__' 'the trace names its topic'
 Assert-Equal ($smoke.trace_step_types -join ',') 'plan,tool,tool,verify' 'the documented step sequence'
 Assert-Equal ($smoke.trace_step_indexes -join ',') '1,2,3,4' 'steps are returned in order'
@@ -272,7 +271,7 @@ Assert-Equal $smoke.trace_unlinked_count 1 'a call with no step is kept, not dro
 Assert-Equal $smoke.trace_unlinked_tool 'search_prior_reports' 'the unlinked call is named'
 Assert-Equal $smoke.trace_missing_run_is_none $true 'a missing run has no trace rather than an empty one'
 
-# The ledger.
+# 台账。
 Assert-Equal $smoke.ledger_total 6 'every Agent run is listed'
 Assert-Equal $smoke.ledger_newest_first $true 'the ledger is newest-first'
 Assert-Equal $smoke.ledger_pages_disjoint $true 'two pages do not overlap'
@@ -282,7 +281,7 @@ Assert-Equal $smoke.ledger_clamped_page_size 100 'an oversized page is clamped t
 Assert-Equal ($smoke.ledger_failed_only -join ',') 'failed' 'filtering by status returns that status only'
 Assert-Equal $smoke.ledger_contains_failing_run $true 'the seeded failing run is in the ledger'
 
-# Criterion 2: the evaluation verdict is the evaluation layer's own.
+# 判据 2：评估结论属于评估层自己。
 Assert-Equal $smoke.evaluation_available $true 'the newest sweep is surfaced'
 Assert-Equal $smoke.evaluation_dataset '__t15-observability__' 'the sweep names its dataset'
 Assert-Equal $smoke.evaluation_version 'v1' 'the sweep names its dataset version'
@@ -297,7 +296,7 @@ Assert-Equal $smoke.evaluation_target_rows.agent_full.task_completion '1.0000' '
 Assert-Equal $smoke.evaluation_target_rows.agent_full.scored_case_count 1 'the Agent case was scored'
 Assert-Equal $smoke.evaluation_target_rows.baseline_single_prompt.citation_coverage '0.0000' 'a single prompt cites nothing'
 
-# The JSON endpoints.
+# JSON 端点。
 Assert-Equal $smoke.api_overview_status 200 'the overview is served'
 Assert-Equal ($smoke.api_overview_sections -join ',') 'agent,evaluations,pipeline,reports,tools,window' 'the six documented sections'
 Assert-Equal $smoke.api_overview_window_days 7 'the requested window is echoed back'
@@ -325,11 +324,11 @@ Assert-Equal $smoke.api_reversed_path_status 404 'the literal path is not shadow
 Assert-Equal $smoke.api_trace_redacts_secret $true 'the endpoint withholds the credential'
 Assert-Equal $smoke.api_trace_keeps_mask $true 'the endpoint shows the redaction marker'
 
-# Criterion 7: one redaction rule for both egress paths.
+# 判据 7：两条出口路径共用同一条脱敏规则。
 Assert-Equal $smoke.ui_trace_redacts_secret $true 'the page withholds the credential'
 Assert-Equal $smoke.ui_trace_keeps_mask $true 'the page shows the redaction marker'
 
-# The rendered dashboard.
+# 渲染出的仪表盘。
 Assert-Equal $smoke.ui_dashboard_status 200 'an admin can render the dashboard'
 Assert-Equal $smoke.ui_dashboard_is_html $true 'the dashboard is a rendered page'
 Assert-Equal $smoke.ui_dashboard_names_window $true 'the page names its window'
@@ -354,7 +353,7 @@ Assert-Equal $smoke.ui_viewer_dashboard_explains $true 'the refusal explains its
 Assert-Equal $smoke.ui_viewer_reports_still_works 200 'a viewer keeps the report access they had'
 Assert-Equal $smoke.ui_viewer_nav_hides_dashboard $true 'a viewer is not offered a dead link'
 
-# The rendered trace page.
+# 渲染出的轨迹页面。
 Assert-Equal $smoke.ui_trace_status 200 'the trace page renders'
 Assert-Equal $smoke.ui_trace_step_count 4 'the trace page renders every step'
 Assert-Equal $smoke.ui_trace_names_denied_tool $true 'the trace page names the denied tool'

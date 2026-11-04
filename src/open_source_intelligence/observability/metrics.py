@@ -1,14 +1,13 @@
-"""Deterministic metric aggregation over the run ledger.
+"""对运行台账做确定性的指标聚合。
 
-Everything here is computed from rows the platform already wrote; nothing is inferred from a
-model. Two conventions are copied from the evaluation layer on purpose, so the dashboard and
-the evaluation report can never round or blank the same number differently:
+这里的一切都由平台已经写下的行算出来，不从模型推断任何东西。有两条约定是有意从评测层照搬
+过来的，这样仪表盘与评测报告永远不会把同一个数字舍入或留空成不同的样子：
 
-* ratios are `Decimal` quantized to four places with `ROUND_HALF_UP`;
-* a metric that was never exercised is `None`, never `0`.
+* 比率是 `Decimal`，用 `ROUND_HALF_UP` 量化到四位小数；
+* 从未被行使过的指标是 `None`，绝不是 `0`。
 
-The second rule is the load-bearing one. An empty window has to stay distinguishable from a
-window full of real zeros, otherwise "nothing has run yet" reads as "everything is failing".
+第二条规则是承重的那一条。空窗口必须与一个满是真实零值的窗口保持可区分，否则「还没跑过
+任何东西」就会被读成「一切都在失败」。
 """
 
 from __future__ import annotations
@@ -24,58 +23,57 @@ from open_source_intelligence.evaluation.runner import TargetSummary
 
 RATE_PLACES: Final[Decimal] = Decimal("0.0001")
 DEFAULT_WINDOW_DAYS: Final[int] = 7
-#: The window bounds. The endpoints refuse a value outside them rather than clamping, the same
-#: way they refuse an out-of-range `page_size`; `resolve_window` clamps anyway, so a direct
-#: caller cannot hand the aggregation a window wider than the ledger is meant to be read over.
+#: 窗口的上下界。端点会拒绝越界的值而不是把它夹到边界内，处理方式与拒绝越界的 `page_size`
+#: 相同；`resolve_window` 本身仍会夹取，因此直接调用者无法把比台账预期范围更宽的窗口交给
+#: 聚合。
 MIN_WINDOW_DAYS: Final[int] = 1
 MAX_WINDOW_DAYS: Final[int] = 90
 
-#: A pipeline row in one of these states has an outcome. `queued` and `running` do not, so they
-#: are counted in `total` but kept out of the success-rate denominator.
+#: 处于这些状态之一的 pipeline 行才算有了结果。`queued` 与 `running` 没有结果，因此它们计入
+#: `total`，却被排除在成功率的算之外。
 PIPELINE_OUTCOME_STATUSES: Final[tuple[str, ...]] = ("succeeded", "failed", "partial")
 PIPELINE_SUCCEEDED_STATUSES: Final[tuple[str, ...]] = ("succeeded",)
-#: `needs_review` produced a report and merely parked it for a human, so the run itself
-#: succeeded; `failed` is the only losing outcome.
+#: `needs_review` 产出了报告，只是把它留在那里等人看，所以运行本身是成功的；`failed` 是
+#: 唯一算输的结果。
 AGENT_SUCCEEDED_STATUSES: Final[tuple[str, ...]] = ("completed", "needs_review")
 AGENT_OUTCOME_STATUSES: Final[tuple[str, ...]] = ("completed", "needs_review", "failed")
-#: A denied call is a refused escalation attempt, which is a failed call for measurement
-#: purposes - excluding it would let an Agent that tries to exceed its tools look healthier.
+#: 被拒绝的调用是一次被驳回的越权尝试，从计量角度看就是一次失败调用 —— 把它排除在外，会让
+#: 一个试图越出自身工具边界的 Agent 看起来更健康。
 TOOL_FAILED_STATUSES: Final[tuple[str, ...]] = ("failed", "denied")
 TOOL_SUCCEEDED_STATUSES: Final[tuple[str, ...]] = ("success",)
-#: The report state behind ARCHITECTURE §12's "常规报告人工阻塞率".
+#: ARCHITECTURE §12 中「常规报告人工阻塞率」所指的报告状态。
 MANUAL_BLOCK_STATUS: Final[str] = "pending_review"
 
 
 def quantize_rate(value: Decimal) -> Decimal:
-    """Round a ratio exactly the way the evaluation layer does."""
+    """按评测层的方式舍入一个比率。"""
     return value.quantize(RATE_PLACES, rounding=ROUND_HALF_UP)
 
 
 def as_rate(value: Decimal | None) -> str | None:
-    """Render a ratio for JSON without inventing a number for "not measured"."""
+    """把比率渲染成 JSON 形式，不为「未测量」凭空编一个数字。"""
     return None if value is None else str(value)
 
 
 def success_rate(*, succeeded: int, denominator: int) -> Decimal | None:
-    """Return `succeeded / denominator`, or `None` when nothing reached an outcome."""
+    """返回 `succeeded / denominator`，没有任何东西达到结果时返回 `None`。"""
     if denominator <= 0:
         return None
     return quantize_rate(Decimal(succeeded) / Decimal(denominator))
 
 
 def mean_decimal(values: Sequence[Decimal]) -> Decimal | None:
-    """Return the quantized mean, or `None` for an empty sample."""
+    """返回量化后的均值，样本为空时返回 `None`。"""
     if not values:
         return None
     return quantize_rate(sum(values) / Decimal(len(values)))
 
 
 def percentile(values: Sequence[int], percent: int) -> int | None:
-    """Return a nearest-rank percentile, or `None` for an empty sample.
+    """返回最近秩百分位数，样本为空时返回 `None`。
 
-    Nearest rank is used instead of an interpolating definition because it always returns a
-    duration that some run actually took. An operator reading "P95 latency" wants a real
-    worst-ish case, not a synthetic midpoint between two runs.
+    这里用最近秩而不是插值定义，因为它返回的永远是一个某次运行真实花掉的时长。运维看
+    「P95 延迟」要的是一个真实、偏最差的情况，而不是两次运行之间的合成中点。
     """
     if not values:
         return None
@@ -85,7 +83,7 @@ def percentile(values: Sequence[int], percent: int) -> int | None:
 
 
 def count_statuses(statuses: Iterable[str]) -> dict[str, int]:
-    """Count rows per status; an unobserved status is absent rather than zero."""
+    """按状态统计行数；没出现过的状态是缺席，而不是零。"""
     counts: dict[str, int] = {}
     for status in statuses:
         counts[status] = counts.get(status, 0) + 1
@@ -93,7 +91,7 @@ def count_statuses(statuses: Iterable[str]) -> dict[str, int]:
 
 
 def summarize_latency(values: Sequence[int]) -> Latency:
-    """Build a percentile summary from a duration sample measured in milliseconds."""
+    """用一份以毫秒计的时长样本构造百分位摘要。"""
     return Latency(
         samples=len(values),
         p50_ms=percentile(values, 50),
@@ -103,33 +101,33 @@ def summarize_latency(values: Sequence[int]) -> Latency:
 
 @dataclass(frozen=True, slots=True)
 class Window:
-    """The half-open time span every metric in one response was computed over."""
+    """一次响应里所有指标所依据的半开时间区间。"""
 
     days: int
     start: datetime
     end: datetime
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {"days": self.days, "start": self.start.isoformat(), "end": self.end.isoformat()}
 
 
 @dataclass(frozen=True, slots=True)
 class Latency:
-    """Percentiles of one duration sample, plus how many observations backed them."""
+    """一份时长样本的百分位数，以及支撑它们的观测条数。"""
 
     samples: int
     p50_ms: int | None
     p95_ms: int | None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {"samples": self.samples, "p50_ms": self.p50_ms, "p95_ms": self.p95_ms}
 
 
 @dataclass(frozen=True, slots=True)
 class PipelineMetrics:
-    """Throughput and health of the scheduled pipeline tasks."""
+    """定时 pipeline 任务的吞吐量与健康状况。"""
 
     total: int
     by_status: dict[str, int]
@@ -138,7 +136,7 @@ class PipelineMetrics:
     latency: Latency
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {
             "total": self.total,
             "by_status": self.by_status,
@@ -150,7 +148,7 @@ class PipelineMetrics:
 
 @dataclass(frozen=True, slots=True)
 class AgentMetrics:
-    """Budget consumption, outcome, and failure reasons of the research Agent."""
+    """研究 Agent 的预算消耗、结果与失败原因。"""
 
     total: int
     by_status: dict[str, int]
@@ -165,7 +163,7 @@ class AgentMetrics:
     latency: Latency
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {
             "total": self.total,
             "by_status": self.by_status,
@@ -183,7 +181,7 @@ class AgentMetrics:
 
 @dataclass(frozen=True, slots=True)
 class ToolBreakdown:
-    """Per-tool call counts and latency, so one misbehaving tool is visible on its own."""
+    """单个工具的调用计数与延迟，让某个表现异常的工具能被单独看见。"""
 
     tool_name: str
     total: int
@@ -192,7 +190,7 @@ class ToolBreakdown:
     latency: Latency
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {
             "tool_name": self.tool_name,
             "total": self.total,
@@ -204,7 +202,7 @@ class ToolBreakdown:
 
 @dataclass(frozen=True, slots=True)
 class ToolMetrics:
-    """Whitelisted tool usage, ordered so the busiest tool comes first."""
+    """白名单工具的使用情况，按最繁忙者排在最前。"""
 
     total: int
     by_status: dict[str, int]
@@ -212,7 +210,7 @@ class ToolMetrics:
     by_tool: tuple[ToolBreakdown, ...]
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {
             "total": self.total,
             "by_status": self.by_status,
@@ -223,14 +221,14 @@ class ToolMetrics:
 
 @dataclass(frozen=True, slots=True)
 class ReportMetrics:
-    """Report production and how much of it needs a human before it can go out."""
+    """报告产出情况，以及其中有多少在发出去之前需要人工把关。"""
 
     total: int
     by_status: dict[str, int]
     manual_block_rate: Decimal | None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {
             "total": self.total,
             "by_status": self.by_status,
@@ -240,7 +238,7 @@ class ReportMetrics:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationTarget:
-    """One variant of the newest evaluation sweep, carried over from the evaluation layer."""
+    """最近一次评测批量中的一个变体，从评测层搬运过来。"""
 
     target_type: str
     status: str
@@ -254,7 +252,7 @@ class EvaluationTarget:
 
     @classmethod
     def from_summary(cls, summary: TargetSummary) -> EvaluationTarget:
-        """Build a dashboard row from the evaluation layer's own summary object."""
+        """用评测层自己的摘要对象构造一行仪表盘数据。"""
         return cls(
             target_type=summary.target_type,
             status=summary.status,
@@ -268,7 +266,7 @@ class EvaluationTarget:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {
             "target_type": self.target_type,
             "status": self.status,
@@ -284,15 +282,13 @@ class EvaluationTarget:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationMetrics:
-    """The newest evaluation sweep, reused verbatim rather than recomputed.
+    """最近一次评测批量，原样复用而不重新计算。
 
-    The dashboard never re-derives `passed`: it comes from `evaluation.runner.compare_latest`.
-    A green dashboard therefore cannot disagree with the evaluation report it is summarising,
-    and the two can never drift apart as the verdict rule changes.
+    仪表盘从不自己重推 `passed`：它取自 `evaluation.runner.compare_latest`。因此一个全绿的
+    仪表盘不可能与它所概括的评测报告不一致，两者也永远不会随着判定规则改变而漂开。
 
-    Unlike the other sections this one is deliberately **not** windowed. Evaluations are
-    operator-triggered and infrequent, so a 1-day window would usually show nothing; the newest
-    sweep is the useful thing to surface.
+    与其它几节不同，这一节刻意**不**按窗口切分。评测由运维触发、频次很低，1 天的窗口通常
+    什么都看不到；最新那一批才是值得呈现的东西。
     """
 
     dataset_id: int | None
@@ -304,11 +300,11 @@ class EvaluationMetrics:
 
     @property
     def available(self) -> bool:
-        """Return whether any evaluation sweep has ever been recorded."""
+        """返回历史上是否记录过任何一次评测批量。"""
         return self.dataset_id is not None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         dataset: dict[str, Any] | None = None
         if self.dataset_id is not None:
             dataset = {
@@ -326,7 +322,7 @@ class EvaluationMetrics:
 
 @dataclass(frozen=True, slots=True)
 class MetricsOverview:
-    """The whole dashboard payload: one window, five sections, no writes."""
+    """整个仪表盘的载荷：一个窗口、五个小节、零写入。"""
 
     window: Window
     pipeline: PipelineMetrics
@@ -336,7 +332,7 @@ class MetricsOverview:
     evaluations: EvaluationMetrics
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全序列化为 JSON 的载荷。"""
         return {
             "window": self.window.to_dict(),
             "pipeline": self.pipeline.to_dict(),

@@ -1,9 +1,8 @@
-"""PipelineRun lifecycle, error classification, and run history queries.
+"""维护 `PipelineRun` 生命周期、错误归类与运行历史查询。
 
-Every deterministic or Agent stage writes one run record so operators can answer
-"what ran, when, with which result, and why it failed" without reading logs.
-Run records are committed as soon as they change state, because a failed process
-must not be able to lose the evidence that it failed.
+每个确定性阶段或 Agent 阶段都会写一条运行记录，运维无需翻日志就能回答
+「跑了什么、何时跑、结果是什么、为什么失败」。状态一改变就立即提交运行记录，
+因为失败的进程不能把「它失败过」的证据一并丢掉。
 """
 
 from __future__ import annotations
@@ -38,17 +37,17 @@ STAGE_ERROR_CODES: Final[dict[str, str]] = {
     "rank": ERROR_RANK_FAILED,
     "contents": ERROR_CONTENT_FAILED,
 }
-# `backfill` is deliberately absent: `classify_error` already maps every `CollectorError` to
-# `COLLECTOR_FAILED`, so a walk that fails for any other reason falls through to
-# `PIPELINE_UNEXPECTED_ERROR`. Mapping the run type itself would flatten "the source refused"
-# and "our own write broke" into one code, which is the distinction an operator needs most.
+# `backfill` 刻意不在其中：`classify_error` 已经把每个 `CollectorError` 映射到
+# `COLLECTOR_FAILED`，因此一次因其它原因失败的遍历会落到 `PIPELINE_UNEXPECTED_ERROR`。
+# 把运行类型本身也映射进来，会把「源头拒绝」和「我们自己的写入坏了」压成同一个错误码，
+# 而这恰恰是运维最需要区分的东西。
 
 MAX_ERROR_MESSAGE_LENGTH: Final[int] = 2000
 
 
 @dataclass(frozen=True, slots=True)
 class PipelineRunSummary:
-    """Serializable view of one pipeline run record."""
+    """单条流水线运行记录的可序列化视图，供 CLI、API 与日志输出使用。"""
 
     run_id: int
     topic_id: int | None
@@ -62,7 +61,7 @@ class PipelineRunSummary:
     error_message: str | None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload for CLI, API, and log output."""
+        """返回可供 CLI、API 与日志输出使用的 JSON 载荷。"""
         return {
             "run_id": self.run_id,
             "topic_id": self.topic_id,
@@ -79,11 +78,10 @@ class PipelineRunSummary:
 
 @dataclass(frozen=True, slots=True)
 class StageOutcome:
-    """Recorded outcome of one orchestrator stage.
+    """一个编排器阶段记录下来的结果。
 
-    Lives beside the run-record helpers rather than in the module that first needed it,
-    because the contents stage and the daily orchestrator both produce one: whichever module
-    defined it would have to be imported by the other for no reason but the type.
+    它放在运行记录辅助函数旁边，而不是放在最先需要它的模块里，因为 `contents` 阶段与
+    每日编排器都会产出它：若由其中一个模块定义，另一个就得纯粹为了这个类型去导入它。
     """
 
     run_id: int
@@ -93,7 +91,7 @@ class StageOutcome:
     metrics: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload."""
+        """返回可直接转为 JSON 的载荷。"""
         return {
             "run_id": self.run_id,
             "run_type": self.run_type,
@@ -104,10 +102,9 @@ class StageOutcome:
 
 
 class PipelineStageError(RuntimeError):
-    """Raised when a stage fails in a way that must stop the batch.
+    """当某个阶段以必须中止整批的方式失败时抛出。
 
-    The context keyword arguments default to empty values so Celery can rebuild the error from
-    its JSON result backend, which only carries the message.
+    上下文关键字参数默认取空值，好让 Celery 能从只携带消息的 JSON 结果后端重建这个异常。
     """
 
     def __init__(
@@ -125,39 +122,39 @@ class PipelineStageError(RuntimeError):
 
 
 def _utc_now() -> datetime:
-    """Return the current aware UTC timestamp."""
+    """返回当前带时区的 UTC 时间戳。"""
     return datetime.now(UTC)
 
 
 def validate_run_type(run_type: str) -> str:
-    """Reject run types that the database constraint would reject."""
+    """拒绝数据库约束同样会拒绝的 `run_type`。"""
     if run_type not in RUN_TYPES:
         raise ValueError(f"unsupported run_type: {run_type}")
     return run_type
 
 
 def validate_run_status(status: str) -> str:
-    """Reject statuses that the database constraint would reject."""
+    """拒绝数据库约束同样会拒绝的状态值。"""
     if status not in RUN_STATUSES:
         raise ValueError(f"unsupported status: {status}")
     return status
 
 
 def require_topic_scope(run_type: str, topic_id: int | None) -> None:
-    """Keep Agent and publish runs bound to a topic, matching the database CHECK."""
+    """要求 Agent 运行与发布运行绑定主题，与数据库 CHECK 约束一致。"""
     if run_type in TOPIC_RUN_TYPES and topic_id is None:
         raise ValueError(f"run_type {run_type} requires a topic_id")
 
 
 def classify_error(run_type: str, error: BaseException) -> str:
-    """Map an exception to a stable stage error code."""
+    """把异常归到稳定的阶段错误码。"""
     if isinstance(error, CollectorError):
         return ERROR_COLLECTOR_FAILED
     return STAGE_ERROR_CODES.get(run_type, ERROR_UNEXPECTED)
 
 
 def describe_error(error: BaseException) -> str:
-    """Redact and bound an exception message before it is persisted."""
+    """在异常消息落库前对其脱敏并限长。"""
     message = redact_text(str(error)).strip() or error.__class__.__name__
     return message[:MAX_ERROR_MESSAGE_LENGTH]
 
@@ -170,7 +167,7 @@ def start_pipeline_run(
     attempt: int = 1,
     metrics_json: dict[str, Any] | None = None,
 ) -> PipelineRun:
-    """Create a queued run record and persist it immediately."""
+    """创建一条 `queued` 运行记录并立即落库。"""
     validate_run_type(run_type)
     require_topic_scope(run_type, topic_id)
     if attempt < 1:
@@ -193,7 +190,7 @@ def mark_pipeline_run_running(
     *,
     started_at: datetime | None = None,
 ) -> PipelineRun:
-    """Move a queued run into the running state."""
+    """把 `queued` 状态的运行推进到 `running`。"""
     if run.status in TERMINAL_STATUSES:
         raise ValueError(f"run {run.id} already finished with status {run.status}")
     run.status = "running"
@@ -213,12 +210,11 @@ def finish_pipeline_run(
     error_message: str | None = None,
     finished_at: datetime | None = None,
 ) -> PipelineRun:
-    """Close a run with a terminal status, metrics, and optional error detail.
+    """以终态、指标与可选错误详情关闭一条运行。
 
-    `finished_at` exists for callers that pin the clock: the run was started at a moment
-    they supplied, and `pipeline_runs` requires `finished_at >= started_at`, so closing it
-    from the wall clock would make the record self-inconsistent. Callers that do not pin a
-    clock leave it unset and the run closes on the wall clock as usual.
+    `finished_at` 是为需要钉住时钟的调用方准备的：运行在他们给定的时刻启动，而
+    `pipeline_runs` 要求 `finished_at >= started_at`，若按墙上时钟关闭，记录就会自相矛盾。
+    不钉住时钟的调用方留空即可，运行照常按墙上时钟关闭。
     """
     validate_run_status(status)
     if status not in TERMINAL_STATUSES:
@@ -249,7 +245,7 @@ def fail_pipeline_run(
     metrics_json: dict[str, Any] | None = None,
     finished_at: datetime | None = None,
 ) -> PipelineRun:
-    """Close a run as failed with a stable error code and redacted message."""
+    """以稳定的错误码与脱敏后的消息把运行关闭为失败。"""
     return finish_pipeline_run(
         session,
         run,
@@ -262,7 +258,7 @@ def fail_pipeline_run(
 
 
 def get_pipeline_run(session: Session, run_id: int) -> PipelineRun | None:
-    """Return one run record by primary key."""
+    """按主键返回一条运行记录。"""
     return session.get(PipelineRun, run_id)
 
 
@@ -274,7 +270,7 @@ def list_pipeline_runs(
     status: str | None = None,
     limit: int = 20,
 ) -> Sequence[PipelineRun]:
-    """Return recent runs, newest first, filtered by optional criteria."""
+    """返回最近的运行记录，新的在前，可按可选条件筛选。"""
     if limit < 1:
         raise ValueError("limit must be at least 1")
     statement = select(PipelineRun)
@@ -289,7 +285,7 @@ def list_pipeline_runs(
 
 
 def summarize_pipeline_run(run: PipelineRun) -> PipelineRunSummary:
-    """Convert a run record into its serializable summary."""
+    """把运行记录转换成可序列化的摘要。"""
     return PipelineRunSummary(
         run_id=run.id,
         topic_id=run.topic_id,
@@ -305,5 +301,5 @@ def summarize_pipeline_run(run: PipelineRun) -> PipelineRunSummary:
 
 
 def summarize_pipeline_runs(runs: Sequence[PipelineRun]) -> list[dict[str, Any]]:
-    """Convert run records into JSON-ready payloads."""
+    """把多条运行记录转换成可直接转为 JSON 的载荷。"""
     return [summarize_pipeline_run(run).to_dict() for run in runs]

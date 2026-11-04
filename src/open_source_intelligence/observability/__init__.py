@@ -1,8 +1,7 @@
-"""Read-only observability: the metric overview and the Agent run ledger.
+"""提供只读可观测性：指标总览与 Agent 运行台账。
 
-The package is deliberately write-free. It surfaces what the pipeline, the Agent, the report
-and the evaluation layers have already recorded, so it needs no migration and cannot corrupt a
-run it is merely describing.
+本包刻意不含任何写操作。它只呈现 pipeline、Agent、报告与评测各层已经记录下来的东西，因此
+不需要迁移，也不可能弄坏一次它仅仅在描述运行。
 """
 
 from .metrics import (

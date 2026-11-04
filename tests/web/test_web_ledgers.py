@@ -1,9 +1,9 @@
-"""Tests for the two ledger cards that answer "where did my run go?".
+"""守护那两张回答「我这次运行去哪了」的账本卡片。
 
-`/ui/runs` used to render only Agent runs and backfills, so the pipeline stages that actually do
-the daily work — collect, snapshot, rank, contents, and the per-topic publish/push — were invisible
-in the interface. `/ui/repositories` showed its rank/score/selected columns only for a topic filter
-and said so in prose that undercounted them, which read as "the columns are missing".
+`/ui/runs` 曾经只渲染 Agent 运行和回填，于是真正干日常活的那几段流水线 —— 采集、
+快照、排名、内容，以及按主题的发布与推送 —— 在界面上完全看不见。
+`/ui/repositories` 只在按主题筛选时才显示 rank / score / selected 三列，
+而且用一段把数量说少的文字来解释，读起来就像「这几列不见了」。
 """
 
 from __future__ import annotations
@@ -25,19 +25,19 @@ from open_source_intelligence.pipeline.runs import (
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """An editor on the team data scope; pipeline runs are `METRICS_ROLES`."""
+    """团队数据范围上的编辑；流水线运行属于 `METRICS_ROLES`。"""
     return create_actor(session, username="editor", role="EDITOR", data_scope="team")
 
 
 def _finished_run(session: Session, *, run_type: str, status: str) -> int:
-    """Write one settled pipeline run and return its id."""
+    """写一条已结束的流水线运行，并返回它的 id。"""
     run = start_pipeline_run(session, run_type=run_type, topic_id=None, attempt=1)
     finish_pipeline_run(
         session,
@@ -57,7 +57,7 @@ def test_runs_page_lists_pipeline_stages(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """Every stage of the chain is on the page, with its own filters."""
+    """链路上的每一段都在页面上，并且各自带着自己的筛选条件。"""
     successful = _finished_run(session, run_type="collect", status="succeeded")
     failed = _finished_run(session, run_type="rank", status="failed")
     assert web_login(client, editor).status_code == 303
@@ -81,7 +81,7 @@ def test_runs_page_filters_pipeline_stages_without_losing_the_agent_filter(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The two filter bars on one page each keep the other's choice."""
+    """同一页上的两条筛选条，各自保留对方的选择。"""
     collect_run = _finished_run(session, run_type="collect", status="succeeded")
     rank_run = _finished_run(session, run_type="rank", status="failed")
     assert web_login(client, editor).status_code == 303
@@ -107,7 +107,7 @@ def test_runs_page_explains_that_needs_review_is_terminal(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """`needs_review` is a verdict on the run, and the page says where the human conclusion goes."""
+    """`needs_review` 是对这次运行的判定，页面要说清人的结论该记到哪里。"""
     assert web_login(client, editor).status_code == 303
 
     response = client.get("/ui/runs")
@@ -129,7 +129,7 @@ def test_repositories_page_says_why_the_rank_columns_are_absent(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """No topic filter: the three topic-derived columns are gone, and the page says so."""
+    """不带主题筛选时：三列主题派生数据都不出现，页面也要说明原因。"""
     assert web_login(client, editor).status_code == 303
 
     unfiltered = client.get("/ui/repositories")
@@ -145,13 +145,12 @@ def test_an_empty_status_parameter_does_not_empty_the_agent_ledger(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """Filtering the pipeline card must not wipe the Agent card next to it.
+    """筛选流水线卡片，不能顺手把旁边那张 Agent 卡片清空。
 
-    The two filter bars live on one page, so each carries the other's current value as a hidden
-    field. When the other value is "no filter" that hidden field submits `status=` — an empty
-    string, which is not `None`, and `AgentRun.status == ""` matches nothing. The card then said
-    还没有 Agent 运行 while 51 runs existed: the filter bar erased its neighbour, and the empty
-    state blamed the data.
+    两条筛选条同处一页，所以各自把对方的当前值放进隐藏域。当对方的取值是「不筛」
+    时，那个隐藏域会提交 `status=` —— 一个空字符串，它不是 `None`，而
+    `AgentRun.status == ""` 什么也匹配不到。于是卡片显示「还没有 Agent 运行」，
+    而库里明明有 51 条：筛选条抹掉了它的邻居，空状态还把锅甩给了数据。
     """
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)

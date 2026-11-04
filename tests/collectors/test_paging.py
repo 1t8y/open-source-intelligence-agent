@@ -1,4 +1,4 @@
-"""Tests for page-by-page collection and the `Link` header it depends on."""
+"""守护逐页采集，以及它依赖的 `Link` 响应头。"""
 
 import httpx
 import pytest
@@ -21,12 +21,12 @@ GITHUB_LAST_PAGE = (
 
 
 def build_http(transport: httpx.MockTransport) -> RetryingHttpClient:
-    """Build a retry client with no real delay."""
+    """构造一个不做真实等待的重试客户端。"""
     return RetryingHttpClient(httpx.Client(transport=transport), base_delay_seconds=0)
 
 
 def github_item(identifier: int) -> dict[str, object]:
-    """Return one minimal GitHub repository object."""
+    """返回一个最简的 GitHub 仓库对象。"""
     return {
         "id": identifier,
         "full_name": f"example/repo-{identifier}",
@@ -38,7 +38,7 @@ def github_item(identifier: int) -> dict[str, object]:
 
 
 def github_response(*, link: str | None, total_count: int, items: int = 2) -> httpx.Response:
-    """Return a GitHub search response with the given paging header."""
+    """返回一条带指定分页头的 GitHub 搜索响应。"""
     headers = {} if link is None else {"Link": link}
     return httpx.Response(
         200,
@@ -47,11 +47,11 @@ def github_response(*, link: str | None, total_count: int, items: int = 2) -> ht
     )
 
 
-# --------------------------------------------------------------------------- Link parsing
+# --------------------------------------------------------------------------- `Link` 头解析
 
 
 def test_the_link_header_maps_every_relation() -> None:
-    """All four relations GitHub sends should be addressable by name."""
+    """GitHub 发送的每一种关系都应能按名字查到。"""
     assert parse_link_header(GITHUB_NEXT) == {
         "next": "https://api.github.com/search/repositories?q=llm&page=2",
         "last": "https://api.github.com/search/repositories?q=llm&page=500",
@@ -60,21 +60,21 @@ def test_the_link_header_maps_every_relation() -> None:
 
 
 def test_a_missing_or_empty_link_header_is_an_empty_map() -> None:
-    """No header and no entries both mean "no relations", not an error."""
+    """没有响应头与没有条目都表示「没有关系」，而不是出错。"""
     assert parse_link_header(None) == {}
     assert parse_link_header("") == {}
 
 
 def test_a_header_without_a_next_relation_has_no_next() -> None:
-    """The last page still advertises `prev` and `first`."""
+    """最后一页依旧会给出 `prev` 与 `first`。"""
     assert "next" not in parse_link_header(GITHUB_LAST_PAGE)
 
 
-# ------------------------------------------------------------------------- GitHub paging
+# ------------------------------------------------------------------------- GitHub 分页
 
 
 def test_github_pages_with_page_and_per_page() -> None:
-    """A GitHub page is addressed by a 1-based number, not an offset."""
+    """GitHub 的页用从 1 开始的页码寻址，而不是偏移量。"""
     seen: list[httpx.URL] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -91,10 +91,10 @@ def test_github_pages_with_page_and_per_page() -> None:
 
 
 def test_github_normalizes_the_open_issue_count() -> None:
-    """GitHub's `open_issues_count` must flow into the normalized repository.
+    """GitHub 的 `open_issues_count` 必须流入归一化后的仓库。
 
-    It was previously dropped on the floor, which is why every snapshot's `open_issues`
-    stayed null and the report had to confess a data-coverage gap.
+    它此前被直接丢掉了，于是每份快照的 `open_issues` 都是空值，报告也只能承认
+    存在数据覆盖缺口。
     """
     collector = GitHubCollector(
         build_http(httpx.MockTransport(lambda _request: github_response(link=None, total_count=1)))
@@ -105,10 +105,10 @@ def test_github_normalizes_the_open_issue_count() -> None:
 
 
 def test_github_sort_is_configurable() -> None:
-    """The sort dimension is a constructor knob, defaulting to `stars`.
+    """排序维度是构造参数，默认取 `stars`。
 
-    The daily pipeline passes `updated` so it discovers recently active repositories; the
-    default keeps backfill and the one-shot CLI paging the star leaders as before.
+    每日流水线传 `updated`，以便发现近期活跃的仓库；默认值则让回填与一次性 CLI
+    照旧按 star 数从高到低翻页。
     """
     seen: list[httpx.URL] = []
 
@@ -127,12 +127,11 @@ def test_github_sort_is_configurable() -> None:
 
 
 def test_github_reports_the_end_from_the_link_header_not_from_total_count() -> None:
-    """A large `total_count` must not promise pages the search cap will refuse.
+    """再大的 `total_count` 也不能许诺出搜索上限会拒绝的页。
 
-    GitHub stops advertising `rel="next"` once a query walks past its 1000-result cap while
-    still reporting the full `total_count`. Deriving the last page from that number would
-    invent pages the API answers with an empty body, so the walk would spend its whole rate
-    limit budget collecting nothing.
+    查询走过 1000 条结果的上限后，GitHub 就不再给出 `rel="next"`，
+    但仍然上报完整的 `total_count`。若用它推算末页，就会凭空多出一些
+    只返回空正文的页，遍历把整个速率预算花光却一无所获。
     """
     collector = GitHubCollector(
         build_http(
@@ -146,7 +145,7 @@ def test_github_reports_the_end_from_the_link_header_not_from_total_count() -> N
 
 
 def test_github_has_more_is_false_without_a_link_header() -> None:
-    """An absent header is the same answer as an absent `next` relation."""
+    """响应头缺失，与 `next` 关系缺失是同一个答案。"""
     collector = GitHubCollector(
         build_http(httpx.MockTransport(lambda _: github_response(link=None, total_count=3)))
     )
@@ -155,11 +154,11 @@ def test_github_has_more_is_false_without_a_link_header() -> None:
 
 
 def test_github_reads_a_header_case_insensitively() -> None:
-    """A lowercase `link` header must page correctly.
+    """小写的 `link` 响应头也必须能正确翻页。
 
-    HTTP header names are case-insensitive but a plain dict is not. When the decoded response
-    carried a `dict` of headers, a server sending `link` made every page look like the end of
-    the history - a walk that silently collects one page and reports success.
+    HTTP 头名不区分大小写，普通 dict 却区分。当解码后的响应带着一个装头的 `dict`
+    时，服务端只要发 `link`，每一页都会被当成历史的终点 —— 遍历悄悄只采一页，还
+    报告成功。
     """
     collector = GitHubCollector(
         build_http(
@@ -177,7 +176,7 @@ def test_github_reads_a_header_case_insensitively() -> None:
 
 
 def test_github_rejects_a_missing_items_list() -> None:
-    """A body without `items` is a source error, not an empty page."""
+    """没有 `items` 的响应体是来源错误，不是空页。"""
     from open_source_intelligence.collectors.types import SourceUnavailableError
 
     collector = GitHubCollector(
@@ -188,11 +187,11 @@ def test_github_rejects_a_missing_items_list() -> None:
         collector.collect_page(page=1, per_page=10)
 
 
-# -------------------------------------------------------------------- Hugging Face paging
+# -------------------------------------------------------------------- Hugging Face 分页
 
 
 def test_huggingface_pages_with_an_offset() -> None:
-    """A Hugging Face page is addressed by `skip`, so page 3 of 4 starts at 8."""
+    """Hugging Face 用 `skip` 寻址，所以每页 4 条时第 3 页从 8 开始。"""
     seen: list[httpx.URL] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -208,7 +207,7 @@ def test_huggingface_pages_with_an_offset() -> None:
 
 
 def test_huggingface_first_page_asks_for_no_offset() -> None:
-    """`skip=0` is the honest way to say "from the start" on an offset API."""
+    """在偏移量 API 上，`skip=0` 才是「从开头」的诚实写法。"""
     seen: list[httpx.URL] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -221,7 +220,7 @@ def test_huggingface_first_page_asks_for_no_offset() -> None:
 
 
 def test_huggingface_treats_a_short_page_as_the_end() -> None:
-    """The API publishes no total, so a short page is the only end-of-list signal."""
+    """该 API 不公布总数，因此不满一页就是唯一的列表结束信号。"""
     collector = HuggingFaceCollector(
         build_http(
             httpx.MockTransport(lambda _: httpx.Response(200, json=[{"id": "a"}, {"id": "b"}]))
@@ -232,7 +231,7 @@ def test_huggingface_treats_a_short_page_as_the_end() -> None:
 
 
 def test_huggingface_treats_a_full_page_as_more_to_come() -> None:
-    """A full page may or may not be the last one; the next request settles it."""
+    """满页未必是最后一页，再请求一次才能定论。"""
     collector = HuggingFaceCollector(
         build_http(
             httpx.MockTransport(
@@ -245,7 +244,7 @@ def test_huggingface_treats_a_full_page_as_more_to_come() -> None:
 
 
 def test_huggingface_rejects_a_non_list_body() -> None:
-    """A dict body is a source error, not an empty page."""
+    """字典形状的响应体是来源错误，不是空页。"""
     from open_source_intelligence.collectors.types import SourceUnavailableError
 
     collector = HuggingFaceCollector(
@@ -256,11 +255,11 @@ def test_huggingface_rejects_a_non_list_body() -> None:
         collector.collect_page(page=1, per_page=3)
 
 
-# ------------------------------------------------------------------- one-page delegation
+# ------------------------------------------------------------------- 单页委托
 
 
 def test_collect_reads_the_first_page_of_each_provider() -> None:
-    """The T4/T5 contract stays "give me N repositories", implemented by paging once."""
+    """T4/T5 的契约仍是「给我 N 个仓库」，实现上只翻一页。"""
     github = GitHubCollector(
         build_http(
             httpx.MockTransport(
@@ -280,12 +279,12 @@ def test_collect_reads_the_first_page_of_each_provider() -> None:
     assert len(huggingface.collect(limit=4)) == 4
 
 
-# --------------------------------------------------------------------------- bounds
+# --------------------------------------------------------------------------- 取值范围
 
 
 @pytest.mark.parametrize(("page", "per_page"), [(0, 10), (-1, 10), (1, 0), (1, -5), (1, 101)])
 def test_a_page_or_size_outside_the_bounds_is_refused(page: int, per_page: int) -> None:
-    """Both providers refuse these, so the adapters refuse them before spending a request."""
+    """两个来源都拒绝这些取值，所以适配器在花掉请求之前就先拒绝。"""
     collector = GitHubCollector(
         build_http(httpx.MockTransport(lambda _: github_response(link=None, total_count=0)))
     )
@@ -295,7 +294,7 @@ def test_a_page_or_size_outside_the_bounds_is_refused(page: int, per_page: int) 
 
 
 def test_the_largest_accepted_page_is_the_shared_ceiling() -> None:
-    """100 is what both providers honour, so it must not be refused."""
+    """100 是两个来源都接受的上限，因此不能拒。"""
     collector = GitHubCollector(
         build_http(httpx.MockTransport(lambda _: github_response(link=None, total_count=0)))
     )
@@ -303,11 +302,11 @@ def test_the_largest_accepted_page_is_the_shared_ceiling() -> None:
     assert collector.collect_page(page=1, per_page=MAX_PER_PAGE).page == 1
 
 
-# ------------------------------------------------------------------- query provenance
+# ------------------------------------------------------------------- 查询来源
 
 
 def test_each_adapter_describes_the_search_it_pages() -> None:
-    """A job records what was asked for, and only the adapter knows that."""
+    """任务要记录当时查了什么，而只有适配器知道这件事。"""
     github = GitHubCollector(
         build_http(httpx.MockTransport(lambda _: github_response(link=None, total_count=0))),
         query="topic:agent stars:>500",
@@ -325,10 +324,10 @@ def test_each_adapter_describes_the_search_it_pages() -> None:
 
 
 def test_build_collectors_forwards_the_github_sort() -> None:
-    """`build_collectors` must hand its `github_sort` through to the GitHub adapter.
+    """`build_collectors` 必须把自己的 `github_sort` 传给 GitHub 适配器。
 
-    The daily pipeline passes `"updated"` to discover recently active repositories; the default
-    must remain `"stars"` so backfill and the one-shot CLI keep paging the star leaders.
+    每日流水线传 `"updated"`，以便发现近期活跃的仓库；默认值必须仍是
+    `"stars"`，回填与一次性 CLI 才会继续按 star 数从高到低翻页。
     """
     from open_source_intelligence.collectors.cli import build_collectors
 

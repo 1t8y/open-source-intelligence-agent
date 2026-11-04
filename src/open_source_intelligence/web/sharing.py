@@ -1,18 +1,17 @@
-"""The one web surface that does not require a session.
+"""唯一一个不需要会话的 Web 入口。
 
-`GET /share/{token}` renders a published `PUBLIC` report for a reader with no account. It is
-deliberately a separate router with no prefix: every other page in `web/router.py` sits under
-`/ui` and is guarded by a session, and mixing an unauthenticated route into that module would
-put the exception in the same file as the rule.
+`GET /share/{token}` 为没有账号的读者渲染一份已发布的 `PUBLIC` 报告。它刻意做成
+不带前缀的独立路由器：`web/router.py` 里的其它页面全部位于 `/ui` 之下并由会话守卫，
+把一条免认证路由混进那个模块，等于把例外和规则写进同一个文件。
 
-Three response headers carry real weight here:
+这里有三个响应头承担着实实在在的作用：
 
-- `Cache-Control: no-store` - a shared report can be revoked, and a revoked link must stop
-  working. Browser and proxy caches would keep serving the body after `revoked_at` is set.
-- `X-Robots-Tag: noindex, nofollow` - a URL pasted into a public channel should not become a
-  search result. The link is a credential, not a publication.
-- the base template's `referrer` policy (`same-origin`) - keeps the token out of the `Referer`
-  header when a reader follows an outbound link from the page.
+- `Cache-Control: no-store` —— 对外分享的报告可以被撤回，被撤回的链接必须立刻
+  失效。否则浏览器和代理缓存会在 `revoked_at` 落下之后继续返回正文。
+- `X-Robots-Tag: noindex, nofollow` —— 一个被粘进公开频道里的 URL 不该变成
+  搜索结果。这个链接是凭据，不是出版物。
+- 基础模板的 `referrer` 策略（`same-origin`）—— 读者从页面点向外链时，令牌不会
+  进入 `Referer` 头。
 """
 
 from __future__ import annotations
@@ -40,12 +39,11 @@ def shared_report_page(
     session: DbSession,
     token: str,
 ) -> HTMLResponse:
-    """Render a shared report, or the same 404 for every failure.
+    """渲染一份分享报告；任何失败都返回同一个 404。
 
-    `resolve_share_token` returns `None` for an unknown token, a revoked link, an expired link,
-    a retracted report, and a report that is no longer `PUBLIC`. All five render one identical
-    page on purpose: telling them apart would let anybody holding a random string ask whether a
-    report exists.
+    `resolve_share_token` 在这些情况下返回 `None`：令牌未知、链接已撤回、链接已
+    过期、报告已撤销，以及报告不再是 `PUBLIC`。这五种情况刻意渲染同一个页面：
+    一旦能区分它们，任何人拿一个随机字符串就能问出某份报告是否存在。
     """
     resolved = resolve_share_token(session, token)
     if resolved is None:

@@ -1,39 +1,35 @@
-"""Run T14 evaluation smoke checks against MySQL.
+"""针对 MySQL 跑 T14 的评估冒烟。
 
-The script seeds the three topics the shipped dataset refers to (mirroring
-`datasets/weekly-agent-quality.v1.json`), then drives the *real* evaluation runner, the *real*
-evaluation CLI as a subprocess, and the *real* FastAPI application on MySQL rather than
-in-memory SQLite. It exercises the T14 acceptance criteria end to end:
+脚本先播下发版数据集所引用的三个主题（对应
+`datasets/weekly-agent-quality.v1.json`），然后把*真正的*评估运行器、以子进程跑的
+*真正的*评估 CLI，以及*真正的* FastAPI 应用跑在 MySQL 上，而不是内存 SQLite 里。
+它端到端覆盖 T14 的验收标准：
 
-1. **A dataset version is frozen** - importing the shipped file twice replays instead of
-   duplicating, and importing different content under the same `(name, version)` is refused with
-   `DATASET_VERSION_CONFLICT` before anything is written.
-2. **One sweep covers every variant** - `baseline_single_prompt`, `agent_full`, and the three
-   ablations all run over the same frozen cases and land in a single comparable report.
-3. **The report separates the candidate from its controls** - the Agent is measured against the
-   baseline, each ablation against the Agent, so removing the tools or the verifier shows up as
-   the loss it is instead of a meaningless zero, and the promotion verdict (`passed`) answers
-   `docs/evaluation.md` §9 without letting a control veto it.
-4. **Metrics are computed from the database, not from a model** - a run with no tools cites
-   nothing, the happy path cites everything and agrees with the reference facts, and the injection
-   probe is blocked and reported.
-5. **Results are idempotent** - one `eval_results` row per case per run, so a retried sweep
-   overwrites its own measurement instead of double-counting.
-6. **A broken case is evidence, not a crash** - a case naming a missing topic produces a `failed`
-   run with an `EVAL_TOPIC_NOT_FOUND` result row rather than aborting the sweep.
-7. **The CLI and the API agree with the runner** - the same report is reachable through the real
-   CLI subprocess and over HTTP, `compare` reproduces it from storage without re-running anything,
-   and a read-only role is refused everywhere.
+1. **数据集版本被冻结** —— 把发版文件导入两次是重放而不是复制；在同一个
+   `(name, version)` 下导入不同内容，会在写入任何东西之前被
+   `DATASET_VERSION_CONFLICT` 拒掉。
+2. **一次清扫覆盖每个变体** —— `baseline_single_prompt`、`agent_full` 与三个消融
+   都跑在同一批冻结用例上，并落在同一份可比的报告里。
+3. **报告把候选与其对照分开** —— Agent 对标 baseline，每个消融对标 Agent，于是
+   去掉工具或校验器会表现为它本该有的损失，而不是一个没有意义的零；晋级判定
+   （`passed`）回答 `docs/evaluation.md` §9，同时不让任何一个对照组一票否决。
+4. **指标从数据库算出来，不是从模型嘴里说出来** —— 没有工具的那轮什么也不引用，
+   顺利路径全都有引用且与参考事实一致，注入探针被拦截并如实上报。
+5. **结果幂等** —— 每个用例每次运行只一行 `eval_results`，所以重试的清扫覆盖自己
+   的测量，而不是重复计数。
+6. **坏用例是证据，不是崩溃** —— 指向不存在主题的用例产出一轮 `failed` 运行和一行
+   `EVAL_TOPIC_NOT_FOUND` 结果，而不是让整趟清扫中断。
+7. **CLI 与 API 和运行器一致** —— 同一份报告既能经真正的 CLI 子进程拿到，也能经
+   HTTP 拿到；`compare` 从存储里复现它而无需重跑任何东西；只读角色在所有入口都
+   被拒。
 
-The default `agent_provider="offline"` model client is used throughout. That is deliberate: it is
-the deployment default, it needs no network or API key, and being a pure function of the
-conversation it makes the metrics reproducible. One consequence is worth stating plainly rather
-than hiding: the offline stub reports zero tokens and zero cost, so this smoke proves the
-token/cost *plumbing* and the tool-call traffic, not a spend measurement. A live provider is the
-only way to exercise the latter.
+脚本全程使用默认的 `agent_provider="offline"` 模型客户端。这是刻意的：它是部署
+默认值，不需要网络或 API key，而且作为对话的纯函数，它让指标可复现。有一个后果
+值得明说而不是藏起来：离线桩报告零 token、零成本，所以本冒烟证明的是 token/成本
+的*管路*与工具调用流量，而不是花费测量。要验证后者，只能用 live 供应商。
 
-Every database read the script asserts on goes through a *fresh* session, so a passing assertion
-cannot be explained by the identity map of the session that wrote the row.
+脚本断言的每一次数据库读取都经过一个*全新的*会话，所以断言通过不可能是靠写行
+那个会话的身份映射解释掉的。
 """
 
 import argparse
@@ -105,26 +101,25 @@ from open_source_intelligence.security.service import create_user
 
 EVAL_API = "/api/v1/evaluations"
 
-#: The dataset the repository ships. Resolved from the working directory, which is the project
-#: root both here and inside the container (`-w /workspace`).
+#: 仓库随代码发版的数据集。路径按工作目录解析 —— 在这里和在容器里（`-w
+#: /workspace`）都是项目根。
 DATASET_PATH = "datasets/weekly-agent-quality.v1.json"
 DATASET_NAME = "weekly-agent-quality"
 DATASET_VERSION = "v1"
 
-#: The three topics the dataset refers to, byte-identical to its case `topic` fields.
+#: 数据集引用的三个主题，与其用例的 `topic` 字段逐字节一致。
 GROWTH_TOPIC = "AI Agent"
 SPARSE_TOPIC = "AI Agent Sparse"
 INJECTION_TOPIC = "AI Agent Injection"
 
-#: The run clock. The shipped dataset's cases declare the week 2026-10-05..2026-10-12, so the
-#: smoke reports on that week rather than on an arbitrary future moment: a metric series the tools
-#: cannot see inside the case window scores an unexplained zero, and a fixture that hides that is
-#: worse than no fixture at all.
+#: 运行时钟。发版数据集的用例声明的是 2026-10-05..2026-10-12 这一周，所以冒烟就
+#: 报那一周，而不是随手挑一个未来时刻：工具在用例窗口内看不到的指标序列只会得一个
+#: 无解释的零，而掩盖这一点的夹具比没有夹具更糟。
 SMOKE_NOW = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
-#: Two snapshot points inside the case window, matching the seeded repository counters.
+#: 用例窗口内的两个快照点，与种子仓库的计数对得上。
 FIRST_SNAPSHOT_DATE = date(2026, 10, 6)
 LAST_SNAPSHOT_DATE = date(2026, 10, 11)
-#: The week before the window, when the topic's previous report would have been published.
+#: 窗口开始前的那一周，主题上一份报告本该在那时发布。
 PRIOR_REPORT_AT = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 
 PROVIDER_PREFIX = "__t14_smoke_"
@@ -135,9 +130,9 @@ SMOKE_PASSWORD = "t14-smoke-password-not-for-production"
 ACTOR_PREFIX = "__t14_"
 ROLES = {"admin": "ADMIN", "viewer": "VIEWER"}
 
-#: Topic -> the candidate repositories the dataset's cases expect, in rank order.
-#: `(provider_repo_id, full_name, stars, forks, readme)`; `readme=None` means "no cached README",
-#: which is what the `missing-readme` case is built to exercise.
+#: 主题 -> 数据集用例期望的候选仓库，按排名顺序。
+#: `(provider_repo_id, full_name, stars, forks, readme)`；`readme=None` 表示「没有
+#: 缓存 README」，`missing-readme` 用例正是为它准备的。
 WORLD: dict[str, dict[str, Any]] = {
     GROWTH_TOPIC: {
         "repos": (
@@ -165,7 +160,7 @@ WORLD: dict[str, dict[str, Any]] = {
     },
 }
 
-#: `docs/evaluation.md` §3 goals, kept in the script so the payload shows how far the run is.
+#: `docs/evaluation.md` §3 的目标值，留在脚本里，好让结果能看出这次运行离它多远。
 DOCUMENTED_TARGETS = {
     "citation_coverage": "0.95",
     "source_accuracy": "0.95",
@@ -177,28 +172,28 @@ DOCUMENTED_TARGETS = {
 
 
 def _refresh(session: Session) -> None:
-    """Drop cached rows after a subprocess or a second session wrote to the database.
+    """子进程或第二个会话写过库之后，丢弃本地缓存的行。
 
-    `rollback()` alone leaves already-loaded instances holding their old attribute values, so a
-    later query can return a row whose ORM state no longer matches the SQL predicate. Production
-    runs one short-lived session per task and is not exposed to this.
+    只调 `rollback()` 不够：已经加载过的实例仍攥着旧的属性值，后续查询可能返回一行，
+    而它的 ORM 状态早已和 SQL 谓词对不上。生产环境每个任务用一个短生命周期会话，
+    不会暴露在这个问题下。
     """
     session.rollback()
     session.expire_all()
 
 
 def _count(session: Session, entity: Any) -> int:
-    """Return the row count of one table."""
+    """返回单张表的行数。"""
     return int(session.scalar(select(func.count()).select_from(entity)) or 0)
 
 
 # --------------------------------------------------------------------------------------
-# Seeding and cleanup
+# 播种与清理
 # --------------------------------------------------------------------------------------
 
 
 def _actor_ids(session: Session) -> dict[str, int]:
-    """Return the ids of the T14 smoke users, creating them when missing."""
+    """返回 T14 冒烟用户的 id；缺失的当场建出来。"""
     found: dict[str, int] = {}
     for suffix, role in ROLES.items():
         username = f"{ACTOR_PREFIX}{suffix}__"
@@ -220,7 +215,7 @@ def _actor_ids(session: Session) -> dict[str, int]:
 
 
 def _t14_dataset_ids(session: Session) -> list[int]:
-    """Return the datasets a previous or current T14 run created."""
+    """返回上一轮或本轮 T14 运行建出的数据集。"""
     return [
         int(value)
         for value in session.scalars(select(EvalDataset.id).where(EvalDataset.name == DATASET_NAME))
@@ -228,11 +223,11 @@ def _t14_dataset_ids(session: Session) -> list[int]:
 
 
 def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
-    """Remove every row a T14 smoke run created, then the T8 records underneath.
+    """删掉一轮 T14 冒烟创建的全部行，再删它们底下的 T8 记录。
 
-    The eval tables are deleted leaf-first (`results -> runs -> cases -> datasets`) so the step
-    reads the same on MySQL and on the SQLite stand-in, where `ondelete=CASCADE` behaves
-    differently. `eval_cases` has to go before `eval_runs` because a result row references both.
+    评估表按从叶到根的顺序删（`results -> runs -> cases -> datasets`），这样每一步
+    在 MySQL 与 SQLite 替身上读起来一样 —— 后者的 `ondelete=CASCADE` 行为不同。
+    `eval_cases` 必须排在 `eval_runs` 前面，因为结果行同时引用两者。
     """
     dataset_ids = _t14_dataset_ids(session)
     if dataset_ids:
@@ -283,12 +278,12 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
         session.execute(delete(UserRole).where(UserRole.user_id.in_(ids)))
         session.execute(delete(User).where(User.id.in_(ids)))
     session.commit()
-    # T8 owns the shared `default-research-agent` config and its verifier user.
+    # T8 拥有共享的 `default-research-agent` 配置与它的验证用户。
     t8.cleanup_verification_records(session)
 
 
 def _source(session: Session) -> DataSource:
-    """Return the single GitHub source, creating it on first use."""
+    """返回那个唯一的 GitHub 数据源；首次使用时创建它。"""
     existing = session.scalar(select(DataSource).order_by(DataSource.id).limit(1))
     if existing is not None:
         return existing
@@ -305,13 +300,12 @@ def _source(session: Session) -> DataSource:
 
 
 def _prior_report(session: Session, *, topic: Topic, owner_id: int, config_id: int) -> None:
-    """Park a published report on a topic so `search_prior_reports` returns a baseline.
+    """在主题上停一份已发布报告，好让 `search_prior_reports` 有基线可返回。
 
-    The `pipeline_runs` / `agent_runs` chain underneath is written directly rather than by running
-    the graph: this row stands in for a report that already travelled the publishing workflow in
-    an earlier week, and re-driving the whole Agent here would only make the smoke slower without
-    covering anything new. `publish_due_reports` cannot pick it up, because it is already
-    `published` rather than `approved`.
+    底下的 `pipeline_runs` / `agent_runs` 链是直接写入的，而不是跑图跑出来的：这一行
+    替代的是一份在更早那周已经走完发布流程的报告，在这里再完整驱动一遍 Agent 只会让
+    冒烟更慢，并不会多覆盖什么。`publish_due_reports` 拣不到它，因为它已经是
+    `published` 而不是 `approved`。
     """
     pipeline_run = PipelineRun(
         topic_id=topic.id,
@@ -354,13 +348,12 @@ def _prior_report(session: Session, *, topic: Topic, owner_id: int, config_id: i
 
 
 def _validate_world(spec: Any) -> None:
-    """Fail loudly if the seeded world and the shipped dataset have drifted apart.
+    """一旦种下的世界与发版数据集脱节，就大声失败。
 
-    The dataset file is the single source of truth for topics, repository names, reference values,
-    and the research window; the script has to seed a database that satisfies it. Without this
-    check a change to the file (a renamed repository, a new star count, a moved window) would
-    silently turn every factual-consistency or citation score into an unexplained zero, which is
-    exactly the kind of failure a smoke test exists to prevent.
+    数据集文件是主题、仓库名、参考值与研究窗口的唯一真源；脚本必须种出一个满足它的
+    数据库。没有这道核对，文件里的一处改动（改名一个仓库、换一个 star 数、挪一下
+    窗口）就会悄悄把每一项事实一致性或引用得分变成无解释的零，而这正是冒烟测试
+    存在要防的那类失败。
     """
     problems: list[str] = []
     stars: dict[tuple[str, str], int] = {}
@@ -372,8 +365,8 @@ def _validate_world(spec: Any) -> None:
         if topic_name not in WORLD:
             problems.append(f"case {case.case_key} names topic {topic_name!r} that is not seeded")
             continue
-        # The metric series has to be visible inside the window the case declares, or
-        # `query_repo_metrics` returns nothing and the case scores zero for a fixture reason.
+        # 指标序列必须落在用例声明的窗口内，否则 `query_repo_metrics` 什么也返回不了，
+        # 这个用例就会因为夹具的原因得零分。
         if not case.window_start <= _first_snapshot() <= case.window_end:
             problems.append(
                 f"case {case.case_key}: first snapshot {FIRST_SNAPSHOT_DATE} is outside "
@@ -416,17 +409,17 @@ def _validate_world(spec: Any) -> None:
 
 
 def _first_snapshot() -> datetime:
-    """Return the first snapshot date as an aware datetime for window comparison."""
+    """把第一个快照日期转成带时区的 datetime，供窗口比较使用。"""
     return datetime.combine(FIRST_SNAPSHOT_DATE, datetime.min.time(), tzinfo=UTC)
 
 
 def _last_snapshot() -> datetime:
-    """Return the last snapshot date as an aware datetime for window comparison."""
+    """把最后一个快照日期转成带时区的 datetime，供窗口比较使用。"""
     return datetime.combine(LAST_SNAPSHOT_DATE, datetime.min.time(), tzinfo=UTC)
 
 
 def _seeded_forks(key: tuple[str, str]) -> int | None:
-    """Return the seeded fork count for one topic/repository pair."""
+    """返回某一对主题/仓库所种下的 fork 数。"""
     topic_name, full_name = key
     for _provider_id, name, _stars, forks, _readme in WORLD[topic_name]["repos"]:
         if name == full_name:
@@ -435,10 +428,10 @@ def _seeded_forks(key: tuple[str, str]) -> int | None:
 
 
 def _seed_world(session: Session, actor_ids: dict[str, int]) -> dict[str, int]:
-    """Create the topics, repositories, snapshots, READMEs, and prior reports the dataset needs."""
+    """建出数据集所需的主题、仓库、快照、README 与往期报告。"""
     source = _source(session)
-    # The same config the evaluation runs will use, so the prior reports and the measured runs
-    # share one `agent_configs` row exactly as a real deployment does.
+    # 用的是评估运行将要使用的那份配置，这样往期报告与被测量的运行共享同一行
+    # `agent_configs`，与真实部署完全一致。
     config_id = int(load_or_create_config(session, get_settings()).id)
     topics: dict[str, int] = {}
     for topic_name, entry in WORLD.items():
@@ -482,8 +475,7 @@ def _seed_world(session: Session, actor_ids: dict[str, int]) -> dict[str, int]:
                     selected_for_agent=True,
                 )
             )
-            # Two points so the metric series has a non-zero net delta, both inside the window the
-            # dataset cases declare.
+            # 两个点，指标序列的净增量才不为零，且都落在数据集用例声明的窗口内。
             session.add_all(
                 [
                     RepoSnapshot(
@@ -518,12 +510,12 @@ def _seed_world(session: Session, actor_ids: dict[str, int]) -> dict[str, int]:
 
 
 # --------------------------------------------------------------------------------------
-# Criterion checks
+# 判据核对
 # --------------------------------------------------------------------------------------
 
 
 def _import_checks(session: Session) -> dict[str, Any]:
-    """Criterion 1: a dataset version is frozen, replayable, and not overwritable."""
+    """判据 1：数据集版本被冻结、可重放，且不可覆盖。"""
     spec = load_dataset_file(DATASET_PATH)
     _validate_world(spec)
     first = import_dataset(session, spec)
@@ -572,7 +564,7 @@ def _import_checks(session: Session) -> dict[str, Any]:
 
 
 def _sweep_checks(session: Session, dataset_id: int) -> dict[str, Any]:
-    """Criterion 2 and 3: one sweep, every variant, and a report that separates them."""
+    """判据 2 与 3：一次清扫、每个变体，以及一份把它们区分开的报告。"""
     before = _count(session, EvalRun)
     report = run_evaluation(session, dataset_id=dataset_id, now=SMOKE_NOW)
     after = _count(session, EvalRun)
@@ -649,7 +641,7 @@ def _sweep_checks(session: Session, dataset_id: int) -> dict[str, Any]:
 
 
 def _count_run_results(session: Session, run_id: int) -> int:
-    """Return how many result rows one run stored."""
+    """返回一次运行存下的结果行数。"""
     return int(
         session.scalar(
             select(func.count()).select_from(EvalResult).where(EvalResult.eval_run_id == run_id)
@@ -659,7 +651,7 @@ def _count_run_results(session: Session, run_id: int) -> int:
 
 
 def _metric_checks(session: Session, dataset_id: int) -> dict[str, Any]:
-    """Criterion 4: the metrics are computed from the database, and say what they should."""
+    """判据 4：指标从数据库算出来，而且说的正是它该说的话。"""
     report = compare_latest(session, dataset_id=dataset_id)
     by_target = {item.target_type: item for item in report.targets}
     baseline = by_target[BASELINE_TARGET]
@@ -713,8 +705,8 @@ def _metric_checks(session: Session, dataset_id: int) -> dict[str, Any]:
         if no_verifier.verification_sufficient_rate is None
         else str(no_verifier.verification_sufficient_rate),
         "documented_targets": DOCUMENTED_TARGETS,
-        # The offline stub is a pure function with no billing, so the cost columns are exercised
-        # but cannot show a spend. Stated as a fact rather than dressed up as a measurement.
+        # 离线桩是纯函数、不计费，所以成本列被走到了，却显示不出花费。这里把它当事实
+        # 直说，而不是包装成一次测量。
         "offline_tokens_zero": agent.total_tokens == 0,
         "agent_cost": str(agent.total_cost),
         "agent_latency_non_negative": agent.mean_latency_ms >= 0,
@@ -722,7 +714,7 @@ def _metric_checks(session: Session, dataset_id: int) -> dict[str, Any]:
 
 
 def _idempotence_checks(session: Session, dataset_id: int) -> dict[str, Any]:
-    """Criterion 5: a re-run adds a run but never a duplicate result for the same case."""
+    """判据 5：重跑只增加一轮运行，绝不为同一个用例多出一行重复结果。"""
     before_runs = _count(session, EvalRun)
     before_results = _count(session, EvalResult)
     first = compare_latest(session, dataset_id=dataset_id)
@@ -748,7 +740,7 @@ def _idempotence_checks(session: Session, dataset_id: int) -> dict[str, Any]:
 
 
 def _broken_case_checks(session: Session, workspace_actor: int) -> dict[str, Any]:
-    """Criterion 6: a case naming a missing topic is recorded as a failure, not a crash."""
+    """判据 6：指向缺失主题的用例被记成失败，而不是让进程崩掉。"""
     broken = import_dataset(
         session,
         parse_dataset(
@@ -796,14 +788,14 @@ def _broken_case_checks(session: Session, workspace_actor: int) -> dict[str, Any
         "broken_result_status": result.status,
         "broken_error_code": details.get("error_code"),
         "broken_gate_failures": baseline.gate_failures,
-        # An unmeasured candidate must not read as a pass, even though it has no failing threshold.
+        # 没被测量的候选绝不能读成通过，哪怕它没有任何未达阈值的指标。
         "broken_candidate_scored": candidate.scored_case_count,
         "broken_passed": report.passed,
     }
 
 
 def _cli_checks(dataset_id: int) -> dict[str, Any]:
-    """Criterion 7 on the command line: the same report through the real CLI subprocess."""
+    """判据 7 在命令行上：同一份报告经真正的 CLI 子进程拿到。"""
     listed = _run_cli("--action", "list")
     listed_items = listed["items"]
     names = [item["name"] for item in listed_items]
@@ -848,7 +840,7 @@ def _cli_checks(dataset_id: int) -> dict[str, Any]:
 
 
 def _api_checks(client: TestClient, dataset_id: int, admin: dict[str, str]) -> dict[str, Any]:
-    """Criterion 7 over HTTP: the same surface, its guards, and its error contract."""
+    """判据 7 在 HTTP 上：同一套接口、它的守卫与它的错误契约。"""
     listing = client.get(EVAL_API, headers=admin)
     cases = client.get(f"{EVAL_API}/{dataset_id}/cases", headers=admin)
     sweep = client.post(
@@ -904,7 +896,7 @@ def run_checks(
     dataset_id: int,
     actor_ids: dict[str, int],
 ) -> dict[str, Any]:
-    """Drive the real runner, CLI, and API through the whole T14 acceptance path."""
+    """让真正的运行器、CLI 与 API 走完整条 T14 验收路径。"""
     sweep = _sweep_checks(session, dataset_id)
     metrics = _metric_checks(session, dataset_id)
     _refresh(session)
@@ -942,12 +934,12 @@ def run_checks(
 
 
 # --------------------------------------------------------------------------------------
-# Real CLI and API entry points
+# 真正的 CLI 与 API 入口
 # --------------------------------------------------------------------------------------
 
 
 def _run_cli(*args: str) -> dict[str, Any]:
-    """Run one real evaluation CLI invocation and parse its JSON payload."""
+    """跑一次真正的评估 CLI 调用，并解析它的 JSON 结果。"""
     completed = subprocess.run(
         [sys.executable, "-m", "open_source_intelligence.evaluation.cli", *args],
         check=False,
@@ -963,7 +955,7 @@ def _run_cli(*args: str) -> dict[str, Any]:
 
 
 def _run_cli_expecting_failure(*args: str) -> dict[str, Any]:
-    """Run a CLI invocation that must fail, returning its error payload."""
+    """跑一次必须失败的 CLI 调用，并返回它的错误结果。"""
     completed = subprocess.run(
         [sys.executable, "-m", "open_source_intelligence.evaluation.cli", *args],
         check=False,
@@ -976,12 +968,12 @@ def _run_cli_expecting_failure(*args: str) -> dict[str, Any]:
 
 
 def _client(settings: Settings) -> TestClient:
-    """Build a client over the real application and the real database."""
+    """在真正的应用与真正的数据库之上建一个客户端。"""
     return TestClient(create_app(settings))
 
 
 def _login(client: TestClient, suffix: str) -> dict[str, str]:
-    """Sign one smoke user in through the API and return its bearer header."""
+    """经 API 登录一个冒烟用户，并返回它的 Bearer 请求头。"""
     response = client.post(
         "/api/v1/auth/login",
         json={"username": f"{ACTOR_PREFIX}{suffix}__", "password": SMOKE_PASSWORD},
@@ -992,12 +984,12 @@ def _login(client: TestClient, suffix: str) -> dict[str, str]:
 
 
 def _bearer(client: TestClient, suffix: str) -> dict[str, str]:
-    """Alias kept readable at the call sites."""
+    """留个别名，好让调用点读起来更顺。"""
     return _login(client, suffix)
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run T14 evaluation smoke checks")
     parser.add_argument(
         "--cleanup-only",
@@ -1008,7 +1000,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the T14 smoke checks on real MySQL and print the assertion payload."""
+    """在真实 MySQL 上跑 T14 冒烟，并打印断言结果。"""
     args = _parse_args()
     settings = get_settings()
     engine = create_database_engine(settings.database_url)

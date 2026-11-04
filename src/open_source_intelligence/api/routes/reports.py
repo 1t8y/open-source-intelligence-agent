@@ -1,9 +1,9 @@
-"""Report endpoints: list, read, edit, verify, review, publish, and roll back.
+"""报告端点：列表、读取、编辑、校验、评审、发布与回滚。
 
-Every route delegates to the `reports` services and to the authorization service; the router
-only shapes requests and responses. Permission filtering for the list happens in the database
-through `readable_reports_filter`, as `docs/api-contract.md` §6 requires: an unauthorized
-report must never influence the page contents or the reported total.
+每条路由都委托给 `reports` 服务与授权服务；路由本身只整形请求与响应。
+列表的权限过滤在数据库里通过 `readable_reports_filter` 完成，这是
+`docs/api-contract.md` §6 的要求：一份无权查看的报告绝不能影响分页内容，
+也不能影响返回的总数。
 """
 
 from __future__ import annotations
@@ -70,12 +70,12 @@ ReviewDecision = Literal["approve", "reject", "request_changes"]
 
 
 def _iso(value: datetime | None) -> str | None:
-    """Render a timestamp the way the rest of the report services do."""
+    """按报告服务其余部分的习惯渲染时间戳。"""
     return value.isoformat() if value else None
 
 
 class ReportSummaryResponse(BaseModel):
-    """One report row in a list response."""
+    """列表响应中的一行报告。"""
 
     id: int
     agent_run_id: int
@@ -94,7 +94,7 @@ class ReportSummaryResponse(BaseModel):
 
 
 class ReportListResponse(BaseModel):
-    """Paginated report list."""
+    """分页的报告列表。"""
 
     items: list[ReportSummaryResponse]
     page: int
@@ -103,7 +103,7 @@ class ReportListResponse(BaseModel):
 
 
 class ReportVersionResponse(BaseModel):
-    """One immutable report version."""
+    """一个不可变的报告版本。"""
 
     id: int
     version: int
@@ -113,7 +113,7 @@ class ReportVersionResponse(BaseModel):
 
 
 class ReportSourceResponse(BaseModel):
-    """One traceable citation of the current version."""
+    """当前版本的一条可溯源引用。"""
 
     id: int
     version: int
@@ -126,7 +126,7 @@ class ReportSourceResponse(BaseModel):
 
 
 class ReportReviewResponse(BaseModel):
-    """One human review decision."""
+    """一次人工评审决定。"""
 
     id: int
     version: int
@@ -137,7 +137,7 @@ class ReportReviewResponse(BaseModel):
 
 
 class VerificationResponse(BaseModel):
-    """The Verifier verdict stored for the current version, if it has been checked."""
+    """为当前版本存下的 Verifier 结论，前提是它已被检查过。"""
 
     version: int
     verdict: str
@@ -151,7 +151,7 @@ class VerificationResponse(BaseModel):
 
 
 class ReportDetailResponse(BaseModel):
-    """Full report detail including versions, citations, verdict, and reviews."""
+    """报告完整详情：版本、引用、结论与评审。"""
 
     id: int
     agent_run_id: int
@@ -175,7 +175,7 @@ class ReportDetailResponse(BaseModel):
 
 
 class ReportPatchRequest(BaseModel):
-    """Editable report fields. Omitted fields are left untouched."""
+    """可编辑的报告字段。未提交的字段保持原样。"""
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
     content_markdown: str | None = Field(default=None, min_length=1)
@@ -185,7 +185,7 @@ class ReportPatchRequest(BaseModel):
 
 
 class ReviewRequest(BaseModel):
-    """One human review decision submitted for a report awaiting review."""
+    """针对一份待评审报告提交的一次人工评审决定。"""
 
     decision: ReviewDecision
     comment: str | None = Field(default=None, max_length=2000)
@@ -193,21 +193,21 @@ class ReviewRequest(BaseModel):
 
 
 class RollbackRequest(BaseModel):
-    """Request to restore a historical version as a new draft version."""
+    """把某个历史版本恢复成一个新草稿版本的请求。"""
 
     version: int = Field(ge=1)
     comment: str | None = Field(default=None, max_length=2000)
 
 
 class PushRequest(BaseModel):
-    """Request to deliver one report version to one allowlisted target."""
+    """把一个报告版本投递到一个允许清单内目标的请求。"""
 
     channel: Literal["email", "webhook"]
     target_id: int = Field(ge=1)
 
 
 class RevisionResponse(BaseModel):
-    """Result of an edit or a rollback."""
+    """一次编辑或回滚的结果。"""
 
     report_id: int
     version: int
@@ -218,7 +218,7 @@ class RevisionResponse(BaseModel):
 
 
 class ReviewResponse(BaseModel):
-    """Result of recording a review decision."""
+    """记录一次评审决定的结果。"""
 
     report_id: int
     review_id: int
@@ -227,7 +227,7 @@ class ReviewResponse(BaseModel):
 
 
 class VerificationOutcomeResponse(BaseModel):
-    """Result of running the Verifier."""
+    """运行 Verifier 的结果。"""
 
     report_id: int
     version: int
@@ -244,7 +244,7 @@ class VerificationOutcomeResponse(BaseModel):
 
 
 class PublishDecisionResponse(BaseModel):
-    """The policy verdict returned by the publish endpoint."""
+    """发布端点返回的策略裁决。"""
 
     report_id: int
     mode: str
@@ -255,7 +255,7 @@ class PublishDecisionResponse(BaseModel):
 
 
 class PublishResponse(BaseModel):
-    """Result of applying the publish policy to one report."""
+    """对一份报告施加发布策略后的结果。"""
 
     report_id: int
     status: str
@@ -265,7 +265,7 @@ class PublishResponse(BaseModel):
 
 
 class PublishDueResponse(BaseModel):
-    """Result of one release sweep."""
+    """一轮发布扫描的结果。"""
 
     released: list[dict[str, Any]]
     released_count: int
@@ -273,7 +273,7 @@ class PublishDueResponse(BaseModel):
 
 
 def _topic_names(session: Session, topic_ids: set[int]) -> dict[int, str]:
-    """Return the names of the given topics in one query."""
+    """用一次查询取回指定主题的名字。"""
     if not topic_ids:
         return {}
     rows = session.execute(select(Topic.id, Topic.name).where(Topic.id.in_(topic_ids))).all()
@@ -281,7 +281,7 @@ def _topic_names(session: Session, topic_ids: set[int]) -> dict[int, str]:
 
 
 def _summary(report: Any, *, topic_name: str | None) -> ReportSummaryResponse:
-    """Build one list row."""
+    """构造一行列表记录。"""
     return ReportSummaryResponse(
         id=report.id,
         agent_run_id=report.agent_run_id,
@@ -312,7 +312,7 @@ def list_reports(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ReportListResponse:
-    """Return one page of reports the current user may read."""
+    """返回一页当前用户有权阅读的报告。"""
     page_result = queries.list_reports(
         session,
         access_filter=readable_reports_filter(user, get_role_codes(user)),
@@ -339,14 +339,14 @@ def release_due_reports(
     session: DbSession,
     limit: Annotated[int, Query(ge=1, le=PUBLISH_BATCH_LIMIT)] = PUBLISH_BATCH_LIMIT,
 ) -> PublishDueResponse:
-    """Run the release driver once, for operators who do not want to wait for the scheduler.
+    """手动跑一次发布驱动，供不想等调度器的运维使用。
 
-    This is the same `publish_due_reports` sweep the Celery beat task runs, exposed so the
-    admin UI can complete a publishing flow without waiting for the next tick. It is declared
-    before the `/{report_id}` routes so the literal path is not read as an id.
+    这就是 Celery beat 任务跑的那次 `publish_due_reports` 扫描，暴露出来是
+    为了让管理界面不必等下一个周期就能走完一条发布流程。它声明在
+    `/{report_id}` 路由之前，免得这条字面量路径被当成一个 id 解析。
 
-    The sweep is scoped to the reports the caller may read. Without that scope, "release what is
-    due" would let an editor publish a PRIVATE report they cannot even open.
+    扫描范围限定在调用方可读的报告内。没有这个范围，「把到期的都发出去」
+    就会让一个编辑发布一份他自己都打不开的 PRIVATE 报告。
     """
     released = publish_due_reports(
         session,
@@ -368,7 +368,7 @@ def get_report(
     user: ReadUser,
     session: DbSession,
 ) -> ReportDetailResponse:
-    """Return one report with its versions, citations, verdict, and reviews."""
+    """返回一份报告，连同它的版本、引用、结论与评审。"""
     report = authorize_report_read(session, request, user, report_id=report_id)
     detail = queries.get_report_detail(session, report_id=report.id)
     assert detail is not None
@@ -447,7 +447,7 @@ def edit_report(
     user: WriteUser,
     session: DbSession,
 ) -> RevisionResponse:
-    """Apply a manual edit, appending an immutable version when the content changes."""
+    """应用一次人工编辑；正文发生变化时追加一个不可变版本。"""
     authorize_report_read(session, request, user, report_id=report_id)
     supplied = payload.model_dump(exclude_unset=True)
     outcome = revise_report(
@@ -470,7 +470,7 @@ def verify_one(
     user: WriteUser,
     session: DbSession,
 ) -> VerificationOutcomeResponse:
-    """Run the four `A-004` checks against the current version and store the verdict."""
+    """对当前版本跑 `A-004` 的四项检查，并保存结论。"""
     authorize_report_read(session, request, user, report_id=report_id)
     return VerificationOutcomeResponse(**verify_report(session, report_id=report_id).to_dict())
 
@@ -483,7 +483,7 @@ def review_one(
     user: WriteUser,
     session: DbSession,
 ) -> ReviewResponse:
-    """Record a human decision on a report awaiting review."""
+    """记录对一份待评审报告做出的人工决定。"""
     authorize_report_read(session, request, user, report_id=report_id)
     outcome = record_review(
         session,
@@ -503,13 +503,13 @@ def publish_one(
     user: WriteUser,
     session: DbSession,
 ) -> PublishResponse:
-    """Verify, apply the publish policy, and release the report when it is due.
+    """校验、施加发布策略，到点就真正发布这份报告。
 
-    The policy decision always comes back in `publish_decision`. When the decision queues the
-    report and its withdrawal window has already elapsed, the release is attempted here too,
-    so the caller learns the outcome of the `INV-5` gate (`409 PUBLISH_POLICY_BLOCKED`) or of
-    an illegal state (`409 REPORT_STATE_INVALID`) instead of a bare "queued". A report still
-    inside its window is returned as queued, and the scheduled sweep releases it later.
+    策略裁决总会通过 `publish_decision` 返回。当裁决把报告排入队列、而它的
+    撤回窗口已经过去时，这里也会顺带尝试发布，好让调用方直接拿到 `INV-5`
+    闸门的结果（`409 PUBLISH_POLICY_BLOCKED`）或非法状态的结果
+    （`409 REPORT_STATE_INVALID`），而不是一句干巴巴的「已入队」。仍在
+    窗口内的报告按已入队返回，由定时扫描稍后发布。
     """
     authorize_report_read(session, request, user, report_id=report_id)
     outcome = publish_or_request_review(session, report_id=report_id)
@@ -544,7 +544,7 @@ def rollback_one(
     user: WriteUser,
     session: DbSession,
 ) -> RevisionResponse:
-    """Restore a historical version as a new draft version for re-verification."""
+    """把某个历史版本恢复成一个新草稿版本，等待重新校验。"""
     authorize_report_read(session, request, user, report_id=report_id)
     outcome = rollback_report(
         session,
@@ -564,17 +564,17 @@ def push_one(
     user: WriteUser,
     session: DbSession,
 ) -> PushOutcomeResponse:
-    """Deliver one report version to one allowlisted destination.
+    """把一个报告版本投递到一个允许清单内的目标。
 
-    Only an `approved` or `published` report may be pushed, and only to a target that is
-    enabled and cleared for the report's visibility and sensitivity; every refusal raises and
-    is answered as Problem Details.
+    只有 `approved` 或 `published` 的报告可以推送，且只能推给一个已启用、
+    并对该报告的可见性与敏感度都放行的目标；每一次拒绝都抛异常，并以
+    Problem Details 作答。
 
-    A delivery the transport refused is a recorded, retryable result rather than a request
-    error, so it comes back as `200` with `status="failed"` and a stable `error_code` — the
-    same shape `POST /reports/publish-due` uses for a blocked release. Re-posting the same
-    report, version, and target replays the stored result with `replayed=true` instead of
-    sending twice.
+    传输层拒绝的投递是一个已记录、可重试的结果，而不是请求错误，所以它回
+    `200`，带 `status="failed"` 和一个稳定的 `error_code` —— 与
+    `POST /reports/publish-due` 对被拦截发布使用的形状一致。重复提交同一份
+    报告、同一版本、同一目标时，会重放已存的结果并返回 `replayed=true`，
+    而不是发两次。
     """
     authorize_report_read(session, request, user, report_id=report_id)
     outcome = push_report(
@@ -588,13 +588,13 @@ def push_one(
 
 
 class ShareLinkRequest(BaseModel):
-    """Lifetime for a new share link. Omitted means the link never expires."""
+    """新分享链接的有效期。留空表示链接永不过期。"""
 
     ttl_hours: int | None = Field(default=DEFAULT_SHARE_TTL_HOURS, ge=1, le=MAX_SHARE_TTL_HOURS)
 
 
 class ShareLinkResponse(BaseModel):
-    """The one response that carries a plaintext token."""
+    """唯一一个携带明文令牌的响应。"""
 
     share_id: int
     token: str
@@ -603,7 +603,7 @@ class ShareLinkResponse(BaseModel):
 
 
 class ShareLinkSummaryResponse(BaseModel):
-    """A link as listable later: no token, only its state and usage."""
+    """之后可被列出的链接形态：不含令牌，只有状态与用量。"""
 
     share_id: int
     created_by: int | None
@@ -617,13 +617,13 @@ class ShareLinkSummaryResponse(BaseModel):
 
 
 class ShareLinkListResponse(BaseModel):
-    """Every link minted for one report."""
+    """为某一份报告签发过的全部链接。"""
 
     items: list[ShareLinkSummaryResponse]
 
 
 class ShareRevokeResponse(BaseModel):
-    """Whether this call performed the revocation. `false` means it was already revoked."""
+    """本次调用是否真的执行了撤销。`false` 表示此前已被撤销。"""
 
     share_id: int
     revoked: bool
@@ -637,15 +637,15 @@ def create_report_share(
     user: WriteUser,
     session: DbSession,
 ) -> ShareLinkResponse:
-    """Mint a no-login link for one published `PUBLIC` report.
+    """为一份已发布的 `PUBLIC` 报告签一条免登录链接。
 
-    The gate is `sensitivity`, not `visibility`. A share link is an address with no login
-    behind it, so it asks "may this content leave the organisation" - the question
-    `sensitivity` answers. Gating on `visibility` would have let an `INTERNAL` report (readable
-    by every logged-in user) out through a public door.
+    闸门看的是 `sensitivity`，不是 `visibility`。分享链接是一个背后没有
+    登录的地址，所以它问的是「这份内容可以离开组织吗」—— 那是
+    `sensitivity` 回答的问题。若改用 `visibility` 把关，一份 `INTERNAL`
+    报告（每个登录用户都能读）就会从一扇公开的门里走出去。
 
-    `token` appears in this response and nowhere else: only its sha256 is stored, so the link
-    cannot be recovered later and a database dump is not a set of working credentials.
+    `token` 只出现在这个响应里，别处没有：库里只存它的 sha256，因此链接
+    事后无法找回，一次数据库导出也不等于一组可用的凭据。
     """
     authorize_report_read(session, request, user, report_id=report_id)
     created = create_share_link(
@@ -664,7 +664,7 @@ def list_report_shares(
     user: WriteUser,
     session: DbSession,
 ) -> ShareLinkListResponse:
-    """List the links minted for a report. Never returns a plaintext token."""
+    """列出为某份报告签发过的链接。永远不返回明文令牌。"""
     authorize_report_read(session, request, user, report_id=report_id)
     return ShareLinkListResponse(
         items=[
@@ -682,10 +682,10 @@ def revoke_report_share(
     user: WriteUser,
     session: DbSession,
 ) -> ShareRevokeResponse:
-    """Stop a link from resolving.
+    """让一条链接不再能解析。
 
-    Idempotent: a second call reports `revoked=false` rather than failing, because the caller's
-    intent - "make sure this address stops working" - is already satisfied.
+    幂等：第二次调用回 `revoked=false` 而不是报错，因为调用方的意图 ——「确保这个地址失效」——
+    已经满足了。
     """
     authorize_report_read(session, request, user, report_id=report_id)
     revoked = revoke_share_link(

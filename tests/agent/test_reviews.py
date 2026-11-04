@@ -1,9 +1,8 @@
-"""Tests for the human conclusion recorded on a run that stopped without a report.
+"""守护「运行未产出报告就停下时，人给出的结论」的用例。
 
-The state itself is terminal — nothing downstream turns a `needs_review` run into a report — so the
-only thing a review can honestly do is say whether the explanation closes the case or the work
-needs another attempt. These tests pin both that and the things it must *not* do: move the status,
-overwrite an earlier conclusion, or accept a run that has nothing to review.
+这个状态本身是终态 —— 下游没有任何环节能把 `needs_review` 的运行变成报告 —— 所以一次
+复核能诚实做的事只有一件：说明这个解释足以结案，还是需要再试一次。下面既钉住这一点，
+也钉住它*不能*做的事：改动状态、覆盖更早的结论、接受一次根本没有东西可复核的运行。
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from open_source_intelligence.persistence.models.audit import AuditLog
 
 
 def _parked_run(session: Session, workspace: Workspace) -> AgentRun:
-    """Create one run in the state that actually asks for a human."""
+    """构造一次真正需要人介入的运行。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     run.status = "needs_review"
@@ -58,7 +57,7 @@ def test_a_review_is_appended_and_audited(session: Session, workspace: Workspace
 
 
 def test_a_review_does_not_move_the_run(session: Session, workspace: Workspace) -> None:
-    """The run still has no report afterwards, so relabelling it would be a lie."""
+    """证明复核之后运行仍然没有报告，所以给它换个标签就是撒谎。"""
     run = _parked_run(session, workspace)
 
     record_run_review(session, run_id=run.id, verdict="needs_rerun", now=NOW)
@@ -71,7 +70,7 @@ def test_a_review_does_not_move_the_run(session: Session, workspace: Workspace) 
 def test_a_second_review_appends_rather_than_overwrites(
     session: Session, workspace: Workspace
 ) -> None:
-    """Changing your mind adds a line; the trail keeps the earlier judgement."""
+    """证明改主意只追加一行；历史仍保留更早的判断。"""
     run = _parked_run(session, workspace)
     record_run_review(session, run_id=run.id, verdict="acknowledged", now=NOW)
     record_run_review(
@@ -89,7 +88,7 @@ def test_a_second_review_appends_rather_than_overwrites(
 
 
 def test_a_completed_run_is_not_reviewed_here(session: Session, workspace: Workspace) -> None:
-    """A finished run already produced a report; the decision belongs to that report."""
+    """证明已完成的运行早就产出了报告，那个决定属于报告，不属于这里。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     run.status = "completed"
@@ -120,5 +119,5 @@ def test_an_unknown_verdict_is_refused(session: Session, workspace: Workspace) -
 
 
 def test_latest_reviews_for_no_runs_is_one_empty_read(session: Session) -> None:
-    """The ledger calls this with an empty page; it must not issue a query with `IN ()`."""
+    """证明台账会带着空页调用它；它不能发出带 `IN ()` 的查询。"""
     assert latest_run_reviews(session, run_ids=[]) == {}

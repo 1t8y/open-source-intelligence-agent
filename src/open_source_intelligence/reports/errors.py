@@ -1,45 +1,45 @@
-"""Stable report-generation and publishing failures."""
+"""定义报告生成与发布过程中带稳定错误码的失败类型。"""
 
 
 class ReportGenerationError(ValueError):
-    """Raised when a draft cannot be promoted into a traceable report."""
+    """当草稿无法提升为可追溯报告时抛出。"""
 
-    #: Stable identifier so a caller (the API, the CLI, the worker) can branch on the failure
-    #: instead of matching on the message. It used to be absent, and callers printed `null`.
+    #: 稳定标识符，让调用方（API、CLI、Worker）可以按失败分支，而不是去匹配消息文本。
+    #: 这个字段曾经缺席，调用方只能打印出 `null`。
     code = "REPORT_GENERATION_FAILED"
 
 
 class ReportNotFoundError(ReportGenerationError):
-    """Raised when the addressed report or report version does not exist.
+    """当指定的报告或报告版本不存在时抛出。
 
-    It is separate from the generic generation failure so the API can answer `404` for a
-    missing resource and `400` for a rejected request without matching on message text.
+    它与通用的生成失败分开，API 才能对缺失的资源回 `404`、对被拒绝的请求回 `400`，
+    而不必去匹配消息文本。
     """
 
     code = "NOT_FOUND"
 
 
 class ReportPublishError(ValueError):
-    """Raised when a report cannot reach the requested publishing state.
+    """当报告无法到达请求的发布状态时抛出。
 
-    Every subclass carries a stable `code` so a blocked release can be recorded on
-    `pipeline_runs.error_code` without matching on message text.
+    每个子类都带一个稳定的 `code`，被拦下的发布才能记到 `pipeline_runs.error_code`
+    上，而不必去匹配消息文本。
     """
 
     code = "PUBLISH_ERROR"
 
 
 class ReportStateError(ReportPublishError):
-    """Raised when a transition is not allowed from the report's current status."""
+    """当报告当前状态不允许该次迁移时抛出。"""
 
     code = "REPORT_STATE_INVALID"
 
 
 class PublishPolicyBlocked(ReportPublishError):
-    """Raised when publishing would violate the publish policy.
+    """当发布将违反发布策略时抛出。
 
-    This is the `INV-5` guard: a report may only be published after a verification verdict
-    exists for its current version, and a `MANUAL` report additionally needs an approval.
+    这就是 `INV-5` 守卫：报告只有在当前版本已有验证结论之后才能发布，而 `MANUAL`
+    报告还额外需要一次审批。
     """
 
     code = "PUBLISH_POLICY_BLOCKED"

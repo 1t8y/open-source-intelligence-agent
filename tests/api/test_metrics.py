@@ -1,11 +1,10 @@
-"""Integration tests for the observability endpoints.
+"""守护可观测性端点：把真实的聚合结果原样暴露成面板与运行清单。
 
-They drive the real FastAPI application over the real aggregation: `/api/v1/metrics/overview`
-for the dashboard payload and `/api/v1/agent/runs` for the ledger and the trajectory. What is
-checked is the acceptance itself - tasks, tokens, latency and failure rate are visible, the
-window is adjustable and bounded, a viewer is refused - plus the two error-contract details that
-are easy to get wrong: a missing run is a `404` with a `code`, and `/runs` is not swallowed by
-the `/runs/{run_id}` path parameter.
+用例走真实 FastAPI 应用加真实聚合：`/api/v1/metrics/overview` 出面板载荷，
+`/api/v1/agent/runs` 出账本与轨迹。校验的就是验收条件本身 —— 任务、token、时延、
+失败率都看得见，窗口可调且有界，只读用户被拒绝 —— 外加两处容易写错的错误契约
+细节：不存在的运行是带 `code` 的 `404`；`/runs` 不会被 `/runs/{run_id}` 的路径
+参数吞掉。
 """
 
 from __future__ import annotations
@@ -34,37 +33,37 @@ RUNS = "/api/v1/agent/runs"
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def admin(session: Session) -> Actor:
-    """An administrator, who may read the overview."""
+    """管理员：可以读总览。"""
     return create_actor(session, username="admin", role="ADMIN")
 
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """An editor, who may also read the overview."""
+    """编辑：同样可以读总览。"""
     return create_actor(session, username="editor", role="EDITOR", data_scope="team")
 
 
 @pytest.fixture()
 def viewer(session: Session) -> Actor:
-    """A read-only user, who may not."""
+    """只读用户：读不了。"""
     return create_actor(session, username="viewer", role="VIEWER")
 
 
 @pytest.fixture()
 def ledger(session: Session, workspace) -> SeededLedger:  # type: ignore[no-untyped-def]
-    """Seed the run ledger the dashboard reports on."""
+    """铺好面板要统计的那份运行账本。"""
     return seed_ledger(session, workspace)
 
 
 def test_overview_requires_a_session(client: TestClient) -> None:
-    """The overview is not public, even though it contains no report text."""
+    """总览不公开，尽管它并不包含任何报告正文。"""
     assert client.get(METRICS).status_code == 401
 
 
@@ -72,7 +71,7 @@ def test_overview_requires_a_session(client: TestClient) -> None:
 def test_overview_is_available_to_the_roles_that_may_see_it(
     client: TestClient, request: pytest.FixtureRequest, role: str
 ) -> None:
-    """Both operations roles get the payload, so the guard is not admin-only."""
+    """两个运维角色都拿得到载荷，说明守卫不是只管管理员。"""
     actor: Actor = request.getfixturevalue(role)
     response = client.get(METRICS, headers=auth_headers(client, actor))
     assert response.status_code == 200
@@ -89,7 +88,7 @@ def test_overview_is_available_to_the_roles_that_may_see_it(
 def test_a_viewer_is_refused_the_overview_and_the_ledger(
     client: TestClient, viewer: Actor, ledger: SeededLedger
 ) -> None:
-    """A viewer may not read cross-topic cost, failure reasons, or trajectories."""
+    """只读用户不能读跨主题成本、失败原因和轨迹。"""
     headers = auth_headers(client, viewer)
     assert client.get(METRICS, headers=headers).status_code == 403
     assert client.get(RUNS, headers=headers).status_code == 403
@@ -100,7 +99,7 @@ def test_a_viewer_is_refused_the_overview_and_the_ledger(
 def test_overview_reports_tasks_tokens_latency_and_failure_rate(
     client: TestClient, admin: Actor, ledger: SeededLedger
 ) -> None:
-    """The four things the T15 acceptance names are all present, and all correct."""
+    """T15 验收点名的四样东西都在，而且都对。"""
     headers = auth_headers(client, admin)
     body = client.get(METRICS, params={"window_days": 7}, headers=headers).json()
 
@@ -133,7 +132,7 @@ def test_overview_reports_tasks_tokens_latency_and_failure_rate(
 def test_overview_reuses_the_evaluation_verdict(
     client: TestClient, admin: Actor, ledger: SeededLedger
 ) -> None:
-    """With no sweep recorded the section is marked unavailable rather than shown as green."""
+    """没有记录过扫描时，这一段要标成「不可用」，而不是显示成一片绿。"""
     body = client.get(METRICS, headers=auth_headers(client, admin)).json()
     assert body["evaluations"]["dataset"] is None
     assert body["evaluations"]["passed"] is None
@@ -141,7 +140,7 @@ def test_overview_reuses_the_evaluation_verdict(
 
 
 def test_the_window_is_adjustable(client: TestClient, admin: Actor, ledger: SeededLedger) -> None:
-    """A wider window reaches rows a narrower one leaves out."""
+    """更宽的窗口能覆盖窄窗口漏掉的行。"""
     headers = auth_headers(client, admin)
     week = client.get(METRICS, params={"window_days": 7}, headers=headers).json()
     month = client.get(METRICS, params={"window_days": 30}, headers=headers).json()
@@ -155,7 +154,7 @@ def test_the_window_is_adjustable(client: TestClient, admin: Actor, ledger: Seed
 def test_an_out_of_range_window_is_refused_rather_than_clamped(
     client: TestClient, admin: Actor, value: int
 ) -> None:
-    """The endpoint enforces the documented 1-90 bound the same way it enforces `page_size`."""
+    """端点用管 `page_size` 的同一套方式，执行文档写明的 1–90 边界。"""
     headers = auth_headers(client, admin)
     response = client.get(METRICS, params={"window_days": value}, headers=headers)
     assert response.status_code == 422
@@ -164,7 +163,7 @@ def test_an_out_of_range_window_is_refused_rather_than_clamped(
 def test_the_ledger_is_newest_first_and_filterable(
     client: TestClient, admin: Actor, ledger: SeededLedger
 ) -> None:
-    """The list an operator scans is ordered, total-bearing, and filterable by status."""
+    """运维者要扫的这份列表有排序、带总数，并且能按状态筛选。"""
     headers = auth_headers(client, admin)
     page = client.get(RUNS, headers=headers).json()
     assert page["total"] == 5
@@ -181,7 +180,7 @@ def test_the_ledger_is_newest_first_and_filterable(
 def test_the_ledger_carries_budget_and_outcome_fields(
     client: TestClient, admin: Actor, ledger: SeededLedger
 ) -> None:
-    """One row answers "what did this run cost and how did it end" without a second call."""
+    """一行就要答出「这次运行花了多少、怎么结束的」，不必再发一次请求。"""
     headers = auth_headers(client, admin)
     body = client.get(f"{RUNS}/{ledger.completed_run_id}", headers=headers).json()
     assert body["status"] == "completed"
@@ -193,7 +192,7 @@ def test_the_ledger_carries_budget_and_outcome_fields(
 
 
 def test_a_missing_run_is_not_found_with_a_code(client: TestClient, admin: Actor) -> None:
-    """The domain error survives the HTTP layer as RFC 7807 rather than a bare 404."""
+    """领域错误穿过 HTTP 层后仍是 RFC 7807，而不是一个裸 404。"""
     response = client.get(f"{RUNS}/987654321", headers=auth_headers(client, admin))
     assert response.status_code == 404
     assert response.json()["code"] == "NOT_FOUND"
@@ -202,7 +201,7 @@ def test_a_missing_run_is_not_found_with_a_code(client: TestClient, admin: Actor
 def test_the_run_routes_are_not_shadowed_by_the_path_parameter(
     client: TestClient, admin: Actor, ledger: SeededLedger
 ) -> None:
-    """`/runs` is declared before `/{run_id}`, so the list is not read as an id."""
+    """`/runs` 声明在 `/{run_id}` 之前，所以清单不会被当成一个 id。"""
     headers = auth_headers(client, admin)
     assert client.get(RUNS, headers=headers).status_code == 200
     assert client.get(f"{RUNS}/{ledger.failing_run_id}", headers=headers).status_code == 200
@@ -211,7 +210,7 @@ def test_the_run_routes_are_not_shadowed_by_the_path_parameter(
 def test_the_trace_reaches_the_tool_call_that_failed(
     client: TestClient, admin: Actor, ledger: SeededLedger
 ) -> None:
-    """A failed run is traceable to the exact tool call, its status, and its error code."""
+    """失败的运行能追到具体那一次工具调用、它的状态与错误码。"""
     body = client.get(
         f"{RUNS}/{ledger.failing_run_id}/steps", headers=auth_headers(client, admin)
     ).json()
@@ -228,15 +227,14 @@ def test_the_trace_reaches_the_tool_call_that_failed(
     assert denied["error_code"] == DENIED_ERROR
     assert denied["latency_ms"] == 800
 
-    # A call whose step link degraded is reported rather than dropped: it is the evidence a
-    # trace exists to surface.
+    # 步骤关联已经损坏的调用要报出来而不是丢掉：它正是轨迹存在的意义所在。
     assert [call["error_code"] for call in body["unlinked_tool_calls"]] == [UNLINKED_ERROR]
 
 
 def test_the_trace_redacts_what_the_logs_redact(
     client: TestClient, admin: Actor, ledger: SeededLedger
 ) -> None:
-    """One rule for what may not be exported, applied on the JSON path too."""
+    """不能出网的字段只有一条规则，在 JSON 这条路径上同样要执行。"""
     headers = auth_headers(client, admin)
     response = client.get(f"{RUNS}/{ledger.failing_run_id}/steps", headers=headers)
     assert LEAKED_SECRET not in response.text
@@ -244,7 +242,7 @@ def test_the_trace_redacts_what_the_logs_redact(
 
 
 def test_a_missing_trace_is_not_found(client: TestClient, admin: Actor) -> None:
-    """A trace of a run that never existed is a 404, not an empty trajectory."""
+    """从没存在过的运行，其轨迹是 404，而不是一条空轨迹。"""
     response = client.get(f"{RUNS}/987654321/steps", headers=auth_headers(client, admin))
     assert response.status_code == 404
     assert response.json()["code"] == "NOT_FOUND"
@@ -253,7 +251,7 @@ def test_a_missing_trace_is_not_found(client: TestClient, admin: Actor) -> None:
 def test_the_ledger_pages_within_the_documented_bound(
     client: TestClient, admin: Actor, ledger: SeededLedger
 ) -> None:
-    """One page and the total, so a client can walk the ledger; an oversized page is refused."""
+    """一页加一个总数，客户端就能走完账本；超长的一页则被拒绝。"""
     headers = auth_headers(client, admin)
     first = client.get(RUNS, params={"page": 1, "page_size": 2}, headers=headers).json()
     second = client.get(RUNS, params={"page": 2, "page_size": 2}, headers=headers).json()

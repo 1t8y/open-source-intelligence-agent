@@ -1,12 +1,12 @@
-"""Evaluation endpoints: datasets, execution, run detail, and the comparison report.
+"""评测端点：数据集、执行、运行详情，以及对比报告。
 
-Route order is load-bearing. `/runs` and `/runs/{run_id}` are literal segments while
-`/{dataset_id}/run` and `/{dataset_id}/comparison` start with a path parameter, so the literal
-routes are declared first. FastAPI matches in declaration order, and reversing them would make
-`/runs` parse as a dataset id - exactly the trap `api/routes/push.py` was split out to avoid.
+路由顺序是有承重作用的。`/runs` 与 `/runs/{run_id}` 是字面量段，而
+`/{dataset_id}/run` 与 `/{dataset_id}/comparison` 以路径参数开头，所以字面量
+路由先声明。FastAPI 按声明顺序匹配，把两者调换就会让 `/runs` 被当成数据集
+id 解析 —— 正是 `api/routes/push.py` 被拆出去要躲开的那个坑。
 
-Every endpoint requires a write role, matching `INTERFACES.md` §2: an evaluation run executes
-the Agent against real data, so it is an operator action rather than a read.
+每个端点都要求写角色，与 `INTERFACES.md` §2 一致：一次评测运行会拿真实数据
+去跑 Agent，因此它属于运维动作，而不是读操作。
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ DbSession = Annotated[Session, Depends(get_db_session)]
 
 
 class DatasetResponse(BaseModel):
-    """One dataset version."""
+    """一个数据集版本。"""
 
     id: int
     name: str
@@ -50,13 +50,13 @@ class DatasetResponse(BaseModel):
 
 
 class DatasetListResponse(BaseModel):
-    """Known dataset versions, newest first."""
+    """已知的数据集版本，最新的在前。"""
 
     items: list[DatasetResponse]
 
 
 class EvalCaseResponse(BaseModel):
-    """One dataset sample, without its reference answer."""
+    """一条数据集样本，不含参考答案。"""
 
     id: int
     case_key: str
@@ -66,13 +66,13 @@ class EvalCaseResponse(BaseModel):
 
 
 class EvalCaseListResponse(BaseModel):
-    """The cases of one dataset version."""
+    """某个数据集版本下的用例集合。"""
 
     items: list[EvalCaseResponse]
 
 
 class EvalRunResponse(BaseModel):
-    """One target's execution against one dataset version."""
+    """某个目标在一个数据集版本上的一次执行。"""
 
     id: int
     dataset_id: int
@@ -85,13 +85,13 @@ class EvalRunResponse(BaseModel):
 
 
 class EvalRunListResponse(BaseModel):
-    """Recent runs, newest first."""
+    """最近的运行，最新的在前。"""
 
     items: list[EvalRunResponse]
 
 
 class EvalResultResponse(BaseModel):
-    """One case's measurement inside a run."""
+    """一次运行中某条用例的度量结果。"""
 
     id: int
     eval_case_id: int
@@ -107,19 +107,19 @@ class EvalResultResponse(BaseModel):
 
 
 class EvalRunDetailResponse(EvalRunResponse):
-    """A run with its per-case measurements."""
+    """一次运行及其逐条用例的度量结果。"""
 
     results: list[EvalResultResponse]
 
 
 class RunTargetsRequest(BaseModel):
-    """Which variants to execute; omitted means every variant, in report order."""
+    """要执行哪些变体；留空表示按报告顺序执行全部变体。"""
 
     targets: list[str] | None = Field(default=None, max_length=5)
 
 
 class ComparisonResponse(BaseModel):
-    """The unified comparison across variants."""
+    """各变体之间统一的对比结果。"""
 
     dataset: dict[str, Any]
     case_count: int
@@ -130,7 +130,7 @@ class ComparisonResponse(BaseModel):
 
 
 def _dataset_response(dataset: Any) -> DatasetResponse:
-    """Serialize one dataset row."""
+    """把一行数据集记录序列化成响应。"""
     return DatasetResponse(
         id=dataset.id,
         name=dataset.name,
@@ -142,7 +142,7 @@ def _dataset_response(dataset: Any) -> DatasetResponse:
 
 
 def _run_response(run: EvalRun) -> EvalRunResponse:
-    """Serialize one run row."""
+    """把一行运行记录序列化成响应。"""
     return EvalRunResponse(
         id=run.id,
         dataset_id=run.dataset_id,
@@ -156,12 +156,12 @@ def _run_response(run: EvalRun) -> EvalRunResponse:
 
 
 def _comparison_response(report: ComparisonReport) -> ComparisonResponse:
-    """Serialize a comparison report."""
+    """序列化一份对比报告。"""
     return ComparisonResponse(**report.to_dict())
 
 
 def _rate_text(value: Decimal | None) -> str | None:
-    """Render a stored rate as a plain string, or None when the case never exercised it."""
+    """把存储的比率渲染成纯文本；用例从未行使过该指标时返回 `None`。"""
     return None if value is None else str(value)
 
 
@@ -171,7 +171,7 @@ def get_datasets(
     session: DbSession,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> DatasetListResponse:
-    """Return the known dataset versions."""
+    """返回已知的数据集版本。"""
     rows = list_datasets(session, limit=limit)
     return DatasetListResponse(items=[_dataset_response(row) for row in rows])
 
@@ -184,7 +184,7 @@ def get_eval_runs(
     target_type: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> EvalRunListResponse:
-    """Return recent evaluation runs so an operator can see what was measured and when."""
+    """返回最近的评测运行，让运维看清测了什么、什么时候测的。"""
     rows = list_runs(
         session,
         dataset_id=dataset_id,
@@ -200,7 +200,7 @@ def get_eval_run(
     user: WriteUser,
     session: DbSession,
 ) -> EvalRunDetailResponse:
-    """Return one run with its per-case measurements."""
+    """返回一次运行及其逐条用例的度量结果。"""
     run = session.get(EvalRun, run_id)
     if run is None:
         raise EvaluationNotFound(f"eval run {run_id} does not exist")
@@ -242,7 +242,7 @@ def run_dataset_evaluation(
     session: DbSession,
     payload: RunTargetsRequest | None = None,
 ) -> ComparisonResponse:
-    """Execute one or more target variants over a dataset and return the comparison."""
+    """在一个数据集上执行一个或多个目标变体，并返回对比结果。"""
     report = run_evaluation(
         session,
         dataset_id=dataset_id,
@@ -257,7 +257,7 @@ def get_dataset_comparison(
     user: WriteUser,
     session: DbSession,
 ) -> ComparisonResponse:
-    """Return the comparison over the newest run of each target, without re-running anything."""
+    """返回各目标最近一次运行之间的对比，不重新跑任何东西。"""
     return _comparison_response(compare_latest(session, dataset_id=dataset_id))
 
 
@@ -268,7 +268,7 @@ def get_dataset_cases(
     session: DbSession,
     enabled_only: Annotated[bool, Query()] = False,
 ) -> EvalCaseListResponse:
-    """Return a dataset version's cases."""
+    """返回某个数据集版本下的用例。"""
     dataset = resolve_dataset(session, dataset_id=dataset_id)
     rows = list_cases(session, dataset_id=dataset.id, enabled_only=enabled_only)
     return EvalCaseListResponse(

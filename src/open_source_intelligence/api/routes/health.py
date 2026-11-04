@@ -1,4 +1,4 @@
-"""Service liveness endpoint and response contract."""
+"""服务存活探针端点与响应契约。"""
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -7,7 +7,7 @@ router = APIRouter(tags=["system"])
 
 
 class HealthResponse(BaseModel):
-    """Stable response returned by the service liveness endpoint."""
+    """存活探针返回的稳定响应体。"""
 
     status: str
     service: str
@@ -16,7 +16,7 @@ class HealthResponse(BaseModel):
 
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    """Return process liveness without depending on external services."""
+    """返回进程存活状态，不依赖任何外部服务。"""
     from open_source_intelligence import __version__
 
     return HealthResponse(

@@ -1,10 +1,9 @@
-"""Run T8 research Agent smoke checks against MySQL.
+"""针对 MySQL 跑 T8 研究 Agent 冒烟。
 
-The script seeds a temporary topic with ranked candidates, a metric series, and cached
-README content, then drives the real LangGraph runtime end to end on MySQL rather than
-in-memory SQLite. It verifies the Research -> Tool -> Observe -> Verify -> Write trail,
-step and tool-call recording, draft sections, read-only behaviour, and the two degraded
-paths (no candidates, model unavailable).
+脚本先播下一个带排名候选的临时主题、一条指标序列和缓存好的 README 正文，然后让真正的
+LangGraph 运行时在 MySQL 上（而不是内存 SQLite 里）端到端跑一遍。它核对
+Research → Tool → Observe → Verify → Write 的轨迹、步骤与工具调用记录、草稿小节、
+只读行为，以及两条降级路径（没有候选、模型不可用）。
 """
 
 import argparse
@@ -59,7 +58,7 @@ LAST_SNAPSHOT_DATE = date(2099, 3, 2)
 
 
 class UnavailableClient:
-    """Model client that always reports a transport failure."""
+    """总是报告传输失败的模型客户端。"""
 
     @property
     def provider(self) -> str:
@@ -79,7 +78,7 @@ class UnavailableClient:
 
 
 def cleanup_verification_records(session: Session) -> None:
-    """Remove every record created by a previous T8 smoke run."""
+    """删掉上一轮 T8 冒烟留下的全部记录。"""
     topic_ids = list(
         session.scalars(
             select(Topic.id).where(Topic.name.in_((TOPIC_NAME, EMPTY_TOPIC_NAME)))
@@ -119,14 +118,14 @@ def cleanup_verification_records(session: Session) -> None:
             Repository.provider_repo_id.startswith(PROVIDER_PREFIX, autoescape=True)
         )
     )
-    # The runtime creates this config on first use; smoke runs are its only consumer here.
+    # 这份配置由运行时在首次使用时创建；本流程里冒烟是它唯一的消费者。
     session.execute(delete(AgentConfig).where(AgentConfig.name == DEFAULT_AGENT_CONFIG_NAME))
     session.execute(delete(User).where(User.username == VERIFIER_USERNAME))
     session.commit()
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run T8 research Agent smoke checks")
     parser.add_argument(
         "--cleanup-only",
@@ -137,7 +136,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _seed_source(session: Session) -> DataSource:
-    """Return an existing data source or create a verification-only one."""
+    """返回已有的数据源；没有就建一个专供验证用的。"""
     source = session.scalar(select(DataSource).order_by(DataSource.id).limit(1))
     if source is None:
         source = DataSource(
@@ -153,7 +152,7 @@ def _seed_source(session: Session) -> DataSource:
 
 
 def seed_topics(session: Session) -> dict[str, int]:
-    """Create the research topic and an empty topic used by the degraded-path check."""
+    """建出研究主题，以及降级路径检查要用的那个空主题。"""
     user = User(
         username=VERIFIER_USERNAME,
         password_hash="t8-verification-only",
@@ -253,12 +252,12 @@ def seed_topics(session: Session) -> dict[str, int]:
 
 
 def _count(session: Session, entity: Any) -> int:
-    """Return the row count of one table."""
+    """返回单张表的行数。"""
     return int(session.scalar(select(func.count()).select_from(entity)) or 0)
 
 
 def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
-    """Drive the full runtime on real MySQL and return the assertion payload."""
+    """在真实 MySQL 上跑完整运行时，并返回断言结果。"""
     settings = get_settings()
     topic_id = ids["topic_id"]
     empty_topic_id = ids["empty_topic_id"]
@@ -430,7 +429,7 @@ def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run the T8 smoke checks on real MySQL and print the assertion payload."""
+    """在真实 MySQL 上跑 T8 冒烟，并打印断言结果。"""
     args = parse_args()
     settings = get_settings()
     engine = create_database_engine(settings.database_url)

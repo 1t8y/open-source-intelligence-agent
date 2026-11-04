@@ -1,4 +1,7 @@
-"""add push targets, push records, and the push run type
+"""新增推送目标、推送记录与 push 运行类型
+
+`push_targets` 是唯一允许的收件地址清单，`report_pushes` 是投递台账；`pipeline_runs`
+的运行类型枚举同时接纳 `push`。
 
 Revision ID: d4f8b2c6a1e9
 Revises: b7d2f4a91c63
@@ -22,17 +25,17 @@ RUN_TYPES_WITHOUT_PUSH = "'collect', 'snapshot', 'rank', 'agent', 'publish'"
 
 
 def utc_datetime() -> sa.DateTime:
-    """Return the project MySQL UTC DATETIME type."""
+    """返回项目统一的 MySQL UTC `DATETIME` 类型。"""
     return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 def uint64() -> sa.BigInteger:
-    """Return the project unsigned BIGINT type."""
+    """返回项目统一的无符号 `BIGINT` 类型。"""
     return sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 def _has_check(table_name: str, constraint_name: str) -> bool:
-    """Return whether one CHECK constraint already exists."""
+    """返回某个 `CHECK` 约束是否已经存在。"""
     value = (
         op.get_bind()
         .execute(
@@ -49,12 +52,11 @@ def _has_check(table_name: str, constraint_name: str) -> bool:
 
 
 def upgrade() -> None:
-    """Create the push allowlist and delivery trail, and register the push run type.
+    """创建推送白名单与投递台账，并登记 `push` 运行类型。
 
-    `push_targets` is the allowlist: the only addresses a report may ever leave for.
-    `report_pushes` is the delivery trail, keyed by `idempotency_key` so one
-    (report, version, target) triple is delivered at most once and a retry advances the
-    existing row rather than adding a second one.
+    `push_targets` 是白名单：报告只允许从这些地址发出去。`report_pushes` 是投递台账，
+    以 `idempotency_key` 去重，使同一组 (报告, 版本, 目标) 至多投递一次，重试时推进
+    既有行，而不是再添一行。
     """
     op.create_table(
         "push_targets",
@@ -170,14 +172,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the push tables and unregister the push run type."""
+    """删除推送相关表，并注销 `push` 运行类型。"""
     existing = set(sa.inspect(op.get_bind()).get_table_names())
     if "report_pushes" in existing:
         op.drop_table("report_pushes")
     if "push_targets" in existing:
         op.drop_table("push_targets")
 
-    # The narrower CHECK would reject the run rows this revision allowed, so they go first.
+    # 收窄后的 `CHECK` 会拒绝本次修订放行的运行行，所以先把它们删掉。
     op.execute(sa.text("DELETE FROM `pipeline_runs` WHERE `run_type` = 'push'"))
     if _has_check("pipeline_runs", RUN_TYPE_CHECK):
         op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{RUN_TYPE_CHECK}`"))

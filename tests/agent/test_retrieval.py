@@ -1,4 +1,4 @@
-"""Tests for the lexical retrieval module."""
+"""守护词法检索模块的用例。"""
 
 from __future__ import annotations
 

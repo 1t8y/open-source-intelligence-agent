@@ -1,25 +1,21 @@
-"""Repository content cache refresh: the only production writer of `repository_contents`.
+"""刷新仓库内容缓存，同时也是 `repository_contents` 唯一的生产写入方。
 
-`repository_contents` is what makes a research run self-contained. The `get_repository_content`
-tool answers from that table and never reaches for the network, so the Agent can read a README
-mid-run without an outbound request, and a report citation to that README resolves against a row
-that exists. Something has to fill the table; until T23 nothing did, so the tool always failed
-with `TOOL_NOT_FOUND`, verification always concluded "no cached repository content was read", and
-report generation died on `readme source not found`.
+`repository_contents` 让一次研究运行得以自给自足。`get_repository_content` 工具只从这张表
+作答、从不访问网络，于是 Agent 能在运行途中读到 README 而不发任何外发请求，报告里对这份
+README 的引用也落在一条确实存在的行上。总得有人把表填上；在 T23 之前没人填，因此该工具
+总是以 `TOOL_NOT_FOUND` 失败，校验总是得出「没有读到任何缓存的仓库内容」，报告生成则死在
+`readme source not found`。
 
-Two placement decisions carry the design:
+两个位置决策支撑了这套设计：
 
-* **It runs after ranking, not inside collection.** The question this stage needs answered is
-  "which repositories are worth pre-warming", and the ranking is that answer. Fetching for every
-  known repository would spend one request each per day to cache documents the next run never
-  reads, because only the selected candidates are researched - and against GitHub's
-  unauthenticated budget that is the difference between a comfortable daily batch and one that
-  runs out mid-walk.
-* **A failure here is a count, not an exception.** One repository whose README cannot be fetched
-  must not end the day's batch, for the same reason one failing provider does not: the work that
-  could be done is still worth doing. The run record keeps "fetched", "skipped", "missing" and
-  "failed" apart, so "this repository has no README" and "we never found out" stay distinguishable
-  after the fact.
+* **它跑在排序之后，而不是采集内部。** 这个阶段要回答的问题是「哪些仓库值得预热」，而
+  排序就是那个答案。为每个已知仓库都抓一次，等于每天各花一次请求，去缓存下一轮永远不会
+  读的文档 —— 因为只有被选中的候选才会被研究；放到 GitHub 未认证配额下，这就是宽裕的
+  每日批次与半路耗尽之间的差别。
+* **这里的失败是一个计数，而不是一个异常。** 某个仓库的 README 抓不到，绝不能终结当天的
+  批次，理由与单个 provider 失败时相同：还能做的工作依然值得做。运行记录把 `fetched`、
+  `skipped`、`missing` 与 `failed` 分开保存，事后仍能区分「这个仓库没有 README」和
+  「我们压根没查出来」。
 """
 
 from __future__ import annotations
@@ -58,19 +54,18 @@ from open_source_intelligence.pipeline.runs import (
 )
 from open_source_intelligence.security.audit import record_audit_event
 
-#: The content kind this stage fills. Matches the `repository_contents` CHECK, which allows
-#: only `readme`; the constant exists so the candidate query, the skip check, and the write all
-#: name the same thing.
+#: 本阶段填充的内容类型。与 `repository_contents` 的 CHECK 一致 —— 后者只允许 `readme`；
+#: 这个常量存在的意义，是让候选查询、跳过判断与写入都指向同一个名字。
 CACHE_CONTENT_TYPE = "readme"
 
-#: How much of a failed fetch's message reaches the run record. The message is already redacted
-#: by `describe_error`; this keeps twenty failures from turning one metrics blob into a log file.
+#: 一次抓取失败的消息有多少会进入运行记录。消息本身已由 `describe_error` 脱敏；
+#: 这道限长防止二十条失败把一坨指标撑成一份日志文件。
 MAX_FAILURE_MESSAGE_CHARS = 200
 
 
 @dataclass(frozen=True, slots=True)
 class ContentCandidate:
-    """One repository the ranking suggests pre-warming, with where it came from."""
+    """排序建议预热的一个仓库，以及它的来源。"""
 
     repository_id: int
     full_name: str
@@ -81,7 +76,7 @@ class ContentCandidate:
 
 @dataclass(slots=True)
 class ContentRefreshSummary:
-    """Per-outcome counts for one refresh pass."""
+    """单轮刷新按结果分类的计数。"""
 
     fetched: int = 0
     skipped: int = 0
@@ -91,13 +86,13 @@ class ContentRefreshSummary:
     failures: dict[int, str] = field(default_factory=dict)
 
     def handled_without_failure(self) -> int:
-        """Return how many candidates reached a definite, non-failure outcome."""
+        """返回有多少候选得到了确定且非失败的结果。"""
         return self.fetched + self.skipped + self.missing + self.unsupported
 
 
 @dataclass(frozen=True, slots=True)
 class ContentsStageOutcome:
-    """The stage's run record plus the counts an operator reads first."""
+    """该阶段的运行记录，外加运维最先查看的那组计数。"""
 
     stage: StageOutcome
     candidate_count: int
@@ -105,27 +100,24 @@ class ContentsStageOutcome:
 
 
 def business_day_start(business_date: date, timezone_name: str) -> datetime:
-    """Return the UTC instant at which the given business day began.
+    """返回给定业务日开始时对应的 UTC 时刻。
 
-    `refresh_after` is compared against `repository_contents.fetched_at`, which is stored in UTC,
-    so the boundary has to be the start of that day *in the app timezone* converted to UTC.
-    Midnight UTC would land mid-morning in Asia/Shanghai, which would make the 02:00 scheduled
-    run land "yesterday" and re-fetch everything on every subsequent run of the same day.
+    `refresh_after` 会与 `repository_contents.fetched_at` 比较，而后者以 UTC 存储，所以边界
+    必须是该业务日在应用时区下的起点再换算成 UTC。用 UTC 零点会落在上海时区的上午，从而让
+    02:00 的定时运行落到「昨天」，并在同一天的每次后续运行里重新抓取全部内容。
     """
     timezone = ZoneInfo(timezone_name)
     return datetime.combine(business_date, time.min, tzinfo=timezone).astimezone(UTC)
 
 
 def select_content_candidates(session: Session, *, limit: int) -> list[ContentCandidate]:
-    """Return the repositories worth pre-warming, best-ranked first, without duplicates.
+    """返回值得预热的仓库，排名靠前者在前，且不重复。
 
-    The selection is the selected candidates of every *enabled* topic, ordered by
-    `(topic_id, rank)` - the same rows a research run is allowed to read, which is what makes the
-    cache cover the authorization scope instead of a guess at it.
+    选取范围是每个**启用**主题的已选候选，按 `(topic_id, rank)` 排序 —— 这正是研究运行
+    被允许读取的那些行，缓存因此覆盖的是授权范围本身，而不是对它的一次猜测。
 
-    A repository selected by two topics appears once, at the better of its two positions: the
-    cache is keyed by repository, so fetching it twice would repeat the same request, and the
-    order between topics is not a real preference.
+    被两个主题同时选中的仓库只出现一次，取两个位次中更好的那个：缓存以仓库为键，抓两次
+    只是重复同一个请求，而主题之间的先后并不是真实的偏好。
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -173,15 +165,13 @@ def refresh_repository_contents(
     sources: Mapping[str, RepositoryContentSource],
     refresh_after: datetime | None = None,
 ) -> ContentRefreshSummary:
-    """Fetch and cache content for each candidate, committing one repository at a time.
+    """为每个候选抓取并缓存内容，每处理完一个仓库提交一次。
 
-    Committing per repository is deliberate: a fetch that fails halfway through must not take the
-    repositories already fetched down with it, and the cache is a set of independent rows with no
-    invariant tying them together.
+    逐仓库提交是刻意的：中途失败的抓取不能把已经抓好的仓库一起拖下去，而缓存本来就是一组
+    彼此独立、没有任何不变量把它们绑在一起的行。
 
-    `refresh_after` is the idempotence window. When it is set, a repository whose cached text was
-    confirmed at or after that moment is skipped without a request; when it is `None`, every
-    candidate is asked about, which is what a forced refresh wants.
+    `refresh_after` 是幂等窗口。设置后，缓存文本在该时刻或之后确认过的仓库会被直接跳过、
+    不发请求；为 `None` 时则逐个询问每个候选，这正是强制刷新想要的效果。
     """
     summary = ContentRefreshSummary()
     for candidate in candidates:
@@ -204,7 +194,7 @@ def refresh_repository_contents(
             summary.missing += 1
             continue
         repository = session.get(Repository, candidate.repository_id)
-        if repository is None:  # pragma: no cover - the candidate query produced this id
+        if repository is None:  # pragma: no cover - 这个 id 由候选查询本身产出
             summary.failed += 1
             summary.failures[candidate.repository_id] = "repository row disappeared"
             continue
@@ -215,11 +205,10 @@ def refresh_repository_contents(
 
 
 def _confirmed_since(session: Session, candidate: ContentCandidate, moment: datetime) -> bool:
-    """Return whether this candidate's cache was refreshed at or after `moment`.
+    """返回该候选的缓存是否在 `moment` 或之后刷新过。
 
-    Compared in SQL rather than in Python so the stored value is read with the same type
-    conversion that wrote it: the column is UTC, and comparing a naive read-back against an aware
-    argument is the kind of mismatch that silently makes every repository look stale.
+    比较放在 SQL 里而不是 Python 里，好让读到的值与写入时经过同一套类型转换：该列是 UTC，
+    而拿不带时区的读回值去比带时区的参数，正是那种会让每个仓库都悄悄显得过期的错配。
     """
     found = session.scalar(
         select(RepositoryContent.id)
@@ -234,11 +223,11 @@ def _confirmed_since(session: Session, candidate: ContentCandidate, moment: date
 
 
 def _stage_status(summary: ContentRefreshSummary, *, candidate_count: int) -> str:
-    """Map the outcome counts onto the run status vocabulary."""
+    """把结果计数映射到运行状态词表。"""
     if summary.failed == 0:
         return "succeeded"
-    # Nothing reached a definite answer: this run failed rather than partly succeeded. A
-    # selection of zero cannot produce failures, so reaching here already means there was work.
+    # 没有任何候选得到确定答案：这次运行算失败，而不是部分成功。选中数为零不可能产生失败，
+    # 所以能走到这里，就已经说明本来有活要干。
     if summary.handled_without_failure() == 0 and candidate_count > 0:
         return "failed"
     return "partial"
@@ -253,15 +242,14 @@ def run_contents_stage(
     refresh_after: datetime | None = None,
     attempt: int = 1,
 ) -> ContentsStageOutcome:
-    """Refresh the content cache for the top-ranked candidates and record the run.
+    """为排名靠前的候选刷新内容缓存，并记录本次运行。
 
     Raises:
-        PipelineStageError: when the stage itself cannot run (for example the candidate query
-            fails). One repository failing to fetch is counted instead, and the exception carries
-            the run id of the record that already exists for the failure.
-        ValueError: when no source is supplied. An empty source list means "nobody can answer
-            this question", and recording a run that did nothing would put a green row in the
-            ledger for a stage that never ran; the daily orchestrator skips the stage instead.
+        PipelineStageError: 阶段本身无法运行时（例如候选查询失败）。单个仓库抓取失败只会
+            被计数，且异常会带上为这次失败已经落库的那条记录的 id。
+        ValueError: 未提供任何来源时。空的来源列表意味着「没人能回答这个问题」，而记录一次
+            什么都没做的运行，等于给一个从未跑过的阶段在账本上记一行绿色；每日编排器
+            会直接跳过这个阶段。
     """
     if not sources:
         raise ValueError("at least one content source is required")
@@ -276,7 +264,7 @@ def run_contents_stage(
             sources=by_provider,
             refresh_after=refresh_after,
         )
-    except Exception as exc:  # noqa: BLE001 - recorded and re-raised as a stage error
+    except Exception as exc:  # noqa: BLE001 - 记录后重新抛出为阶段错误
         error_code = classify_error("contents", exc)
         message = describe_error(exc)
         fail_pipeline_run(session, run, error_code=error_code, error_message=message)
@@ -314,9 +302,8 @@ def run_contents_stage(
         action="content.refresh",
         resource_type="pipeline",
         resource_id=str(run.id),
-        # The audit vocabulary is coarser than the run vocabulary: `partial` is not one of its
-        # values, and a pass where some repositories could not be fetched belongs on the strict
-        # side of the line rather than the permissive one.
+        # 审计词表比运行词表更粗：`partial` 不在它的取值里，而有些仓库抓不到的一轮，
+        # 应当归在这条线的严格一侧，而不是宽松一侧。
         result="success" if status == "succeeded" else "failed",
         metadata_json={
             "business_date": metrics["business_date"],

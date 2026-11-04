@@ -1,4 +1,4 @@
-"""Authentication endpoints and user response contracts."""
+"""登录认证端点与用户响应契约。"""
 
 from typing import Annotated
 
@@ -24,14 +24,14 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    """Username and password submitted by a user."""
+    """用户提交的用户名与密码。"""
 
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
 
 
 class UserResponse(BaseModel):
-    """Safe user identity returned to authenticated clients."""
+    """返回给已认证客户端的用户身份，不含敏感字段。"""
 
     id: int
     username: str
@@ -41,7 +41,7 @@ class UserResponse(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    """Access token and current user identity."""
+    """访问令牌与当前用户身份。"""
 
     access_token: str
     token_type: str = "bearer"
@@ -50,7 +50,7 @@ class TokenResponse(BaseModel):
 
 
 def build_user_response(user: User) -> UserResponse:
-    """Convert an ORM user into a response without sensitive fields."""
+    """把 ORM 用户对象转成不含敏感字段的响应。"""
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -66,7 +66,11 @@ def login(
     request: Request,
     session: Annotated[Session, Depends(get_db_session)],
 ) -> TokenResponse:
-    """Authenticate a user and issue a short-lived access token."""
+    """校验用户身份并签发一只短时效的访问令牌。
+
+    成功与失败都写一条 `auth.login` 审计事件：失败那一支必须先提交审计再抛错，否则连「有人在
+    猜密码」这件事都会随异常一起回滚掉。
+    """
     user = authenticate_user(session, payload.username, payload.password)
     if user is None:
         record_audit_event(
@@ -104,5 +108,5 @@ def login(
 
 @router.get("/me", response_model=UserResponse)
 def current_user(user: Annotated[User, Depends(get_current_user)]) -> UserResponse:
-    """Return the authenticated user's current roles and scope."""
+    """返回当前已认证用户的角色与数据范围。"""
     return build_user_response(user)

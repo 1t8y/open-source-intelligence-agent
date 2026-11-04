@@ -1,4 +1,4 @@
-"""Model provider adapters behind one provider-neutral contract."""
+"""把各模型供应商适配器收在同一个与供应商无关的契约之后。"""
 
 from .base import ModelClient
 from .errors import MODEL_ERROR_CODES, ModelClientError

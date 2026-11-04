@@ -1,4 +1,4 @@
-"""Tests for `query_repo_metrics`: windowing, ACL, and read-only idempotency."""
+"""守护 `query_repo_metrics` 的用例：时间窗、ACL 与只读幂等。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _seed(workspace: Workspace):
 
 
 def test_returns_only_points_inside_the_window(workspace: Workspace) -> None:
-    """Out-of-window snapshots are excluded, in-window ones are ordered by date."""
+    """证明窗口外的快照被排除，窗口内的按日期排序。"""
     topic, repository, run = _seed(workspace)
     workspace.add_snapshot(repository.id, date(2026, 10, 5), stars=10, forks=1, stars_delta=1)
     workspace.add_snapshot(repository.id, date(2026, 10, 6), stars=12, forks=2, stars_delta=2)
@@ -59,7 +59,7 @@ def test_returns_only_points_inside_the_window(workspace: Workspace) -> None:
 
 
 def test_repository_outside_authorized_topics_is_denied(workspace: Workspace) -> None:
-    """A repository linked only to another topic is not readable."""
+    """证明只挂在别的主题下的仓库读不到。"""
     topic, repository, run = _seed(workspace)
     other = workspace.add_topic(name="Other")
     workspace.add_snapshot(repository.id, date(2026, 10, 5), stars=10, forks=1)
@@ -83,7 +83,7 @@ def test_repository_outside_authorized_topics_is_denied(workspace: Workspace) ->
 
 
 def test_missing_repository_returns_not_found(workspace: Workspace) -> None:
-    """A repository that does not exist reports the dedicated code."""
+    """证明不存在的仓库会返回专门的错误码。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = build_default_registry()
@@ -105,7 +105,7 @@ def test_missing_repository_returns_not_found(workspace: Workspace) -> None:
 
 
 def test_over_long_window_is_rejected_before_query(workspace: Workspace) -> None:
-    """The 366-day guard rejects the call instead of silently trimming."""
+    """证明 366 天的守卫会拒绝这次调用，而不是悄悄裁短。"""
     topic, repository, run = _seed(workspace)
     registry = build_default_registry()
 
@@ -126,7 +126,7 @@ def test_over_long_window_is_rejected_before_query(workspace: Workspace) -> None
 
 
 def test_read_only_calls_are_idempotent(workspace: Workspace) -> None:
-    """Repeating a read-only call returns identical data and writes no domain rows."""
+    """证明重复一次只读调用返回相同数据，且不写任何领域表行。"""
     topic, repository, run = _seed(workspace)
     workspace.add_snapshot(repository.id, date(2026, 10, 5), stars=10, forks=1)
     registry = build_default_registry()

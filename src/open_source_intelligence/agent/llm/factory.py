@@ -1,4 +1,4 @@
-"""Build the model client selected by application settings."""
+"""按应用配置构建选定的模型客户端。"""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from .openai_compatible import OpenAICompatibleClient
 
 
 def build_model_client(settings: Settings) -> ModelClient:
-    """Build the model client named by `AGENT_PROVIDER`.
+    """按 `AGENT_PROVIDER` 指定的名称构建模型客户端。
 
-    `offline` needs no network or credential and is the default, which keeps local runs
-    and continuous integration deterministic. `openai_compatible` calls a remote endpoint
-    and requires both a base URL and an API key, enforced by `Settings`.
+    `offline` 不需要网络与凭据，且是默认值，因此本地运行与持续集成都保持确定性。
+    `openai_compatible` 会调用远程端点，必须同时给出基地址与 API key —— 这一点由
+    `Settings` 强制。
     """
     if settings.agent_provider == "openai_compatible":
         if settings.agent_api_base is None or settings.agent_api_key is None:

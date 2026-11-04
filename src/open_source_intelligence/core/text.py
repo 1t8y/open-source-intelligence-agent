@@ -1,16 +1,14 @@
-"""Text helpers shared across layers.
+"""跨层共享的文本处理辅助。
 
-`literal_like` lives here rather than in the module that first needed it, because a second caller
-arrived: `pipeline/queries.py` applies it to the repository catalog's `q`, and `topics/queries.py`
-applies the same rule to a topic's `name` and `description`. A security-relevant escaping rule is
-precisely the thing not to copy into the second caller — two copies stay identical right up until
-the day one of them is fixed.
+`literal_like` 放在这里而不是最初需要它的模块，是因为后来又出现了第二个调用方：
+`pipeline/queries.py` 用它处理仓库目录的 `q`，`topics/queries.py` 用同一条规则处理主题的
+`name` 与 `description`。一条与安全相关的转义规则，恰恰是最不该被复制进第二个调用方的东西
+—— 两份拷贝会一直看起来一致，直到有人只修好了其中一份。
 
-The three cleaning helpers below moved here for the same reason, one layer up: the `contents`
-stage writes cached README text and the `get_repository_content` tool reads it back, and both
-have to agree on what "cleaned" means. When the writer and the reader each carried their own
-copy, the cache could hold text that its own reader would have stripped — and the digest stored
-beside it would describe a string no reader ever sees.
+下面三个清洗辅助出于同样的理由上移了一层：`contents` 阶段写入缓存的 README 文本，
+`get_repository_content` 工具再把它读出来，写侧和读侧必须对「清洗干净」达成同一个定义。
+当写侧和读侧各自持有一份拷贝时，缓存里可能躺着连它自己的读者都会剥掉的文本 —— 而紧挨着
+存下的摘要，描述的会是一个任何读者都见不到的字符串。
 """
 
 from __future__ import annotations
@@ -19,16 +17,14 @@ import hashlib
 import re
 from typing import Final
 
-#: The escape character used when a caller's text is turned into a `LIKE` pattern. The contract
-#: calls these filters substring searches, so the characters `LIKE` reserves have to keep meaning
-#: themselves: without escaping, `q=_` matches every row that has at least one character and `q=%`
-#: matches the entire table, which is the opposite of a search. The backslash is the SQL standard
-#: default and SQLAlchemy renders it for both dialects (`ESCAPE '\\'` on MySQL, `ESCAPE '\'` on
-#: SQLite).
+#: 把调用方文本转成 `LIKE` 模式时使用的转义字符。接口契约把这些筛选器称作「子串搜索」，
+#: 因此 `LIKE` 保留的字符必须保持字面含义：不转义时，`q=_` 会匹配所有至少含一个字符的行，
+#: `q=%` 会匹配整张表，与「搜索」正好相反。反斜杠是 SQL 标准默认值，SQLAlchemy 会在两种
+#: 方言上渲染它（MySQL 上是 `ESCAPE '\\'`，SQLite 上是 `ESCAPE '\'`）。
 LIKE_ESCAPE_CHAR: Final[str] = "\\"
 
-#: The characters that have to be escaped to be read literally, `\` first: escaping it after the
-#: others would escape the escape characters just inserted.
+#: 需要转义后才能按字面读取的字符，`\` 排在最前：若排在其它字符之后，会把刚刚插入的
+#: 转义字符本身再转义一遍。
 LIKE_METACHARACTERS: Final[tuple[str, ...]] = (LIKE_ESCAPE_CHAR, "%", "_")
 
 _SCRIPT_RE = re.compile(r"(?is)<script\b.*?</script>")
@@ -39,11 +35,10 @@ _BLANK_RUN_RE = re.compile(r"\n{3,}")
 
 
 def literal_like(fragment: str) -> str:
-    """Return `fragment` with the `LIKE` metacharacters escaped, so they match themselves.
+    """转义 `LIKE` 元字符，让 `fragment` 按字面匹配。
 
-    The result is a *fragment*: the caller still supplies the surrounding `%` of a substring
-    pattern, and must pass `escape=LIKE_ESCAPE_CHAR` to `like()` so the database reads the
-    backslashes as escapes rather than as literal backslashes.
+    返回值是一个*片段*：调用方仍要自己补上子串模式两侧的 `%`，并且必须把
+    `escape=LIKE_ESCAPE_CHAR` 传给 `like()`，数据库才会把反斜杠读成转义符而不是普通字符。
     """
     escaped = fragment
     for character in LIKE_METACHARACTERS:
@@ -52,11 +47,10 @@ def literal_like(fragment: str) -> str:
 
 
 def clean_untrusted_text(raw: str) -> str:
-    """Strip script tags, control characters, and runaway whitespace.
+    """剥掉 script 标签、控制字符和失控的空白。
 
-    Idempotent by construction, which is what lets the write path and the read path both call
-    it: cleaning already-cleaned text returns the same string, so a second pass cannot change
-    what the first one stored.
+    构造上即幂等，写侧和读侧才都能安全调用：清洗已经清洗过的文本会得到同一个字符串，
+    第二遍不可能改变第一遍存下的内容。
     """
     cleaned = _SCRIPT_RE.sub(" ", raw)
     cleaned = _STYLE_RE.sub(" ", cleaned)
@@ -67,12 +61,12 @@ def clean_untrusted_text(raw: str) -> str:
 
 
 def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
-    """Return the text capped at `max_chars` and whether it was cut."""
+    """把文本截到 `max_chars`，同时返回「是否发生了截断」。"""
     if len(text) <= max_chars:
         return text, False
     return text[:max_chars], True
 
 
 def content_digest(text: str) -> str:
-    """Return a stable SHA-256 digest of the given text."""
+    """返回给定文本的稳定 SHA-256 摘要。"""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()

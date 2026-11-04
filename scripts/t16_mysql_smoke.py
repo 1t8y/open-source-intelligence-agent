@@ -1,44 +1,39 @@
-"""Run T16 backfill and end-to-end weekly report smoke checks against MySQL.
+"""针对 MySQL 跑 T16 的回填与端到端周报冒烟。
 
-T16's acceptance criterion is one sentence: *complete a historical backfill and a full
-weekly report*. This script performs both on a real database through the real services -
-nothing here is mocked except the far side of the socket - and it does them in the order the
-criterion implies, because that order is itself the point:
+T16 的验收标准只有一句话：*完成一次历史回填和一份完整的周报*。本脚本在真实数据库
+上、经真实服务把这两件事都做了 —— 除了 socket 的另一端，这里什么都没被 mock ——
+并且按标准本身暗示的顺序来做，因为那个顺序本身就是重点：
 
-1. **Walk a history first.** The real `GitHubCollector` is pointed at an `httpx.MockTransport`
-   shaped exactly like GitHub's search API, and the real `run_backfill` walks it. Weaving the
-   mock into the *transport* rather than into the collector is deliberate: the adapter still
-   builds the URL, still reads `has_more` out of the `Link` header, still normalizes the items,
-   and `RetryingHttpClient` still retries. Only the answers are synthetic.
+1. **先走完一段历史。** 真正的 `GitHubCollector` 被指向一个形状与 GitHub 搜索
+   API 完全一致的 `httpx.MockTransport`，真正的 `run_backfill` 在上面走。把 mock
+   织进*传输层*而不是采集器里，是刻意的：适配器照样拼 URL、照样从 `Link` 头里读
+   `has_more`、照样归一化条目，`RetryingHttpClient` 也照样重试。只有答案是人造的。
 
-2. **Then a weekly report.** The real `run_daily_pipeline` runs collect -> snapshot -> rank over
-   the repositories the walk just landed, the real Agent produces a draft, the real composition
-   promotes it to a versioned report, the real verifier grades it, and the real publishing
-   state machine takes it from `draft` to `published` through an actual human review.
+2. **再做一份周报。** 真正的 `run_daily_pipeline` 在刚才走出来的那些仓库上跑
+   collect -> snapshot -> rank，真正的 Agent 产出草稿，真正的组装器把它提升成带
+   版本的报告，真正的校验器给它打分，真正的发布状态机经一次真实人工审核把它从
+   `draft` 带到 `published`。
 
-What the smoke is designed to catch, in each case because the naive implementation is wrong:
+这个冒烟要抓的东西，每一条都因为「想当然的实现是错的」：
 
-* **A page budget is not a page count.** The mock advertises `total_count=4210` while refusing
-  to serve past page 4, which is precisely what GitHub does once a search walks into its
-  1000-result cap. A walker that derived its last page from `total_count` would request pages
-  the source will never answer; this one has to stop on the absent `rel="next"`.
-* **An interruption costs the page in flight, not the history.** Page 3 is made to fail, the
-  walk is required to record `next_page=3`, and the resume is required to request pages 3 and 4
-  *and nothing else*. Re-reading pages 1 and 2 would prove the cursor was decoration.
-* **The budget configured on the source row is the budget enforced.** One walk deliberately
-  passes no limiter and has its limiter construction recorded, so the number the walk spent can
-  be compared with the number the data source carries.
-* **A crash window that is harmless, not merely survivable.** Ingestion is idempotent on
-  `(source, provider_repo_id)`, so replaying a walk leaves the repository count exactly where it
-  was. The check asserts the *count*, because that is the only thing a duplicate would change.
-* **"The source refused" and "our own write broke" stay distinguishable.** A failed walk has to
-  land on `COLLECTOR_FAILED`, not on the catch-all `PIPELINE_UNEXPECTED_ERROR`.
+* **页预算是预算，不是页数。** mock 声称 `total_count=4210`，却拒绝服务第 4 页
+  之后，这正是 GitHub 在搜索结果走进 1000 条上限时的行为。用 `total_count` 推算
+  末页的遍历者会去请求数据源永远不会回答的页；这一个必须在 `rel="next"` 缺失时
+  停下。
+* **一次中断只损失在飞的那一页，不损失历史。** 让第 3 页失败，遍历必须记下
+  `next_page=3`，续跑必须只请求第 3、4 页，*别的都不要*。若把第 1、2 页再读一遍，
+  就等于证明游标只是个装饰。
+* **在数据源行上配置的预算，就是实际执行的预算。** 有一趟遍历刻意不传限流器，并
+  记录它构造限流器时用的值，于是遍历花掉的数就能与数据源携带的数作对比。
+* **崩溃窗口是无害的，不只是「能扛过去」。** 入库对 `(source, provider_repo_id)`
+  幂等，所以重放一趟遍历后仓库数分毫不动。检查断的是*计数*，因为那是重复唯一会
+  改变的东西。
+* **「数据源拒绝」与「我们自己写坏了」保持可区分。** 失败的遍历必须落在
+  `COLLECTOR_FAILED` 上，而不是那个兜底的 `PIPELINE_UNEXPECTED_ERROR`。
 
-Every database read the script asserts on goes through a *fresh* session at the end, so a
-passing assertion cannot be explained by the identity map of the session that wrote the row.
-The default `agent_provider="offline"` model client is used throughout: it is the deployment
-default, it needs no key, and being a pure function of the conversation it keeps the run
-reproducible.
+脚本断言的每一次数据库读取，最后都经一个*全新的*会话完成，所以断言通过不可能是靠
+写行那个会话的身份映射解释掉的。全程使用默认的 `agent_provider="offline"` 模型
+客户端：它是部署默认值，不需要 key，而且作为对话的纯函数，它让运行保持可复现。
 """
 
 import argparse
@@ -123,7 +118,7 @@ from open_source_intelligence.reports.publishing import (
 from open_source_intelligence.reports.verification import verify_report
 
 # --------------------------------------------------------------------------------------
-# Smoke-owned names, dates, and clocks
+# 冒烟自己持有的名字、日期与时钟
 # --------------------------------------------------------------------------------------
 
 TOPIC_NAME = "__T16 Weekly Topic__"
@@ -132,47 +127,45 @@ SMOKE_QUERY = "__t16_smoke__ stars:>0"
 REPO_PREFIX = "__t16_smoke_"
 VERIFIER_USERNAME = "__t16_verifier__"
 
-#: The walk clock. A synthetic instant, so a resume is obviously a resume and not a race.
+#: 遍历时钟。一个合成瞬间，这样「续跑」一眼就是续跑，而不是一场竞态。
 WALK_NOW = datetime(2099, 6, 6, 9, 0, tzinfo=UTC)
-#: The business day the weekly report covers. Deliberately far in the future: the smoke's
-#: snapshot stage touches *every* repository, so its rows have to carry a date no real run can
-#: ever have written, or cleaning up after the smoke would delete somebody's history.
+#: 周报覆盖的业务日。刻意放到很远的将来：冒烟的快照阶段会碰到*每一个*仓库，所以
+#: 它写下的行必须带一个真实运行永远不可能用过的日期，否则冒烟之后的清理会删掉别人
+#: 的历史。
 BUSINESS_NOW = datetime(2099, 6, 7, 12, 0, tzinfo=UTC)
 BUSINESS_DATE = date(2099, 6, 7)
 SMOKE_SNAPSHOT_DATES = (BUSINESS_DATE,)
 
-#: How many repositories the topic hands the Agent. Two, not ten. The deterministic offline
-#: client researches *every* candidate it is shown - a profile and a metric series each, plus one
-#: prior-report query and up to two README reviews - which is `2n + 3` research tool calls against
-#: a budget of `agent_max_tool_calls = 10`. At the default five candidates that is thirteen calls:
-#: the walk is cut off part-way, `budget_degraded` goes true and the evidence check can only
-#: report itself incomplete, so the weekly report never survives verification. Two fits with room
-#: to spare and is the same shape the T8 research smoke already proves end to end.
+#: 主题交给 Agent 的仓库数。两个，不是十个。确定性的离线客户端会研究它看到的*每一个*
+#: 候选 —— 每个一份画像和一条指标序列，外加一次往期报告查询和最多两次 README 复核 ——
+#: 也就是 `2n + 3` 次研究工具调用，而预算只有 `agent_max_tool_calls = 10`。按默认的
+#: 五个候选算就是十三次：遍历会被中途截断，`budget_degraded` 变真，证据检查也只能
+#: 报告自己不完整，于是周报永远过不了校验。两个则留有余量，也正是 T8 研究冒烟已经
+#: 端到端证明过的形态。
 AGENT_CANDIDATES = 2
 
-#: What the mock endpoint claims to hold. Roughly 1400 pages at three per page - far past the
-#: four it will actually serve, which is the point.
+#: mock 端点声称持有多少条。每页三条算下来约 1400 页 —— 远超过它实际愿意服务的四页，
+#: 这正是重点。
 MOCK_TOTAL_COUNT = 4210
 MOCK_PAGE_COUNT = 4
 MOCK_PER_PAGE = 3
 FAILING_PAGE = 3
 DAILY_LIMIT = 4
 
-#: One interval at 60 requests per minute. The paces below are asserted in whole intervals
-#: rather than in seconds so the arithmetic stays readable.
+#: 一个间隔，每分钟 60 次请求。下面的步速断言用整间隔而不是秒来写，算式才好读。
 PER_MINUTE = 60
 INTERVAL_SECONDS = 60.0 / PER_MINUTE
 
-#: Every mock endpoint built during the run, so the transports can be closed deterministically.
+#: 运行期间建的每一个 mock 端点，好让传输层能被确定性地关掉。
 _MOCKS: list["MockGitHub"] = []
 
 
 class FakeClock:
-    """A monotonic clock whose sleeping is instant and recorded.
+    """一只单调时钟：睡眠是瞬时的，且会被记录下来。
 
-    A pace proven by really sleeping is a pace nobody keeps asserting, so the limiter is given
-    a clock and a sleeper instead of `time`. The recorded sleeps are then the assertion: the
-    walk had to spend exactly one interval between consecutive requests and nothing more.
+    靠真睡来证明的步速，没人会一直断言下去，所以交给限流器的是时钟与睡眠函数，而不是
+    `time`。随后被记录下来的睡眠就是断言本身：相邻两次请求之间，遍历必须恰好花掉一个
+    间隔，多一点都不行。
     """
 
     def __init__(self, start: float = 0.0) -> None:
@@ -180,27 +173,26 @@ class FakeClock:
         self.sleeps: list[float] = []
 
     def time(self) -> float:
-        """Return the current fake instant."""
+        """返回当前的假瞬间。"""
         return self.now
 
     def sleep(self, seconds: float) -> None:
-        """Record a sleep and advance the fake instant by it."""
+        """记下一次睡眠，并把假瞬间推进同样的秒数。"""
         self.sleeps.append(seconds)
         self.now += seconds
 
     def jump(self, seconds: float) -> None:
-        """Advance the fake instant without recording a sleep."""
+        """推进假瞬间，但不记录成一次睡眠。"""
         self.now += seconds
 
 
 class MockGitHub:
-    """The real GitHub adapter, answering from a GitHub-shaped mock transport.
+    """真正的 GitHub 适配器，答案来自一个 GitHub 形状的 mock 传输层。
 
-    The mock decides what the *server* said; it does not decide how the client behaves. The URL
-    is built by `GitHubCollector`, `has_more` is read out of a real `Link` header by
-    `parse_link_header`, the retry policy is `RetryingHttpClient`'s, and the normalization is
-    the adapter's. That is what makes these checks evidence about the shipped code rather than
-    about this file.
+    mock 只决定*服务端*说了什么，不决定客户端怎么表现。URL 由 `GitHubCollector` 拼，
+    `has_more` 由 `parse_link_header` 从真正的 `Link` 头里读出，重试策略属于
+    `RetryingHttpClient`，归一化属于适配器。正因如此，这些检查才是在为已发布的代码
+    提供证据，而不是在为本文件提供证据。
     """
 
     def __init__(
@@ -223,20 +215,20 @@ class MockGitHub:
         )
         _MOCKS.append(self)
 
-    # -- server side ------------------------------------------------------------------
+    # -- 服务端一侧 --------------------------------------------------------------------
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
-        """Answer one search request the way GitHub's search API would."""
+        """按 GitHub 搜索 API 的方式回答一次搜索请求。"""
         params = dict(request.url.params)
         page = int(params["page"])
         per_page = int(params["per_page"])
         self.requests.append({"page": page, "per_page": per_page, "q": params.get("q", "")})
         if page in self.failing_pages:
-            # A 5xx with no `Link` header. The real client retries this `max_attempts` times
-            # before it gives up, which is why `requests_for` can count more than one hit.
+            # 一个不带 `Link` 头的 5xx。真正的客户端会按 `max_attempts` 重试若干次才
+            # 放弃，所以 `requests_for` 可能数出不止一次命中。
             return httpx.Response(500, json={"message": "server error"})
         items = [self._item(page, index, per_page) for index in range(per_page)]
-        # Only `rel` is ever read from this header, so the targets just have to look like URLs.
+        # 这个头里只会读 `rel`，所以目标地址只要长得像 URL 就行。
         headers: dict[str, str] = {}
         if page < self.page_count:
             headers["Link"] = (
@@ -254,7 +246,7 @@ class MockGitHub:
         )
 
     def _item(self, page: int, index: int, per_page: int) -> dict[str, Any]:
-        """Return one GitHub repository object, numbered by its place in the walk."""
+        """返回一个 GitHub 仓库对象，编号按它在遍历中的位置来。"""
         number = (page - 1) * per_page + index
         return {
             "id": f"{REPO_PREFIX}{self.label}_{number}",
@@ -268,53 +260,53 @@ class MockGitHub:
             "forks_count": 50 + number,
         }
 
-    # -- client-visible helpers -------------------------------------------------------
+    # -- 客户端可见的辅助方法 -----------------------------------------------------------
 
     def open_page(self, page: int) -> None:
-        """Stop failing a page, which is what an operator fixing an outage does."""
+        """让某一页不再失败，这正是运维在故障恢复后做的事。"""
         self.failing_pages.discard(page)
 
     def close(self) -> None:
-        """Release the transport the mock owns."""
+        """释放这个 mock 持有的传输层。"""
         self._client.close()
 
     def pages_requested(self) -> list[int]:
-        """Return the page of every request the endpoint received, in order."""
+        """按顺序返回端点收到的每一次请求的页码。"""
         return [entry["page"] for entry in self.requests]
 
     def pages_requested_since(self, mark: int) -> list[int]:
-        """Return the pages requested since a previously taken mark."""
+        """返回自上一次打标以来请求过的页码。"""
         return [entry["page"] for entry in self.requests[mark:]]
 
     def requests_for(self, page: int) -> int:
-        """Return how many requests the endpoint received for one page."""
+        """返回端点收到过多少次针对某一页的请求。"""
         return sum(1 for entry in self.requests if entry["page"] == page)
 
 
 class NotPaginated:
-    """A collector that can collect, but cannot be walked page by page."""
+    """能采集，但不能被一页一页遍历的采集器。"""
 
     provider = "t16_not_paginated"
     display_name = "T16 Not Paginated"
     base_url = "https://example.com"
 
     def collect(self, *, limit: int) -> list[CollectedRepository]:
-        """Collect nothing; this stand-in only exists to be refused."""
+        """什么也不采集；这个替身存在的唯一意义就是被拒绝。"""
         del limit
         return []
 
 
 # --------------------------------------------------------------------------------------
-# Seeding and cleanup
+# 播种与清理
 # --------------------------------------------------------------------------------------
 
 
 def _smoke_job_ids(session: Session) -> list[int]:
-    """Return the ids of every backfill job this smoke ever created.
+    """返回本冒烟建过的每一个回填任务的 id。
 
-    Scoped by the job's own recorded query rather than by provider: a deployed database holds
-    real operator jobs, and a smoke cleanup has no business sweeping those away. The query the
-    mock walks is unique to this script, so it is also the safest filter available.
+    按任务自己记录的查询来限定，而不是按 provider：已部署的库里有运维的真实任务，
+    冒烟的清理没有理由把它们一并扫掉。mock 走的那条查询是本脚本独有的，所以它也是
+    现成的最安全的过滤条件。
     """
     return [
         job.id
@@ -324,7 +316,7 @@ def _smoke_job_ids(session: Session) -> list[int]:
 
 
 def _delete_pipeline_runs(session: Session, runs: Sequence[PipelineRun]) -> int:
-    """Delete the given pipeline runs and return how many there were."""
+    """删掉给定的流水线运行，并返回它们原本有多少条。"""
     if not runs:
         return 0
     session.execute(delete(PipelineRun).where(PipelineRun.id.in_([run.id for run in runs])))
@@ -332,13 +324,12 @@ def _delete_pipeline_runs(session: Session, runs: Sequence[PipelineRun]) -> int:
 
 
 def cleanup_verification_records(session: Session) -> dict[str, Any]:
-    """Remove every record created by a previous T16 smoke run.
+    """删掉上一轮 T16 冒烟创建的全部记录。
 
-    Deliberately narrow. Only rows this smoke can prove it owns are removed: repositories are
-    matched by provider prefix, snapshots by a date no real run could have used, the topic by
-    name, and backfill jobs by the query this script is the only author of. Anything else in
-    the database - the 22 repositories a real collection left behind, other smokes' topics -
-    is left exactly where it was.
+    刻意收得很窄。只删本冒烟能证明归自己所有的行：仓库按 provider 前缀匹配，快照按
+    一个真实运行绝不可能用过的日期匹配，主题按名字匹配，回填任务按只有本脚本会写的
+    那条查询匹配。库里的其他东西 —— 真实采集留下的 22 个仓库、别的冒烟的主题 ——
+    原封不动留在原地。
     """
     removed: dict[str, int] = {}
 
@@ -405,9 +396,9 @@ def cleanup_verification_records(session: Session) -> dict[str, Any]:
 
     if job_ids:
         session.execute(delete(BackfillJob).where(BackfillJob.id.in_(job_ids)))
-        # Scoped to this smoke's own jobs. The audit table is append-only by design, and that
-        # property is exactly why this delete is so narrow: the rows removed here are ones the
-        # smoke itself wrote about jobs it is removing in the same breath.
+        # 限定在本冒烟自己的任务上。审计表按设计是只追加的，而正是这条性质决定了此处
+        # 的删除必须这么窄：这里删掉的行，是本冒烟在同一口气里正在移除的那些任务自己
+        # 写下的。
         session.execute(
             delete(AuditLog).where(
                 AuditLog.action == "backfill.run",
@@ -439,7 +430,7 @@ def cleanup_verification_records(session: Session) -> dict[str, Any]:
         session.execute(delete(Repository).where(Repository.id.in_(repositories)))
     removed["repositories"] = len(repositories)
 
-    # The runtime creates this config on first use; the smokes are its only consumer here.
+    # 这份配置由运行时在首次使用时创建；在这里，冒烟是它唯一的消费者。
     session.execute(delete(AgentConfig).where(AgentConfig.name == DEFAULT_AGENT_CONFIG_NAME))
     session.execute(delete(User).where(User.username == VERIFIER_USERNAME))
     session.commit()
@@ -447,7 +438,7 @@ def cleanup_verification_records(session: Session) -> dict[str, Any]:
 
 
 def seed_topic(session: Session) -> dict[str, int]:
-    """Create the accountable user and the topic the weekly report belongs to."""
+    """建出可问责用户，以及周报所属的那个主题。"""
     user = User(
         username=VERIFIER_USERNAME,
         password_hash="t16-verification-only",
@@ -474,16 +465,15 @@ def seed_topic(session: Session) -> dict[str, int]:
 
 
 # --------------------------------------------------------------------------------------
-# Part one: the historical backfill
+# 第一部分：历史回填
 # --------------------------------------------------------------------------------------
 
 
 def _runs_for_job(session: Session, job_id: int) -> list[PipelineRun]:
-    """Return the backfill runs raised for one job, oldest first.
+    """返回某个任务名下产生的回填运行，从旧到新。
 
-    Filtered in Python rather than by a JSON predicate: `metrics_json` is a `JSON` column, and a
-    path query that only MySQL understands would make the smoke unrunnable against the SQLite
-    fixture that mirrors it. The row count here is a handful.
+    在 Python 里过滤，而不用 JSON 谓词：`metrics_json` 是 `JSON` 列，只有 MySQL 认得的
+    路径查询会让冒烟没法对着镜像它的 SQLite 夹具跑。这里的行数只有区区几条。
     """
     return [
         run
@@ -495,7 +485,7 @@ def _runs_for_job(session: Session, job_id: int) -> list[PipelineRun]:
 
 
 def _repo_count(session: Session, prefix: str) -> int:
-    """Return how many repositories the walk with one label has landed."""
+    """返回带某个标签的那趟遍历落下了多少仓库。"""
     return int(
         session.scalar(
             select(func.count())
@@ -509,10 +499,10 @@ def _repo_count(session: Session, prefix: str) -> int:
 
 
 def _backfill_checks(session: Session) -> dict[str, Any]:
-    """Walk a history four ways: to the source's end, into a failure, out of it, and again."""
+    """从四个角度走一段历史：走到源头尽头、走进失败、走出失败，再走一遍。"""
     jobs_before = int(session.scalar(select(func.count()).select_from(BackfillJob)) or 0)
 
-    # -- the unsupported collector is refused before anything is written -----------------
+    # -- 不支持的采集器在写入任何东西之前就被拒 -----------------------------------------
     unsupported = ""
     try:
         start_backfill(session, collector=NotPaginated(), target_pages=1, per_page=1)
@@ -521,7 +511,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     else:
         raise RuntimeError("a collector that cannot page was accepted for a walk")
 
-    # -- bounds are refused rather than stored and discovered later ----------------------
+    # -- 越界参数当场被拒，而不是先存下来、以后再发现 ------------------------------------
     bounds: list[str] = []
     for target_pages, per_page in ((0, 10), (101, 10), (2, 0), (2, 101)):
         try:
@@ -537,7 +527,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
         else:
             raise RuntimeError(f"target_pages={target_pages} per_page={per_page} was accepted")
 
-    # -- a walk stops at the source's end, not at the count the source advertises --------
+    # -- 遍历在数据源的尽头停下，而不是在数据源宣称的条数上停下 --------------------------
     wide = MockGitHub(label="a")
     clock = FakeClock()
     limiter = RateLimiter(per_minute=PER_MINUTE, clock=clock.time, sleep=clock.sleep)
@@ -551,7 +541,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     )
     first_repos = _repo_count(session, "a")
 
-    # -- an interruption costs the page in flight, not the history ----------------------
+    # -- 一次中断只损失在飞的那一页，不损失历史 ------------------------------------------
     flaky = MockGitHub(label="b", failing_pages=(FAILING_PAGE,))
     fail_clock = FakeClock()
     fail_limiter = RateLimiter(per_minute=PER_MINUTE, clock=fail_clock.time, sleep=fail_clock.sleep)
@@ -574,23 +564,21 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     failing_job = list_jobs(session, provider="github", limit=1)[0]
     failing_runs_before = _runs_for_job(session, failing_job.id)
     failing_run = failing_runs_before[-1]
-    # Snapshotted here and not later: the job row is the cursor, so the resume below moves it.
-    # Reading it afterwards would compare the resume's progress against the resume's
-    # expectations and pass no matter where the interrupted walk actually stopped.
+    # 在这里就拍下来，不能往后拖：任务行就是游标，下面的续跑会把它推进。事后再读，
+    # 等于拿续跑的进度去对续跑的预期，那么无论中断的遍历实际停在哪里都会通过。
     failed_state = summarize_job(failing_job)
     repos_after_failure = _repo_count(session, "b")
     attempts_on_failing_page = flaky.requests_for(FAILING_PAGE)
 
-    # -- the resume walks the rest, and only the rest -----------------------------------
+    # -- 续跑只走剩下的部分，也只走剩下的部分 -------------------------------------------
     flaky.open_page(FAILING_PAGE)
     mark = len(flaky.requests)
     resumed = resume_backfill(
         session,
         job_id=failing_job.id,
         collector=flaky.collector,
-        # The same limiter object as the failed attempt, on purpose: the outcome must report
-        # what *this* walk spent. Reading the limiter's running total would credit the resume
-        # with the waiting the failed attempt already did.
+        # 刻意复用失败那次的同一个限流器对象：结果必须报出*这一趟*花了多少。去读限流器
+        # 的累计总量，等于把失败尝试已经等过的时间记到续跑头上。
         limiter=fail_limiter,
         now=WALK_NOW + timedelta(minutes=1),
     )
@@ -599,7 +587,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     failing_runs_after = _runs_for_job(session, failing_job.id)
     resumed_state = summarize_job(failing_job)
 
-    # -- walking the same pages again changes no row but the job's own counters ---------
+    # -- 再走一遍同样的页，除任务自己的计数外不改任何行 ----------------------------------
     replay = MockGitHub(label="a")
     replay_outcome = start_backfill(
         session,
@@ -611,7 +599,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     )
     repos_after_replay = _repo_count(session, "a")
 
-    # -- the budget on the data source row is the budget the walk actually spends -------
+    # -- 数据源行上的预算，就是遍历实际花掉的预算 ----------------------------------------
     source = ensure_data_source(session, wide.collector)
     budget_clock = FakeClock()
     budget_job = create_job(
@@ -626,7 +614,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     original_limiter = backfill_service.RateLimiter
 
     def spy_limiter(*, per_minute: int) -> RateLimiter:
-        """Record the budget the walk derived, then pace on the fake clock."""
+        """记下遍历推出来的预算，然后在假时钟上按它限速。"""
         budget_seen.append(per_minute)
         return original_limiter(
             per_minute=per_minute, clock=budget_clock.time, sleep=budget_clock.sleep
@@ -639,7 +627,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     finally:
         backfill_service.RateLimiter = original_limiter
 
-    # -- a live cursor is not claimable twice -------------------------------------------
+    # -- 一个还活着的游标不能被认领两次 ------------------------------------------------
     guarded = create_job(
         session,
         provider="github",
@@ -658,7 +646,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
         raise RuntimeError("a job with a live heartbeat was claimed by a second walker")
     stale = claim_job(session, guarded, now=WALK_NOW + STALE_AFTER + timedelta(minutes=1))
 
-    # -- a finished job refuses to be resumed -------------------------------------------
+    # -- 已结束的任务拒绝续跑 ----------------------------------------------------------
     not_resumable = ""
     try:
         resume_backfill(
@@ -673,9 +661,8 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     else:
         raise RuntimeError("a completed walk was resumed")
 
-    # Scoped to the jobs this run created. A smoke ledger that also counted rows an aborted
-    # earlier run left behind would fail the second time it ran and pass the first, which is
-    # the least useful way for a check to behave.
+    # 限定在本轮运行创建的任务上。一份还会把早先中断运行留下的行算进去的冒烟账本，
+    # 会第二次运行失败、第一次却通过 —— 这是一项检查最没用的一种表现。
     smoke_job_ids = {
         first.job_id,
         failing_job.id,
@@ -693,7 +680,7 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
     ]
     jobs_after = int(session.scalar(select(func.count()).select_from(BackfillJob)) or 0)
 
-    # -- assertions ---------------------------------------------------------------------
+    # -- 断言 ----------------------------------------------------------------------------
     if first.status != SUCCEEDED or not first.exhausted:
         raise RuntimeError(f"the wide walk did not finish cleanly: {first.status}")
     if first.pages_this_attempt != MOCK_PAGE_COUNT:
@@ -880,18 +867,16 @@ def _backfill_checks(session: Session) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------
-# Part two: the weekly report
+# 第二部分：周报
 # --------------------------------------------------------------------------------------
 
 
 def _cache_readmes(session: Session) -> int:
-    """Give every repository this smoke landed a cached README.
+    """给本冒烟落下的每个仓库补一份缓存 README。
 
-    A report section about a repository cannot be verified without evidence, and the only
-    evidence the Agent's content tool will accept is content the collector already cached. A
-    real deployment fills this in by fetching readmes; here the rows are written directly, and
-    that is the one place in this script where the smoke writes data a pipeline stage would
-    normally write.
+    关于某个仓库的报告小节，没有证据就无法通过校验，而 Agent 的正文工具唯一认的证据，
+    是采集器已经缓存下来的内容。真实部署靠抓取 readme 填上这些；这里直接写入行，
+    也是本脚本里唯一一处冒烟替流水线阶段写数据的地方。
     """
     repositories = session.scalars(
         select(Repository).where(
@@ -928,7 +913,8 @@ def _cache_readmes(session: Session) -> int:
 
 
 def _weekly_report_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
-    """Run collect -> snapshot -> rank -> research -> compose -> verify -> review -> publish."""
+    """跑 collect -> snapshot -> rank -> research -> compose -> verify ->
+    review -> publish。"""
     settings = get_settings()
     topic_id = ids["topic_id"]
 
@@ -987,7 +973,7 @@ def _weekly_report_checks(session: Session, ids: dict[str, int]) -> dict[str, An
     if report is None:
         raise RuntimeError("the promoted report row disappeared")
 
-    # -- assertions ---------------------------------------------------------------------
+    # -- 断言 ----------------------------------------------------------------------------
     if daily.status != "succeeded":
         raise RuntimeError(f"the daily pipeline closed as {daily.status}")
     for run_type in ("collect", "snapshot", "rank"):
@@ -1093,12 +1079,12 @@ def _weekly_report_checks(session: Session, ids: dict[str, int]) -> dict[str, An
 
 
 # --------------------------------------------------------------------------------------
-# The real CLI, as a subprocess
+# 真正的 CLI，以子进程方式运行
 # --------------------------------------------------------------------------------------
 
 
 def _run_cli(*args: str) -> dict[str, Any]:
-    """Run one real backfill CLI invocation and parse its JSON payload."""
+    """跑一次真正的回填 CLI 调用，并解析它的 JSON 结果。"""
     completed = subprocess.run(
         [sys.executable, "-m", "open_source_intelligence.backfill.cli", *args],
         check=False,
@@ -1114,7 +1100,7 @@ def _run_cli(*args: str) -> dict[str, Any]:
 
 
 def _run_cli_expecting_failure(*args: str) -> tuple[int, str]:
-    """Run a CLI invocation that must be refused, returning its exit code and message."""
+    """跑一次必须被拒的 CLI 调用，并返回它的退出码与消息。"""
     completed = subprocess.run(
         [sys.executable, "-m", "open_source_intelligence.backfill.cli", *args],
         check=False,
@@ -1127,7 +1113,7 @@ def _run_cli_expecting_failure(*args: str) -> tuple[int, str]:
 
 
 def _cli_checks(job_id: int) -> dict[str, Any]:
-    """Drive the real CLI as a subprocess: the read actions and the two refusals."""
+    """把真正的 CLI 当子进程驱动：读类动作，以及两次必须被拒的调用。"""
     listed = _run_cli("--action", "list", "--provider", "github", "--limit", "5")
     status = _run_cli("--action", "status", "--job-id", str(job_id))
     over_budget = _run_cli_expecting_failure(
@@ -1163,15 +1149,15 @@ def _cli_checks(job_id: int) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------
-# Fresh-session readback
+# 用全新会话回读
 # --------------------------------------------------------------------------------------
 
 
 def readback(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
-    """Re-read the durable rows through a session that wrote nothing.
+    """经一个什么都没写过的会话，把落库的行重新读一遍。
 
-    Every assertion above ran in the session that performed the work, where a stale identity
-    map can make an uncommitted change look committed. This pass asks the database directly.
+    上面每一条断言都跑在做事的那个会话里，而在那里，一份陈旧的标识映射能让尚未提交的
+    改动看起来已经提交。这一趟直接问数据库。
     """
     backfill = payload["backfill"]
     report = payload["report"]
@@ -1270,12 +1256,12 @@ def readback(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------
-# Entry point
+# 入口
 # --------------------------------------------------------------------------------------
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run T16 backfill and weekly report smoke checks")
     parser.add_argument(
         "--cleanup-only",
@@ -1286,7 +1272,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the T16 smoke checks on real MySQL and print the assertion payload."""
+    """在真实 MySQL 上跑 T16 冒烟，并打印断言结果。"""
     args = _parse_args()
     settings = get_settings()
     engine = create_database_engine(settings.database_url)

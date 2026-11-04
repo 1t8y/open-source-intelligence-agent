@@ -1,4 +1,4 @@
-"""Tests for the report push service: guards, allowlist, delivery, idempotency, and retries."""
+"""守护报告推送服务：守卫、白名单、投递、幂等与重试。"""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ NON_PUSHABLE_STATUSES = (
 
 
 def _pushes(session: Session, report_id: int) -> list[ReportPush]:
-    """Return the delivery rows for one report."""
+    """返回某份报告的投递行。"""
     return list(
         session.scalars(
             select(ReportPush).where(ReportPush.report_id == report_id).order_by(ReportPush.id)
@@ -60,7 +60,7 @@ def _pushes(session: Session, report_id: int) -> list[ReportPush]:
 
 
 def _approve(session: Session, report: Report) -> None:
-    """Record a human approval for the report's current version."""
+    """为报告的当前版本记下一次人工批准。"""
     session.add(
         ReportReview(
             report_id=report.id,
@@ -78,7 +78,7 @@ def test_only_pushable_statuses_may_be_pushed(
     workspace: Workspace,
     status: str,
 ) -> None:
-    """A report that has not cleared review or been released cannot leave the system."""
+    """还没过审或还没放行的报告不能离开系统。"""
     report = seed_pushable_report(session, workspace, status=status)
     target = workspace.add_push_target()
 
@@ -102,7 +102,7 @@ def test_approved_and_published_reports_may_be_pushed(
     workspace: Workspace,
     status: str,
 ) -> None:
-    """Both sides of the rule are allowed: cleared for release, or already released."""
+    """规则的两侧都放行：已批准待发布，或已经发布。"""
     report = seed_pushable_report(session, workspace, status=status)
     target = workspace.add_push_target()
     notifier = StubChannel()
@@ -122,7 +122,7 @@ def test_approved_and_published_reports_may_be_pushed(
 
 
 def test_an_unknown_report_is_a_not_found_failure(session: Session, workspace: Workspace) -> None:
-    """Pushing a report that does not exist is a missing resource, not a validation error."""
+    """推送一份不存在的报告是资源缺失，不是参数校验错误。"""
     target = workspace.add_push_target()
 
     with pytest.raises(PushNotFound) as failure:
@@ -132,7 +132,7 @@ def test_an_unknown_report_is_a_not_found_failure(session: Session, workspace: W
 
 
 def test_a_target_outside_the_allowlist_is_refused(session: Session, workspace: Workspace) -> None:
-    """The allowlist is the only way to reach a destination."""
+    """白名单是抵达一个投递目标的唯一途径。"""
     report = seed_pushable_report(session, workspace)
 
     with pytest.raises(PushTargetNotAllowed) as failure:
@@ -143,7 +143,7 @@ def test_a_target_outside_the_allowlist_is_refused(session: Session, workspace: 
 
 
 def test_a_disabled_target_is_refused(session: Session, workspace: Workspace) -> None:
-    """Switching a destination off must stop delivery to it."""
+    """把某个目标关掉，就必须真的停止向它投递。"""
     report = seed_pushable_report(session, workspace)
     target = workspace.add_push_target(enabled=False)
 
@@ -152,7 +152,7 @@ def test_a_disabled_target_is_refused(session: Session, workspace: Workspace) ->
 
 
 def test_the_channel_must_match_the_target(session: Session, workspace: Workspace) -> None:
-    """A caller cannot ask an email target to accept a webhook delivery."""
+    """调用方不能要求一个邮件目标去接收 Webhook 投递。"""
     report = seed_pushable_report(session, workspace)
     target = workspace.add_push_target(channel="email", destination="ops@example.com")
 
@@ -166,7 +166,7 @@ def test_a_private_report_needs_a_target_cleared_for_private(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`PRIVATE` is the narrowest scope, so a destination must be cleared for it explicitly."""
+    """`PRIVATE` 是最窄的范围，所以目标必须被显式放行到这一档。"""
     report = seed_pushable_report(session, workspace, visibility="PRIVATE")
     target = workspace.add_push_target(allow_private=False)
 
@@ -189,7 +189,7 @@ def test_a_confidential_report_needs_an_approval_and_a_cleared_target(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`REQUIREMENTS.md` §7 reserves external delivery of sensitive material for review."""
+    """`REQUIREMENTS.md` §7 把敏感材料的外发留给评审把关。"""
     report = seed_pushable_report(session, workspace, sensitivity="CONFIDENTIAL")
     target = workspace.add_push_target(allow_confidential=True)
 
@@ -219,7 +219,7 @@ def test_delivery_is_recorded_with_its_run_and_audit(
     workspace: Workspace,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A delivery has to leave a trail: the row, the run, and the audit event."""
+    """一次投递必须留下痕迹：投递行、流水线运行与审计事件。"""
     report = seed_pushable_report(session, workspace)
     target = workspace.add_push_target(destination="ops@example.com")
 
@@ -258,7 +258,7 @@ def test_replaying_a_delivered_push_does_not_send_twice(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """One (report, version, target) triple is delivered at most once."""
+    """一个（报告、版本、目标）三元组最多投递一次。"""
     report = seed_pushable_report(session, workspace)
     target = workspace.add_push_target()
     notifier = StubChannel()
@@ -282,7 +282,7 @@ def test_a_refused_delivery_is_recorded_and_retryable(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A transport failure has to survive as evidence so the retry sweep can pick it up."""
+    """传输失败必须留成证据，重试清扫才能把它捡起来。"""
     report = seed_pushable_report(session, workspace)
     target = workspace.add_push_target()
     notifier = StubChannel(fail_times=1)
@@ -308,7 +308,7 @@ def test_a_refused_delivery_is_recorded_and_retryable(
 
 
 def test_the_retry_budget_is_enforced(session: Session, workspace: Workspace) -> None:
-    """A permanently broken destination must eventually stop being retried."""
+    """一个永远坏掉的目标，最终必须停止被重试。"""
     report = seed_pushable_report(session, workspace)
     target = workspace.add_push_target()
     notifier = StubChannel(fail_times=99)
@@ -335,7 +335,7 @@ def test_the_retry_budget_is_enforced(session: Session, workspace: Workspace) ->
 
 
 def test_retry_failed_pushes_sweeps_the_backlog(session: Session, workspace: Workspace) -> None:
-    """The sweep retries every failed row that still has budget, and skips the rest."""
+    """清扫会重试每一条仍有预算的失败行，跳过其余的。"""
     first = seed_pushable_report(session, workspace)
     second = seed_pushable_report(session, workspace)
     target = workspace.add_push_target()
@@ -363,7 +363,7 @@ def test_retry_failed_pushes_is_a_no_op_when_nothing_failed(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A sweep with no candidates must not touch anything."""
+    """没有候选可重试的清扫，什么都不能碰。"""
     report = seed_pushable_report(session, workspace)
     target = workspace.add_push_target()
     push_report(
@@ -378,7 +378,7 @@ def test_retry_failed_pushes_is_a_no_op_when_nothing_failed(
 
 
 def test_pushing_can_be_switched_off(session: Session, workspace: Workspace) -> None:
-    """`PUSH_ENABLED=False` must stop all delivery, including the retry sweep."""
+    """`PUSH_ENABLED=False` 必须停掉一切投递，包括重试清扫。"""
     report = seed_pushable_report(session, workspace)
     target = workspace.add_push_target()
     settings = build_settings(push_enabled=False)
@@ -401,7 +401,7 @@ def test_auto_push_after_publish_delivers_to_every_enabled_target(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A release fans out to the allowlist, and a disabled row is not contacted."""
+    """一次发布向白名单扇出，而停用的那一行不会被联系。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     workspace.add_push_target(destination="ops@example.com")
     workspace.add_push_target(channel="webhook", destination="https://hooks.example.com/osia")
@@ -421,7 +421,7 @@ def test_auto_push_swallows_a_refused_target(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A release must survive a destination that is not cleared for the report."""
+    """发布过程必须扛得住某个目标没有为该报告放行。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED, sensitivity="CONFIDENTIAL")
     workspace.add_push_target(allow_confidential=False)
 
@@ -438,7 +438,7 @@ def test_auto_push_swallows_a_refused_target(
 
 
 def test_auto_push_respects_its_own_switch(session: Session, workspace: Workspace) -> None:
-    """Operators can keep manual pushing while switching the automatic one off."""
+    """运维可以关掉自动推送，同时保留手动推送。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     workspace.add_push_target()
     settings = build_settings(push_auto_after_publish=False)
@@ -456,7 +456,7 @@ def test_auto_push_respects_its_own_switch(session: Session, workspace: Workspac
 
 
 def test_the_message_carries_the_report_facts(session: Session, workspace: Workspace) -> None:
-    """The notification has to identify which report and version a reader is looking at."""
+    """通知必须让读者看出自己正在看哪份报告的哪个版本。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
 
     message = build_message(session, report)
@@ -471,7 +471,7 @@ def test_the_message_carries_the_report_facts(session: Session, workspace: Works
 
 
 def test_the_offline_channel_is_deterministic() -> None:
-    """The default transport has to be reproducible so local runs are comparable."""
+    """默认传输必须可复现，本地跑出来的结果才有可比性。"""
     message = OutboundMessage(report_id=1, version=2, subject="s", body="b")
     channel = OfflineChannel("email")
 
@@ -486,7 +486,7 @@ def test_the_offline_channel_is_deterministic() -> None:
 
 
 def test_the_webhook_signature_is_stable() -> None:
-    """A receiver has to be able to verify the payload with the shared secret."""
+    """接收方必须能拿共享密钥校验载荷。"""
     assert sign_body("secret", b"{}") == sign_body("secret", b"{}")
     assert sign_body("secret", b"{}") != sign_body("other", b"{}")
     assert sign_body("secret", b"{}").startswith("sha256=")
@@ -501,13 +501,13 @@ def test_the_webhook_signature_is_stable() -> None:
     ),
 )
 def test_webhook_url_requires_https_without_embedded_credentials(destination: str) -> None:
-    """Webhook destinations cannot smuggle a downgrade or URL credentials."""
+    """Webhook 目标不能夹带降级协议或 URL 里的凭据。"""
     with pytest.raises(PushTargetNotAllowed):
         validate_webhook_url(destination)
 
 
 def test_webhook_destination_rejects_private_addresses() -> None:
-    """A destination resolving to loopback must never reach an outbound request."""
+    """解析到回环地址的目标，绝不能真的发出一次出站请求。"""
     with pytest.raises(PushTargetNotAllowed, match="non-public"):
         validate_webhook_destination("https://127.0.0.1/internal")
 
@@ -516,7 +516,7 @@ def test_failed_push_details_are_redacted_before_persistence(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Transport diagnostics must not leave credentials in the delivery table."""
+    """传输层的诊断信息不能把凭据留进投递表。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target(destination="ops@example.com")
     notifier = StubChannel(fail_times=1, detail="token=super-secret-token")
@@ -541,7 +541,7 @@ def test_retry_does_not_send_a_superseded_version(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A retry row is for its original version; a newer version must supersede it."""
+    """一条重试行只服务于它原本的版本；更新的版本必须把它顶掉。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target(destination="ops@example.com")
     settings = build_settings(push_max_attempts=3)
@@ -568,7 +568,7 @@ def test_retry_does_not_send_a_superseded_version(
 
 
 def test_build_channel_needs_credentials_for_live_email() -> None:
-    """Live delivery without a sender must fail loudly rather than silently pretend to send."""
+    """线上投递缺发件人时必须大声失败，而不是假装发送成功。"""
     offline = build_channel(build_settings(), "email")
     assert isinstance(offline, OfflineChannel)
 
@@ -587,13 +587,13 @@ def test_build_channel_needs_credentials_for_live_email() -> None:
 
 
 def test_build_channel_refuses_an_unknown_channel() -> None:
-    """The channel set is closed."""
+    """渠道集合是封闭的。"""
     with pytest.raises(PushTargetNotAllowed):
         build_channel(build_settings(), "carrier_pigeon")
 
 
 def test_private_webhook_target_needs_the_test_escape_hatch() -> None:
-    """A loopback destination stays refused until the test-only switch flips it."""
+    """回环目标一直会被拒绝，直到那个仅测试用的开关打开它。"""
     with pytest.raises(PushTargetNotAllowed, match="non-public"):
         validate_webhook_destination("https://127.0.0.1:8443/hook")
 
@@ -601,7 +601,7 @@ def test_private_webhook_target_needs_the_test_escape_hatch() -> None:
 
 
 def test_private_webhook_escape_is_refused_outside_local_and_test() -> None:
-    """The SSRF guard must never be widened in staging or production."""
+    """SSRF 守卫在预发与生产上绝不能被放宽。"""
     for env in ("staging", "production"):
         with pytest.raises(ValueError, match="only allowed in local and test"):
             build_settings(app_env=env, push_webhook_allow_private_targets=True)
@@ -610,7 +610,7 @@ def test_private_webhook_escape_is_refused_outside_local_and_test() -> None:
 
 
 def test_live_webhook_channel_carries_the_test_escape_hatches() -> None:
-    """`build_channel` hands the private-address and CA-bundle switches to the adapter."""
+    """`build_channel` 把私网地址与 CA 证书包这两个开关交给适配器。"""
     live = build_channel(
         build_settings(
             push_delivery="live",
@@ -620,5 +620,5 @@ def test_live_webhook_channel_carries_the_test_escape_hatches() -> None:
         "webhook",
     )
     assert live.channel == "webhook"
-    assert live._allow_private is True  # noqa: SLF001 - asserting the adapter wiring
-    assert live._verify == "/tmp/ca.pem"  # noqa: SLF001 - asserting the adapter wiring
+    assert live._allow_private is True  # noqa: SLF001 - 断言适配器的接线
+    assert live._verify == "/tmp/ca.pem"  # noqa: SLF001 - 断言适配器的接线

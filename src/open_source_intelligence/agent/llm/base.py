@@ -1,4 +1,4 @@
-"""Provider-neutral model client contract."""
+"""与供应商无关的模型客户端契约：每个供应商适配器都必须实现的同步聊天接口。"""
 
 from __future__ import annotations
 
@@ -10,16 +10,16 @@ from .messages import ChatMessage, ModelTurn, ToolSchema
 
 @runtime_checkable
 class ModelClient(Protocol):
-    """Minimal synchronous chat contract implemented by every provider adapter."""
+    """每个供应商适配器都实现的最小同步聊天契约。"""
 
     @property
     def provider(self) -> str:
-        """Return the provider identifier recorded on the Agent config."""
+        """返回记录在 Agent 配置上的供应商标识。"""
         ...
 
     @property
     def model(self) -> str:
-        """Return the concrete model identifier used for billing and audit."""
+        """返回用于计费与审计的具体模型标识。"""
         ...
 
     def complete(
@@ -27,5 +27,5 @@ class ModelClient(Protocol):
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSchema],
     ) -> ModelTurn:
-        """Return one assistant turn for the given conversation and tool set."""
+        """返回给定对话与工具集下的一轮助手回复。"""
         ...

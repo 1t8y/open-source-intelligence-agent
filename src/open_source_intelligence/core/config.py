@@ -1,4 +1,8 @@
-"""Application settings loaded from environment variables."""
+"""从环境变量加载并校验的应用配置。
+
+全项目只有这里定义配置项：`.env.example`、`infra/docker-compose.yml` 的兜底值、ORM 列默认值
+都必须与这里的默认值保持一致，守卫在 `tests/core/test_config_alignment.py`。
+"""
 
 from decimal import Decimal
 from functools import lru_cache
@@ -10,7 +14,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Validated runtime settings for API and worker processes."""
+    """API 与 Worker 进程共用的运行时配置，构造时即完成校验。
+
+    `extra="forbid"` 意味着 `.env` 里出现任何非 Settings 键都会直接抛错 —— 所以 `.env`
+    不能照抄 `.env.example`，后者包含部署用的辅助键。
+    """
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -48,30 +56,28 @@ class Settings(BaseSettings):
     agent_prompt_version: str = Field(default="v1", min_length=1, max_length=64)
     agent_max_loops: int = Field(default=4, ge=1, le=20)
     agent_max_model_calls: int = Field(default=6, ge=1, le=50)
-    #: Tool-call budget for one research run. The verifier demands three kinds of evidence per
-    #: run - a profile and metrics for every candidate, at least one cached README, at least one
-    #: prior-report query - so the floor is `candidates x 2 + 2`. At the default candidate limit
-    #: of 5 that is 12, and 10 spent the whole budget on profiles and metrics: the run then had
-    #: no README, no baseline, and ended `AGENT_EVIDENCE_INCOMPLETE` every single day.
+    #: 单次研究运行的工具调用预算。验证器要求每次运行有三类证据 —— 每个候选都要有画像和
+    #: 指标、至少一份缓存 README、至少一次历史报告查询 —— 所以下限是 `候选数 × 2 + 2`。
+    #: 默认候选上限 5 时下限是 12，而旧默认值 10 会被画像和指标吃光：那次运行既没有 README
+    #: 也没有基线，于是每天都以 `AGENT_EVIDENCE_INCOMPLETE` 收场。
     agent_max_tool_calls: int = Field(default=20, ge=1, le=100)
     agent_max_tokens: int = Field(default=30000, ge=1, le=1_000_000)
     agent_max_cost: Decimal = Field(default=Decimal("0.50"), ge=0)
-    #: Provider billing table, in USD per one million tokens. DeepSeek's `usage` payload
-    #: reports token counts but no monetary amount, so the only way to land a real `cost` on
-    #: `agent_runs.estimated_cost` is to price it here. Defaults are DeepSeek's non-thinking
-    #: (`deepseek-chat` / `deepseek-flash` with thinking disabled) list price at the time of
-    #: wiring; a different provider or a price change is a configuration edit, not a code edit.
+    #: 供应商计费表，单位为「美元 / 每百万 token」。DeepSeek 的 `usage` 只报 token 数、
+    #: 不报金额，所以想给 `agent_runs.estimated_cost` 落一个真实金额，唯一的办法是在这里
+    #: 定价。默认值是接入时 DeepSeek 非思考模式（`deepseek-chat` / `deepseek-flash` 关闭
+    #: thinking）的标价；换供应商或价格变动应当改配置，而不是改代码。
     agent_input_price_per_mtok: Decimal = Field(default=Decimal("0.14"), ge=0)
     agent_output_price_per_mtok: Decimal = Field(default=Decimal("0.28"), ge=0)
     agent_max_candidates: int = Field(default=5, ge=1, le=30)
     agent_request_timeout_seconds: int = Field(default=60, ge=1, le=600)
     agent_prompts_dir: str | None = None
-    #: Automatic research dispatch is off by default: a research run costs real budget, and an
-    #: unattended loop that starts one per topic per day is a spending decision, not a defaults
-    #: decision. The mechanism is wired either way - see `pipeline/research_dispatch.py`.
-    #: Whether a finished research run carries itself through to a report. Off, the chain stops
-    #: at a `report_drafts` row and somebody has to run `reports/cli.py --action generate` - which
-    #: is why an unattended day produced a draft, no report, and no email.
+    #: 自动派发研究默认关闭：一次研究运行要花真金白银，让无人值守的循环每天给每个主题起
+    #: 一次运行属于「花钱决策」，不该混进「默认值决策」。机制本身照常接线 —— 见
+    #: `pipeline/research_dispatch.py`。
+    #: 研究运行结束后是否自己走到报告。关闭时链路停在 `report_drafts` 一行，得有人手动跑
+    #: `reports/cli.py --action generate` —— 这正是某个无人值守的日子只产出草稿、没有报告、
+    #: 也没有邮件的原因。
     agent_auto_report_enabled: bool = True
     agent_auto_research_enabled: bool = False
     agent_daily_research_limit: int = Field(default=2, ge=1, le=50)
@@ -92,11 +98,10 @@ class Settings(BaseSettings):
     push_smtp_password: SecretStr | None = None
     push_smtp_starttls: bool = True
     push_webhook_signing_secret: SecretStr | None = None
-    #: Test-only escape hatches for end-to-end webhook drills. A live webhook guard rejects
-    #: loopback and private addresses to stop SSRF, which is exactly what a local receiver runs
-    #: on; flipping this lets a `local`/`test` deployment deliver to a `127.0.0.1` receiver and
-    #: prove the transport and HMAC signing over a real HTTP request. Both are refused in
-    #: `staging`/`production`, where the guard must never be widened.
+    #: 仅测试用的 Webhook 逃生口。线上 Webhook 守卫会拒绝回环地址和私网地址以阻断 SSRF，
+    #: 而本地接收器恰好就跑在这些地址上；打开开关后，`local`/`test` 部署可以向 `127.0.0.1`
+    #: 的接收器投递，从而用一次真实 HTTP 请求证明传输链路与 HMAC 签名都正确。两项在
+    #: `staging`/`production` 一律拒绝 —— 那两个环境里守卫绝不能放宽。
     push_webhook_allow_private_targets: bool = False
     push_webhook_ca_bundle: str | None = None
     eval_enabled: bool = True
@@ -106,7 +111,7 @@ class Settings(BaseSettings):
     @field_validator("app_timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:
-        """Require an IANA timezone that the standard library can resolve."""
+        """要求一个标准库能解析的 IANA 时区名。"""
         try:
             ZoneInfo(value)
         except ZoneInfoNotFoundError as exc:
@@ -116,7 +121,7 @@ class Settings(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, value: str) -> str:
-        """Keep database connections on the supported MySQL driver."""
+        """数据库连接必须使用受支持的 MySQL 驱动。"""
         if not value.startswith("mysql+pymysql://"):
             raise ValueError("database_url must use mysql+pymysql://")
         return value
@@ -124,7 +129,7 @@ class Settings(BaseSettings):
     @field_validator("redis_url")
     @classmethod
     def validate_redis_url(cls, value: str) -> str:
-        """Accept only Redis TLS or plain connections."""
+        """只接受 Redis 的 TLS 或明文连接。"""
         if not value.startswith(("redis://", "rediss://")):
             raise ValueError("redis_url must use redis:// or rediss://")
         return value
@@ -132,7 +137,7 @@ class Settings(BaseSettings):
     @field_validator("github_api_base", "huggingface_api_base")
     @classmethod
     def validate_api_base(cls, value: str) -> str:
-        """Require HTTPS endpoints for external API credentials and data."""
+        """外部 API 的凭据与数据只允许走 HTTPS 端点。"""
         if not value.startswith("https://"):
             raise ValueError("external API base URLs must use https://")
         return value.rstrip("/")
@@ -140,7 +145,7 @@ class Settings(BaseSettings):
     @field_validator("agent_prompts_dir")
     @classmethod
     def normalize_optional_dir(cls, value: str | None) -> str | None:
-        """Treat a blank prompt directory as unset so defaults can apply."""
+        """空白 Prompt 目录视为未配置，让默认值生效。"""
         if value is None or not value.strip():
             return None
         return value
@@ -148,7 +153,7 @@ class Settings(BaseSettings):
     @field_validator("agent_api_base")
     @classmethod
     def validate_optional_api_base(cls, value: str | None) -> str | None:
-        """Require HTTPS for a configured model endpoint and drop blank values."""
+        """已配置的模型端点必须走 HTTPS；空白值视为未配置。"""
         if value is None or not value.strip():
             return None
         if not value.startswith("https://"):
@@ -158,7 +163,7 @@ class Settings(BaseSettings):
     @field_validator("push_email_from", "push_smtp_host", "push_smtp_username")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
-        """Treat a blank push setting as unset so a channel can report it is not configured."""
+        """空白的推送配置视为未设置，渠道才能如实报告「未配置」。"""
         if value is None or not value.strip():
             return None
         return value.strip()
@@ -166,7 +171,7 @@ class Settings(BaseSettings):
     @field_validator("push_email_from")
     @classmethod
     def validate_email_from(cls, value: str | None) -> str | None:
-        """Require a usable envelope sender when one is configured."""
+        """配置了发件人时，必须是一个可用的信封发件地址。"""
         if value is not None and "@" not in value:
             raise ValueError("push_email_from must be an email address")
         return value
@@ -174,7 +179,7 @@ class Settings(BaseSettings):
     @field_validator("push_webhook_ca_bundle")
     @classmethod
     def normalize_ca_bundle(cls, value: str | None) -> str | None:
-        """Treat a blank CA bundle path as unset."""
+        """空白的 CA 证书包路径视为未设置。"""
         if value is None or not value.strip():
             return None
         return value.strip()
@@ -189,14 +194,14 @@ class Settings(BaseSettings):
     )
     @classmethod
     def normalize_optional_token(cls, value: SecretStr | None) -> SecretStr | None:
-        """Treat blank environment tokens as unconfigured credentials."""
+        """环境变量里的空白令牌视为未配置的凭据。"""
         if value is None or not value.get_secret_value().strip():
             return None
         return value
 
     @model_validator(mode="after")
     def validate_agent_provider(self) -> "Settings":
-        """Require endpoint and credential whenever a remote model is selected."""
+        """选用远程模型时，端点与凭据都必须给出。"""
         if self.agent_provider == "openai_compatible":
             if not self.agent_api_base:
                 raise ValueError("agent_api_base is required for the openai_compatible provider")
@@ -206,7 +211,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":
-        """Reject the documented placeholder outside local and test use."""
+        """除 local / test 之外，拒绝文档里那个示例占位密钥。"""
         if self.app_env not in {"local", "test"}:
             placeholder = "change-me-to-a-random-secret-of-at-least-32-characters"
             if self.secret_key.get_secret_value() == placeholder:
@@ -215,11 +220,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_webhook_test_escapes(self) -> "Settings":
-        """Keep the webhook test escape hatches out of staging and production.
+        """把 Webhook 的测试逃生口挡在 staging 与 production 之外。
 
-        The private-address guard is the SSRF defence: a staging or production deployment must
-        never widen it, and a custom CA bundle would let the delivery layer trust an arbitrary
-        root, so both are refused everywhere except `local` and `test`.
+        私网地址守卫就是 SSRF 防线：预发或生产部署绝不能放宽它；自定义 CA 证书包则会让投递层
+        信任任意根证书。因此这两项在 `local` 与 `test` 之外一律拒绝。
         """
         if self.app_env not in {"local", "test"}:
             if self.push_webhook_allow_private_targets:
@@ -233,10 +237,10 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return one validated process-wide settings instance."""
+    """返回进程内唯一的、已校验的配置实例。"""
     return Settings()
 
 
 def clear_settings_cache() -> None:
-    """Clear cached settings for tests and environment reloads."""
+    """清空配置缓存，供测试和环境变量重载使用。"""
     get_settings.cache_clear()

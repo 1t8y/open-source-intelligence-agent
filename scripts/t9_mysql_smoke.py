@@ -1,4 +1,10 @@
-"""Run T9 Prompt Guard and Token-budget smoke checks against MySQL."""
+"""针对 MySQL 跑 T9 的 Prompt Guard 与 Token 预算冒烟。
+
+脚本借用 T8 的种子数据，用一份固定的 Token 计量客户端连跑四轮研究：正常预算、
+被压缩的预算、被耗尽的预算，以及把注入指令写进仓库正文后的那一轮。运行前需导出
+`DATABASE_URL`，通过判据是四轮各自落库、降级标记只在降级轮出现、耗尽轮提前收尾，
+并且注入轮触发守卫、没有发起白名单之外的工具调用。
+"""
 
 import json
 from collections.abc import Sequence
@@ -33,7 +39,7 @@ ALLOWED_TOOL_NAMES = {
 
 
 class TokenHeavyClient:
-    """Offline model client that reports deterministic Token usage."""
+    """报告确定性 Token 用量的离线模型客户端。"""
 
     def __init__(self, *, prompt_tokens: int = 50, completion_tokens: int = 30) -> None:
         self._offline = OfflineModelClient()
@@ -63,7 +69,7 @@ class TokenHeavyClient:
 
 
 def _config(session: Session) -> AgentConfig:
-    """Return the active default config created by the runtime."""
+    """取回运行时创建的那份启用中的默认配置。"""
     config = session.scalar(
         select(AgentConfig)
         .where(AgentConfig.name == DEFAULT_AGENT_CONFIG_NAME, AgentConfig.enabled.is_(True))
@@ -76,7 +82,7 @@ def _config(session: Session) -> AgentConfig:
 
 
 def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
-    """Exercise normal, degraded, exhausted, and injected runs on real MySQL."""
+    """在真实 MySQL 上跑正常、降级、耗尽与注入四类研究运行。"""
     settings = get_settings()
     topic_id = ids["topic_id"]
 
@@ -163,7 +169,7 @@ def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run T9 smoke checks and print a machine-readable payload."""
+    """跑 T9 冒烟，并打印一份机器可读的结果。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)

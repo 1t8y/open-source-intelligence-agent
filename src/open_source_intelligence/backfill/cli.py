@@ -1,8 +1,8 @@
-"""Command-line entry point for resumable historical backfills.
+"""可续跑历史回填的命令行入口。
 
-The action set mirrors the job lifecycle rather than the HTTP surface: `start` creates and
-walks a job, `resume` continues one from its cursor, and `status` / `list` report without
-touching the source.
+动作集合对应的是作业生命周期，而不是 HTTP 接口：`start` 创建并走查一个
+作业，`resume` 从游标处继续一个作业，`status` / `list` 只做报告、不碰
+源。
 """
 
 import argparse
@@ -38,7 +38,7 @@ from open_source_intelligence.persistence.session import (
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the backfill action and its filters."""
+    """解析回填动作与它的过滤条件。"""
     parser = argparse.ArgumentParser(
         description="Walk a provider's paged search history into the repository catalog"
     )
@@ -77,14 +77,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def _limiter(args: argparse.Namespace) -> RateLimiter | None:
-    """Build an explicit limiter only when the operator overrode the source's own rate."""
+    """只有当操作者覆盖了源自身的速率时，才构造一个显式限速器。"""
     if args.requests_per_minute is None:
         return None
     return RateLimiter(per_minute=args.requests_per_minute)
 
 
 def _read(args: argparse.Namespace) -> dict[str, Any]:
-    """Answer `status` and `list` without touching a provider."""
+    """在不接触供应商的情况下回答 `status` 与 `list`。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
@@ -107,7 +107,7 @@ def _read(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _walk(args: argparse.Namespace) -> dict[str, Any]:
-    """Run or resume one walk against the real provider."""
+    """针对真实供应商运行或续跑一次走查。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
@@ -138,7 +138,7 @@ def _walk(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run the requested backfill operation and print a JSON payload."""
+    """执行请求的回填操作并打印 JSON 载荷。"""
     args = parse_args()
     if args.action in {"status", "list"}:
         print(json.dumps(_read(args), ensure_ascii=False, sort_keys=True))
@@ -151,12 +151,12 @@ def main() -> None:
         BackfillLimitError,
         BackfillUnsupportedCollector,
     ) as exc:
-        # These are operator mistakes rather than walk outcomes: nothing ran, so there is no
-        # job payload to print and the message alone is the whole answer.
+        # 这些属于操作者的失误，而不是走查的结果：什么都没跑，也就没有作业
+        # 载荷可打印，消息本身就是全部答案。
         raise SystemExit(str(exc)) from exc
     except BackfillWalkFailed as exc:
-        # A failed walk's most valuable output is where the cursor stopped: the job stays
-        # resumable, so the payload is the operator's next command rather than a traceback.
+        # 一次失败的走查最有价值的输出是游标停在哪里：作业仍可续跑，所以载
+        # 荷是操作者的下一条命令，而不是一段 traceback。
         settings = get_settings()
         engine = create_database_engine(settings.database_url)
         session_factory = create_session_factory(engine)

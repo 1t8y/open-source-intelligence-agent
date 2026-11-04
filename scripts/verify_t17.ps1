@@ -7,11 +7,11 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $projectRoot
 
-# The drill prints its payload as UTF-8 with `ensure_ascii=False`, because a report title is
-# Chinese ('<topic> 开源技术情报周报（<date>）'). A native command's stdout is decoded using the
-# console code page rather than UTF-8, so without this the title arrives as mangled bytes and
-# `ConvertFrom-Json` fails part-way through the string. Both sides are pinned rather than one:
-# `PYTHONIOENCODING` decides what the child *writes*, the console encoding what PowerShell *reads*.
+# 演练以 `ensure_ascii=False` 按 UTF-8 打印其载荷，因为报告标题是中文
+# （'<topic> 开源技术情报周报（<date>）'）。原生命令的 stdout 会按控制台代码页而非 UTF-8
+# 解码，若不这样做，标题就会以乱码字节的形式到达，`ConvertFrom-Json` 会在字符串中间解析
+# 失败。两端都要固定而不是只固定一端：`PYTHONIOENCODING` 决定子进程*写入*什么，
+# 控制台编码决定 PowerShell *读取*什么。
 $previousOutputEncoding = [Console]::OutputEncoding
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = 'utf-8'
@@ -62,18 +62,15 @@ $mountArgs = @(
     'api'
 )
 
-# The fixture mode exists because this repository is developed on a machine whose Docker engine
-# cannot always start. It runs the *same* drill module and the *same* assertion block below
-# against a real SQLite file instead of MySQL, so the checks are exercised rather than merely
-# written. The container mode remains the authoritative path: it is the one that also proves the
-# Compose wiring and MySQL's own constraint semantics.
+# 固件模式的存在是因为本仓库在一台 Docker 引擎并非总能启动的机器上开发。它会用*同一个*演练模块
+# 和下方*同一块*断言，改为针对一个真实的 SQLite 文件而非 MySQL 运行，这样这些检查是真正被执行的，
+# 而不只是被写出来。容器模式仍是权威路径：只有它才能同时证明 Compose 接线和 MySQL 自身的
+# 约束语义。
 #
-# One hazard the container path inherits from its siblings: the drill step mounts the host project
-# root at /workspace and runs with that as its working directory, so a root `.env` is visible to
-# the container. A `.env` copied verbatim from `.env.example` carries the compose-only `MYSQL_*`
-# keys, which `Settings` refuses with `extra_forbidden` - and dotenv contributes keys
-# independently, so the compose environment does not mask it. Remove those keys before running
-# this path, or run the fixture mode.
+# 容器路径从它的兄弟脚本继承了一个隐患：演练步骤把宿主项目根目录挂载到 /workspace 并以它为
+# 工作目录运行，因此根目录的 `.env` 对容器可见。一份从 `.env.example` 原样复制的 `.env` 带有仅供
+# compose 使用的 `MYSQL_*` 键，`Settings` 会以 `extra_forbidden` 拒绝它们——而且 dotenv 是独立
+# 注入键的，compose 环境无法掩盖它。运行此路径前请移除那些键，或者改跑固件模式。
 $fixtureDir = Join-Path ([System.IO.Path]::GetTempPath()) 'osia-t17-fixture'
 $fixtureDb = Join-Path $fixtureDir 't17_drill.db'
 
@@ -94,8 +91,8 @@ Assert-LastCommandSucceeded 'mypy'
 if ($SqliteFixture) {
     Write-Host "==> Prepare the SQLite fixture at $fixtureDir"
     New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
-    # `_env_file=None` is load-bearing: without it the fixture would read the developer's `.env`,
-    # and a filled-in provider would turn this into a live, billable, non-reproducible run.
+    # `_env_file=None` 是关键所在：没有它，固件会读取开发者的 `.env`，
+    # 而一旦其中填写了某个供应商配置，就会把这次运行变成一次真实计费且不可复现的运行。
     $sitecustomize = @'
 """Repoint the T17 drill at a SQLite file, standing in for an unavailable MySQL container."""
 
@@ -172,8 +169,8 @@ else {
     docker @composeArgs up -d --build --force-recreate --remove-orphans
     Assert-LastCommandSucceeded 'docker compose up'
 
-    # T17 adds no migration, so the round trip belongs to its predecessors; what it still has to
-    # prove here is that the schema it runs against is the one the migrations build.
+    # T17 没有新增迁移，因此往返（降级再升级）属于它的前序阶段；它在这里仍需
+    # 证明的是：它所运行的 schema 就是迁移构建出来的那一个。
     docker @composeArgs exec -T api alembic upgrade head
     Assert-LastCommandSucceeded 'alembic upgrade head'
     docker @composeArgs exec -T api alembic check
@@ -184,8 +181,8 @@ else {
     Assert-LastCommandSucceeded 'T17 MySQL drill'
 }
 
-# The drill drives the real application, so its stdout also carries the application log; the
-# payload is the last JSON object it prints.
+# 演练驱动的是真实应用，因此其 stdout 同时带有应用日志；
+# 载荷是它打印的最后一个 JSON 对象。
 $drillJson = $drillOutput |
     Where-Object { $_.TrimStart().StartsWith('{') } |
     Select-Object -Last 1
@@ -202,28 +199,25 @@ $pushFailure = $drill.push_failure
 $repeat = $drill.repeated_work
 
 # ---------------------------------------------------------------------------------------
-# Authorization: the wrong reader and the wrong writer are refused, on both surfaces.
+# Authorization：错误的读者与错误的写入者都被拒绝，且两个界面上一视同仁。
 # ---------------------------------------------------------------------------------------
 
-# Criterion 1: an unauthenticated caller is turned away by both transports, each in its own
-# idiom - the API answers 401, the UI redirects to the login form.
+# 判据 1：未认证的调用者在两种传输方式下都被拒之门外，且各有各的
+# 惯用方式——API 回 401，UI 重定向到登录表单。
 Assert-Equal $authz.api_anonymous_status 401 'an anonymous API read is refused'
 Assert-Equal $authz.ui_anonymous_status 303 'an anonymous UI read is redirected'
 Assert-True $authz.ui_anonymous_location.StartsWith('/ui/login') 'the UI redirect keeps where the browser was heading'
 
-# Criterion 2: the visibility filter runs inside the query, and the *total* is what proves it. A
-# list that fetched every row and filtered afterwards would return the same items as this one;
-# only the total tells the two apart.
+# 判据 2：可见性过滤发生在查询内部，而*total*（总数）才是这一点的证明。一个先取出全部行
+# 再事后过滤的列表会返回与它相同的条目；只有总数能区分两者。
 #
-# Every expectation here comes from the payload rather than from a literal, because the report ids
-# are not the drill's to choose: this script never drops the database volume, and MySQL does not
-# reset AUTO_INCREMENT when rows are deleted, so the drill's four reports do not start at id 1 on a
-# database that has been used - after one run of the drill the table is empty again and the next
-# report still takes the next id. The literals that used to sit here (`'1'`, `'1,2,3'`, `'2,4'`,
-# `'1,None'`) passed on a fresh volume and failed on a used one, with the same code on both sides.
-# The drill measures what the accounts could read before it wrote (`measure_visibility_baseline`)
-# and reports the ids it created, so what is asserted is "the API returned exactly the drill's
-# four reports, filed under the right visibilities" rather than "the operator's volume was clean".
+# 这里的每个期望值都来自载荷而不是字面量，因为报告 id 不是演练能选择的：本脚本从不删除
+# 数据库卷，而 MySQL 在删除行后不会重置 AUTO_INCREMENT，所以在一个用过的数据库上，演练的
+# 四份报告并不从 id 1 开始——演练跑完一轮后表又空了，下一份报告仍取下一个 id。以前放在这里
+# 的字面量（`'1'`、`'1,2,3'`、`'2,4'`、`'1,None'`）在全新的卷上通过、在用过的卷上失败，
+# 两边的代码却完全相同。演练在写入之前先测量各账号能读到什么
+# （`measure_visibility_baseline`），并上报自己创建的 id，因此这里断言的是「API 返回的恰好
+# 是演练的四份报告，且归档在正确的可见性下」，而不是「运维者的卷是干净的」。
 Assert-Equal $authz.api_totals.admin $authz.expected_totals.admin 'an administrator sees every report'
 Assert-Equal $authz.api_totals.editor $authz.expected_totals.editor 'an editor on the team scope sees the internal, team, and owned private reports'
 Assert-Equal $authz.api_totals.viewer $authz.expected_totals.viewer 'a viewer sees only the internal report'
@@ -231,9 +225,9 @@ Assert-Equal ($authz.api_admin_visible -join ',') ($authz.expected_visible.admin
 Assert-Equal ($authz.api_viewer_visible -join ',') ($authz.expected_visible.viewer -join ',') 'the viewer''s list holds exactly the internal report'
 Assert-Equal ($authz.api_editor_visible -join ',') ($authz.expected_visible.editor -join ',') 'the editor''s list holds the internal, team, and owned private reports'
 
-# Criterion 3: a refused read carries no report metadata, and the audit row names what was
-# refused. The two are the point of the split: the caller learns nothing, the operator can
-# still answer "who tried to read what".
+# 判据 3：被拒绝的读取不携带任何报告元数据，而审计行会写明被拒绝的是什么。
+# 这种一分为二正是要点：调用方什么都得不到，运维者仍能
+# 回答「谁试图读什么」。
 Assert-Equal $authz.api_viewer_reads_team_status 403 'a viewer may not read a team report'
 Assert-Equal $authz.api_viewer_reads_orphan_status 403 'a viewer may not read an ownerless private report'
 Assert-Equal $authz.api_editor_reads_orphan_status 403 'an editor may not read someone else''s private report'
@@ -241,7 +235,7 @@ Assert-Equal $authz.api_editor_reads_own_private_status 200 'an editor reads the
 Assert-Equal $authz.orphan_title_leaked $false 'the refusal names no report'
 Assert-Equal ($authz.denials.'report.read' -join ',') ($authz.expected_denials.'report.read' -join ',') 'each refused read is filed against the report it addressed'
 
-# Criterion 4: a write is refused before it can take effect, and each guard files its own action.
+# 判据 4：写入在生效之前就被拒绝，且每道防护各自记录自己的动作。
 Assert-Equal $authz.api_viewer_write_status 403 'a viewer may not verify a report over the API'
 Assert-Equal $authz.ui_viewer_write_status 403 'a viewer may not verify a report through the UI'
 Assert-Equal $authz.ui_viewer_dashboard_status 403 'a viewer may not open the operations dashboard'
@@ -252,17 +246,17 @@ Assert-Equal ($authz.denials.'auth.rbac' -join ',') ($authz.expected_denials.'au
 Assert-Equal ($authz.denials.'auth.csrf' -join ',') ($authz.expected_denials.'auth.csrf' -join ',') 'the CSRF refusal is filed against the report it addressed'
 
 # ---------------------------------------------------------------------------------------
-# Prompt injection: hostile README text never reaches the model as an instruction.
+# Prompt injection：恶意的 README 文本永远不会以指令的形式到达模型。
 # ---------------------------------------------------------------------------------------
 
-# Criterion 5: the content went through the real collector, the real snapshot and rank stages,
-# and the real Agent - so the guard is being asked about content that arrived the way content
-# arrives.
+# 判据 5：内容经过了真实的采集器、真实的快照与排序阶段、以及真实的
+# Agent——因此被问及防护的内容，正是以内容本来的到达方式
+# 到达的内容。
 Assert-Equal ($injection.daily_stages -join ',') 'collect:succeeded,snapshot:succeeded,rank:succeeded' 'collect, snapshot, and rank all ran on the drill source'
 Assert-Equal $injection.repositories_collected 2 'the mock source''s repositories were ingested'
 Assert-Equal $injection.selected_candidates 2 'ranking selected the candidates the Agent can afford'
 
-# Criterion 6: the instructions were stripped before the model read them, and the run says so.
+# 判据 6：指令在模型读取之前就被剥离，且运行记录说明了这一点。
 Assert-Equal $injection.agent_status 'needs_review' 'an injection parks the run for a human'
 Assert-Equal $injection.agent_error_code 'AGENT_PROMPT_INJECTION' 'the run names the injection'
 Assert-Equal $injection.guard_triggered $true 'the guard reports it fired'
@@ -274,21 +268,20 @@ Assert-Equal $injection.raw_injection_reached_model $false 'the English instruct
 Assert-Equal $injection.chinese_injection_reached_model $false 'the Chinese instruction never reached the model'
 Assert-Equal $injection.normal_text_survived $true 'the guard removed instructions and nothing else'
 
-# Criterion 7: the injection bought the attacker nothing. The tool whitelist held, no read was
-# denied (nothing outside the topic was even addressed), and no credential travelled with the
-# prompt.
+# 判据 7：注入没有给攻击者换来任何东西。工具白名单守住了，没有读取被拒绝（话题之外的内容
+# 甚至未被触及），也没有任何凭据随
+# 提示词一同出行。
 Assert-Equal $injection.tools_invoked.Count 5 'every whitelisted tool was reachable'
 Assert-True ($injection.tools_invoked -contains 'get_repository_content') 'the read that pulled the README in was the shipped tool'
 Assert-Equal $injection.tool_denials 0 'the injected text caused no attempt to leave the topic scope'
 Assert-Equal $injection.credentials_in_prompt.Count 0 'no deployment credential reached the model'
 
 # ---------------------------------------------------------------------------------------
-# API failure: a source that refuses is classified and recorded, never fatal to the process.
+# API failure：拒绝应答的源头会被分类并记录，绝不会让进程崩溃。
 # ---------------------------------------------------------------------------------------
 
-# Criterion 8: both a 5xx and a timeout are retried the configured three times, then recorded as
-# a collector failure on the run - the distinction that keeps "the source refused" apart from
-# "our own writing broke" (`PIPELINE_UNEXPECTED_ERROR`).
+# 判据 8：5xx 与超时都按配置重试三次，然后作为采集失败记录在运行上——正是这个区分把
+# 「源头拒绝」与「我们自己的写入坏了」（`PIPELINE_UNEXPECTED_ERROR`）区分开来。
 Assert-Equal $sourceFailure.server_error.raised_code $sourceFailure.expected_code 'a 5xx source is classified as a collector failure'
 Assert-Equal $sourceFailure.server_error.run_status 'failed' 'the refused batch leaves a failed run'
 Assert-Equal $sourceFailure.server_error.run_error_code 'COLLECTOR_FAILED' 'the run carries the stable code'
@@ -297,14 +290,14 @@ Assert-True $sourceFailure.server_error.provider_errors 'the run records which p
 Assert-Equal $sourceFailure.timeout.raised_code $sourceFailure.expected_code 'a timing-out source is classified the same way'
 Assert-Equal $sourceFailure.timeout.attempts 3 'a timeout is retried on the same policy'
 
-# Criterion 9: a model outage is a failed run with its own code, distinct from a source failure.
+# 判据 9：模型不可用是一次带独立错误码的失败运行，与源头失败不同。
 Assert-Equal $modelOutage.status 'failed' 'an unavailable provider fails the run'
 Assert-Equal $modelOutage.error_code $modelOutage.expected_code 'the run names the provider outage'
 Assert-Equal $modelOutage.run_status_persisted 'failed' 'the failure survives a re-read'
 Assert-Equal $modelOutage.run_error_code_persisted 'AGENT_MODEL_UNAVAILABLE' 'the code survives a re-read'
 
-# Criterion 10: a transport that refuses a delivery is a recorded, retryable result - not an
-# exception, and not a second row.
+# 判据 10：拒绝投递的传输通道是一个被记录、可重试的结果——不是
+# 异常，也不是第二行。
 Assert-Equal $pushFailure.first_status 'failed' 'a refused delivery is recorded, not raised'
 Assert-Equal $pushFailure.first_error_code 'PUSH_DELIVERY_FAILED' 'the row carries the stable code'
 Assert-Equal $pushFailure.first_delivered $false 'a refused delivery is not a delivery'
@@ -318,16 +311,16 @@ Assert-Equal $pushFailure.final_row_status 'sent' 'the row ends up delivered'
 Assert-Equal $pushFailure.replayed $true 're-requesting a delivered push replays the stored result'
 
 # ---------------------------------------------------------------------------------------
-# Repeated work: running the same batch twice produces one set of rows.
+# Repeated work：同一批次跑两遍只产生一套行。
 # ---------------------------------------------------------------------------------------
 
-# Criterion 11: collection is idempotent on (source, provider_repo_id), so a second batch adds
-# nothing - and the snapshot stage refreshes by date rather than appending.
+# 判据 11：采集在 (source, provider_repo_id) 上是幂等的，因此第二个批次不会
+# 新增任何内容——且快照阶段按日期刷新而不是追加。
 Assert-Equal $repeat.repositories_after_first 2 'the first batch landed both repositories'
 Assert-Equal $repeat.repositories_after_second 2 'the second batch added no repository row'
 
-# Criterion 12: the release sweep and the push are both carried out by the row, not by the
-# caller - a second sweep finds nothing to do and a second push sends nothing.
+# 判据 12：发布清扫与推送都由行本身完成，而不是由调用方完成——第二次
+# 清扫无事可做，第二次推送也不发送任何内容。
 Assert-Equal $repeat.first_publish_sweep 0 'the first sweep finds no scheduled report'
 Assert-Equal $repeat.second_publish_sweep 0 'the second sweep finds nothing either'
 Assert-Equal $repeat.first_push_replayed $false 'the first push to a fresh target really delivers'
@@ -344,10 +337,9 @@ else {
     Assert-LastCommandSucceeded 'T17 MySQL cleanup'
 }
 
-# The summary line is what the two engines are compared on, so it reports the *delta* this drill
-# added to each role's list rather than the absolute totals: the totals include whatever the
-# database already held (`baseline_totals`), and this script never drops the volume. "+1/+3/+4"
-# says the same thing on a fresh fixture and on a used Compose database.
+# 摘要行是两个引擎相互比较的依据，因此它上报的是本次演练为每个角色的列表新增的*增量*，
+# 而不是绝对总数：总数包含了数据库里已有的内容（`baseline_totals`），而本脚本从不删除
+# 数据卷。"+1/+3/+4" 在全新的固件上和用过的 Compose 数据库上说的是同一件事。
 Write-Host "T17 verification passed. authorization: anonymous=$($authz.api_anonymous_status) seeded-totals=+$($authz.api_totals.viewer - $authz.baseline_totals.viewer)/+$($authz.api_totals.editor - $authz.baseline_totals.editor)/+$($authz.api_totals.admin - $authz.baseline_totals.admin) refused-reads=$($authz.denials.'report.read'.Count); injection: status=$($injection.agent_status) code=$($injection.agent_error_code) blocked-messages=$($injection.blocked_tool_messages); failure: source=$($sourceFailure.server_error.raised_code) model=$($modelOutage.error_code) push=$($pushFailure.first_error_code) retries=$($pushFailure.swept_accepted_attempt); repeated: repositories=$($repeat.repositories_after_second) pushes-sent=$($repeat.channel_send_count)."
 
 [Console]::OutputEncoding = $previousOutputEncoding

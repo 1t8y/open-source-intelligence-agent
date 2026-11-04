@@ -1,4 +1,4 @@
-"""Tests for the bounded research graph wiring and its routing decisions."""
+"""守护有界研究图的接线与其路由决策的用例。"""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def _evidence(*, tool_name: str, repo_id: int | None = None, ok: bool = True) ->
 
 
 def _verify_deps() -> Mock:
-    """A dependency double exposing the two things `_verify_node` reads."""
+    """一个依赖替身，只暴露 `_verify_node` 会读的两样东西。"""
     deps = Mock()
     deps.run_verifier = True
     deps.recorder.record.return_value = Mock()
@@ -68,11 +68,10 @@ def test_graph_node_order_is_fixed() -> None:
 
 
 def test_verify_nudges_the_planner_when_no_content_was_read() -> None:
-    """A missing README read is the one gap the model keeps leaving open; say so once.
+    """证明「没读 README」是模型总留着的那一个缺口，得提醒它一次。
 
-    Without the nudge the planner keeps doing profile + metrics + history and never reads cached
-    content, so the verifier stays "insufficient" until the budget runs out. The nudge must fire
-    exactly once and name the missing tool.
+    没有这句提醒，规划器会一直做画像 + 指标 + 历史，从不读缓存正文，于是校验器直到
+    预算耗尽都停在「证据不足」。提醒必须只触发一次，并且点出缺的那个工具。
     """
     state = _state(
         candidate_repo_ids=[1, 2],
@@ -92,7 +91,7 @@ def test_verify_nudges_the_planner_when_no_content_was_read() -> None:
 
 
 def test_verify_does_not_nudge_twice() -> None:
-    """The nudge is a one-shot: a run that still cannot read content must not pile it up."""
+    """证明提醒只有一次：仍然读不到正文的运行也不能把它堆起来。"""
     state = _state(
         candidate_repo_ids=[1],
         evidence=[_evidence(tool_name="get_repository_profile", repo_id=1)],
@@ -105,7 +104,7 @@ def test_verify_does_not_nudge_twice() -> None:
 
 
 def test_verify_does_not_nudge_when_content_was_read() -> None:
-    """Once a README is in the evidence, there is nothing to nudge about."""
+    """证明一旦证据里有了 README，就没有什么可提醒的了。"""
     state = _state(
         candidate_repo_ids=[1],
         evidence=[
@@ -160,7 +159,7 @@ def test_stops_without_a_verification_result() -> None:
 
 
 def test_routes_to_write_when_the_token_budget_is_degraded() -> None:
-    """At 80% the graph keeps existing evidence but stops further planning."""
+    """证明花到 80% 时，图保留已有证据，但不再继续规划。"""
     state = _state(
         verification=_verification(sufficient=False),
         pending_tool_calls=[_call()],
@@ -172,7 +171,7 @@ def test_routes_to_write_when_the_token_budget_is_degraded() -> None:
 
 
 def test_stops_when_the_token_budget_is_exhausted() -> None:
-    """A fully exhausted Token budget may not trigger another model call."""
+    """证明 Token 预算彻底耗尽后，不得再触发一次模型调用。"""
     state = _state(
         verification=_verification(sufficient=False),
         pending_tool_calls=[_call()],
@@ -183,7 +182,7 @@ def test_stops_when_the_token_budget_is_exhausted() -> None:
 
 
 def test_routes_to_write_when_prompt_guard_is_triggered() -> None:
-    """Untrusted instructions stop research even if evidence remains incomplete."""
+    """证明即使证据仍不完整，不可信指令也会拦下研究工作。"""
     state = _state(
         verification=_verification(sufficient=False),
         pending_tool_calls=[_call()],

@@ -1,10 +1,10 @@
-"""Push endpoints: the delivery allowlist, the delivery trail, and the retry driver.
+"""推送端点：投递允许清单、投递轨迹，以及重试驱动器。
 
-These live under their own prefix rather than under `/api/v1/reports` on purpose: a literal
-path such as `/reports/push-targets` would be shadowed by the `/{report_id}` route unless it
-were declared first, and adding more of them would keep that trap alive. The single
-report-scoped action, `POST /api/v1/reports/{report_id}/push`, stays with the other report
-actions where it belongs.
+这些端点刻意放在自己的前缀下，而不是 `/api/v1/reports` 下：像
+`/reports/push-targets` 这样的字面量路径会被 `/{report_id}` 路由遮蔽，
+除非把它声明在前面，而这类路径越加越多，那个坑就会一直留着。唯一一个
+挂在报告上的动作 `POST /api/v1/reports/{report_id}/push` 仍与其他报告
+动作并列，留在它该在的位置。
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ PushChannel = str
 
 
 class PushTargetResponse(BaseModel):
-    """One allowlisted delivery destination."""
+    """一个在允许清单内的投递目标。"""
 
     id: int
     name: str
@@ -51,13 +51,13 @@ class PushTargetResponse(BaseModel):
 
 
 class PushTargetListResponse(BaseModel):
-    """The delivery allowlist."""
+    """投递允许清单。"""
 
     items: list[PushTargetResponse]
 
 
 class PushRecordResponse(BaseModel):
-    """One delivery record."""
+    """一条投递记录。"""
 
     id: int
     report_id: int
@@ -74,14 +74,14 @@ class PushRecordResponse(BaseModel):
 
 
 class PushRecordListResponse(BaseModel):
-    """Delivery records, newest first."""
+    """投递记录，最新的在前。"""
 
     items: list[PushRecordResponse]
     status_counts: dict[str, int]
 
 
 class PushOutcomeResponse(BaseModel):
-    """Result of one delivery attempt."""
+    """一次投递尝试的结果。"""
 
     push_id: int
     report_id: int
@@ -97,7 +97,7 @@ class PushOutcomeResponse(BaseModel):
 
 
 class RetryPushResponse(BaseModel):
-    """Result of one retry sweep."""
+    """一轮重试扫描的结果。"""
 
     attempted_count: int
     delivered_count: int
@@ -111,7 +111,7 @@ def get_push_targets(
     session: DbSession,
     channel: Annotated[PushChannel | None, Query()] = None,
 ) -> PushTargetListResponse:
-    """Return the enabled delivery allowlist, optionally for one channel."""
+    """返回已启用的投递允许清单，可只取某一个渠道。"""
     targets = list_targets(session, channel=channel)
     return PushTargetListResponse(
         items=[
@@ -138,11 +138,11 @@ def get_push_records(
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> PushRecordListResponse:
-    """Return delivery records so an operator can see what went out and what still needs a retry.
+    """返回投递记录，让运维看清发出去了什么、还有哪些等着重试。
 
-    The ledger is filtered by the report ACL, not just by role: a delivery row names a report
-    title, version, destination and error text, which is enough metadata to leak a report the
-    caller may not open.
+    台账按报告的访问控制过滤，而不只是按角色过滤：一条投递记录会带上报告
+    标题、版本、目标地址与错误文本，这些元数据已足够泄露一份调用方本来打
+    不开的报告。
     """
     rows = list_pushes(
         session,
@@ -182,12 +182,11 @@ def retry_pushes(
     session: DbSession,
     limit: Annotated[int, Query(ge=1, le=PUSH_BATCH_LIMIT)] = PUSH_BATCH_LIMIT,
 ) -> RetryPushResponse:
-    """Retry the failed deliveries that still have retry budget left.
+    """重试那些还剩重试预算的失败投递。
 
-    This is the same sweep the Celery beat task runs, exposed so an operator does not have to
-    wait for the next tick. One unusable row never stops the batch. The sweep is limited to the
-    reports the caller may read, so pressing "retry" cannot re-send a report that is invisible to
-    them.
+    这与 Celery beat 任务跑的扫描是同一件事，暴露出来是为了让运维不必等
+    下一个周期。一行数据不可用从不会中断整批。扫描范围限定在调用方可读的
+    报告内，所以按一下「重试」不会把他看不见的报告又发出去一次。
     """
     outcomes = retry_failed_pushes(
         session,

@@ -1,4 +1,4 @@
-"""CLI entry point used by Celery worker and beat commands."""
+"""供 Celery worker 与 beat 命令使用的 CLI 入口。"""
 
 from celery.signals import setup_logging
 
@@ -14,5 +14,5 @@ app = create_celery_app(settings)
 
 @setup_logging.connect(weak=False)  # type: ignore[misc]
 def configure_celery_logging(**_: object) -> None:
-    """Reapply the shared structured logger after Celery logging setup."""
+    """在 Celery 完成日志配置后重新应用共享的结构化日志器。"""
     configure_logging(settings)

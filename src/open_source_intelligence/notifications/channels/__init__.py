@@ -1,4 +1,4 @@
-"""Delivery adapters for email and webhook notifications."""
+"""邮件与 Webhook 通知的投递适配器。"""
 
 from .base import DeliveryReceipt, NotificationChannel, OutboundMessage
 from .email_channel import EmailChannel

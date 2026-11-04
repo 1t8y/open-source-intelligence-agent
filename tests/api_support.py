@@ -1,11 +1,11 @@
-"""App, actor, and report helpers for the report API and admin UI tests.
+"""报告 API 与后台界面测试共用的应用、操作者与报告辅助。
 
-The tests seed through one session and then assert through the API/UI or through a fresh
-session, because the shared in-memory database lends a single connection to every session:
-leaving a seeding transaction open would block the application's own session.
+用例通过一个会话写入种子数据，再通过 API/界面或新开的会话做断言，
+因为共享的内存数据库把同一条连接借给了每个会话：种子的写事务一直开着，
+应用自己的会话就会被挡住。
 
-The module sits at the top of `tests/` (next to `support.py`) so both `tests/api` and
-`tests/web` can import it as a plain top-level module.
+这个模块放在 `tests/` 顶层（与 `support.py` 并列），
+`tests/api` 与 `tests/web` 才能把它当作普通顶层模块直接导入。
 """
 
 from __future__ import annotations
@@ -33,16 +33,17 @@ LOGIN_PATH = "/ui/login"
 
 PASSWORD = "correct horse battery staple"
 
-#: `roles.id` is a plain primary key, so the three standard roles use fixed ids.
+#: `roles.id` 只是普通主键，所以三个标准角色用固定 id。
 _ROLE_IDS = {"ADMIN": 1, "EDITOR": 2, "VIEWER": 3}
 
-#: `support.Workspace` inserts its own user as id 1, so actors start well above that range.
+#: `support.Workspace` 会把自己的用户插成 id 1，
+#: 所以操作者的 id 从远高于它的位置开始。
 _ACTOR_IDS = count(1001)
 
 
 @dataclass(frozen=True, slots=True)
 class Actor:
-    """One seeded user holding exactly one role."""
+    """一个只持有单一角色的种子用户。"""
 
     user_id: int
     username: str
@@ -57,7 +58,7 @@ def create_actor(
     role: str,
     data_scope: str = "personal",
 ) -> Actor:
-    """Create one user holding a single standard role."""
+    """创建一个只持有单个标准角色的用户。"""
     role_row = session.scalar(select(Role).where(Role.code == role))
     if role_row is None:
         role_row = Role(id=_ROLE_IDS[role], code=role, name=role.title())
@@ -78,7 +79,7 @@ def create_actor(
 
 
 def build_client(session_factory: sessionmaker[Session]) -> TestClient:
-    """Build a client whose dependency graph uses the shared test database."""
+    """构造一个依赖图指向共享测试数据库的客户端。"""
     app = create_app(build_settings())
 
     def override_session() -> Iterator[Session]:
@@ -90,7 +91,7 @@ def build_client(session_factory: sessionmaker[Session]) -> TestClient:
 
 
 def auth_headers(client: TestClient, actor: Actor) -> dict[str, str]:
-    """Log the actor in and return a bearer header."""
+    """让操作者登录，并返回一个 Bearer 请求头。"""
     response = client.post(
         "/api/v1/auth/login",
         json={"username": actor.username, "password": PASSWORD},
@@ -109,7 +110,7 @@ def configure_report(
     publish_mode: str | None = None,
     publish_at: datetime | None = None,
 ) -> Report:
-    """Set the fields a test varies and commit so the API can see them."""
+    """写入本用例要变化的字段并提交，好让 API 能看到它们。"""
     report = session.get(Report, report_id)
     assert report is not None
     if visibility is not None:
@@ -126,7 +127,7 @@ def configure_report(
 
 
 def load_report(session_factory: sessionmaker[Session], report_id: int) -> Report:
-    """Read one report through a short-lived session."""
+    """用一个短命会话读出一份报告。"""
     with session_factory() as session:
         report = session.get(Report, report_id)
         assert report is not None
@@ -134,7 +135,7 @@ def load_report(session_factory: sessionmaker[Session], report_id: int) -> Repor
 
 
 def source_versions(session_factory: sessionmaker[Session], report_id: int) -> set[int]:
-    """Return the versions that currently have citation rows."""
+    """返回当前存在引用行的版本号集合。"""
     with session_factory() as session:
         return {
             int(row)
@@ -145,26 +146,26 @@ def source_versions(session_factory: sessionmaker[Session], report_id: int) -> s
 
 
 def audit_trail(session_factory: sessionmaker[Session]) -> list[tuple[str, str]]:
-    """Return `(action, result)` pairs in insertion order."""
+    """按插入顺序返回 `(action, result)` 二元组。"""
     with session_factory() as session:
         rows = session.scalars(select(AuditLog).order_by(AuditLog.id)).all()
         return [(row.action, row.result) for row in rows]
 
 
 # --------------------------------------------------------------------------------------
-# Admin UI helpers
+# 后台界面辅助
 # --------------------------------------------------------------------------------------
 
 
 def csrf_value(client: TestClient) -> str:
-    """Return the CSRF value the browser currently holds, or fail loudly."""
+    """返回浏览器当前持有的 CSRF 值；取不到就直接失败，不做静默兜底。"""
     value = client.cookies.get(CSRF_COOKIE)
     assert value, "no CSRF cookie: render a page through the UI first"
     return value
 
 
 def prime_csrf(client: TestClient, path: str = LOGIN_PATH) -> str:
-    """Render one page so the server issues a CSRF cookie, then return its value."""
+    """渲染一个页面，让服务端下发 CSRF cookie，然后返回它的值。"""
     response = client.get(path, follow_redirects=False)
     assert response.status_code == 200, response.text
     return csrf_value(client)
@@ -177,7 +178,7 @@ def web_login(
     password: str = PASSWORD,
     next_url: str = "/ui/reports",
 ) -> httpx.Response:
-    """Sign the actor in through the UI form and keep the resulting session cookie."""
+    """通过界面表单让操作者登录，并保留随之而来的会话 cookie。"""
     token = prime_csrf(client)
     return client.post(
         LOGIN_PATH,
@@ -192,7 +193,7 @@ def web_login(
 
 
 def web_logout(client: TestClient) -> httpx.Response:
-    """Submit the logout form with the current CSRF value."""
+    """带上当前 CSRF 值提交登出表单。"""
     return client.post(
         "/ui/logout",
         data={"csrf_token": csrf_value(client)},

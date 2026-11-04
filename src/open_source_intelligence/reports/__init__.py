@@ -1,1 +1,1 @@
-"""Report composition and citation persistence services."""
+"""提供报告编排与引用持久化服务。"""

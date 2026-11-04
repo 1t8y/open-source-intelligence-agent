@@ -1,4 +1,4 @@
-"""Registry tests: whitelist, ACL, budget, read-only, and error mapping."""
+"""注册表用例：白名单、ACL、预算、只读与错误映射。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _count_tool_calls(session: Session) -> int:
 
 
 def test_registry_exposes_the_contract_whitelist() -> None:
-    """The registry holds exactly the documented tools."""
+    """证明注册表里恰好是文档列出的那些工具。"""
     registry = build_default_registry()
     assert registry.tool_names == WHITELIST
     assert set(WHITELIST) == set(ALL_TOOLS)
@@ -39,7 +39,7 @@ def test_registry_exposes_the_contract_whitelist() -> None:
 
 
 def test_unknown_tool_is_rejected(workspace: Workspace) -> None:
-    """A name outside the whitelist is a contract violation."""
+    """证明白名单之外的名字属于契约违规。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = build_default_registry()
@@ -59,7 +59,7 @@ def test_unknown_tool_is_rejected(workspace: Workspace) -> None:
 
 
 def test_tool_outside_run_policy_is_denied(workspace: Workspace) -> None:
-    """A whitelisted tool the run did not enable is denied before execution."""
+    """证明白名单内但本次运行未启用的工具，在执行前就被拒。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = build_default_registry()
@@ -79,7 +79,7 @@ def test_tool_outside_run_policy_is_denied(workspace: Workspace) -> None:
 
 
 def test_tool_budget_is_enforced(workspace: Workspace) -> None:
-    """Exceeding the per-run tool budget stops further invocations."""
+    """证明超出单次运行的工具预算后，后续调用会被拦下。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = build_default_registry()
@@ -97,7 +97,7 @@ def test_tool_budget_is_enforced(workspace: Workspace) -> None:
 
 
 def test_invalid_arguments_map_to_invalid_argument(workspace: Workspace) -> None:
-    """Schema failures never reach the handler and report the stable code."""
+    """证明 schema 失败根本到不了处理器，并返回稳定错误码。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = build_default_registry()
@@ -120,7 +120,7 @@ def _raising_handler(session: Session, ctx: ToolContext, payload: object) -> Too
 
 
 def test_internal_errors_are_mapped_and_redacted(workspace: Workspace) -> None:
-    """Unhandled exceptions become a stable code with a redacted message."""
+    """证明未捕获异常会变成一个稳定错误码，且消息已脱敏。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = ToolRegistry(
@@ -161,7 +161,7 @@ def _count_user(session: Session, user_id: int) -> int:
 
 
 def test_read_only_tool_write_is_blocked(workspace: Workspace) -> None:
-    """A read-only tool that stages a write is rejected by the registry."""
+    """证明只读工具只要暂存了写入，就会被注册表拒绝。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = ToolRegistry(
@@ -182,7 +182,7 @@ def test_read_only_tool_write_is_blocked(workspace: Workspace) -> None:
 
 
 def test_read_only_tool_write_is_rolled_back_not_just_reported(workspace: Workspace) -> None:
-    """Blocking a read-only write must undo it; recording the call must not commit it."""
+    """证明拦下只读写入时必须真的回滚；记录这次调用不能把它提交掉。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = ToolRegistry(
@@ -202,7 +202,7 @@ def test_read_only_tool_write_is_rolled_back_not_just_reported(workspace: Worksp
 
 
 def test_read_only_tool_that_raises_does_not_persist_its_write(workspace: Workspace) -> None:
-    """A read-only tool cannot smuggle a write through the error path either."""
+    """证明只读工具也不能借报错路径把写入偷带出去。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = ToolRegistry(
@@ -231,7 +231,7 @@ def test_read_only_tool_that_raises_does_not_persist_its_write(workspace: Worksp
 
 
 def test_write_tool_is_allowed_to_write(workspace: Workspace) -> None:
-    """A tool marked writable is not blocked by the read-only guard."""
+    """证明标记为可写的工具不会被只读守卫拦下。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = ToolRegistry(
@@ -250,7 +250,7 @@ def test_write_tool_is_allowed_to_write(workspace: Workspace) -> None:
 
 
 def test_every_invocation_is_recorded(workspace: Workspace) -> None:
-    """Success and failure both leave exactly one auditable tool_calls row."""
+    """证明成功与失败都恰好留下一行可审计的 tool_calls 记录。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = build_default_registry()

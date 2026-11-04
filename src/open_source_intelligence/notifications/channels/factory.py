@@ -1,4 +1,4 @@
-"""Build the delivery adapter named by settings and the target's channel."""
+"""按配置与目标渠道构造投递适配器。"""
 
 from __future__ import annotations
 
@@ -14,12 +14,11 @@ CHANNELS = ("email", "webhook")
 
 
 def build_channel(settings: Settings, channel: str) -> NotificationChannel:
-    """Return the adapter for `channel`, honouring the configured delivery mode.
+    """返回 `channel` 对应的适配器，并遵循已配置的投递模式。
 
-    `offline` is the default and needs no configuration, which keeps local runs and continuous
-    integration deterministic and network-free. `live` selects the real transport and reports a
-    missing credential as `PUSH_TARGET_NOT_ALLOWED`-adjacent configuration error rather than
-    silently pretending to deliver.
+    `offline` 是默认值且无需任何配置，从而让本地运行与持续集成保持确定性且不联网。`live`
+    选用真实传输，并把缺失的凭据报告为与 `PUSH_TARGET_NOT_ALLOWED` 相邻的配置错误，
+    而不是悄悄假装投递成功。
     """
     if channel not in CHANNELS:
         raise PushTargetNotAllowed(f"unsupported push channel: {channel}")

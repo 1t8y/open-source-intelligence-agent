@@ -1,19 +1,18 @@
-"""Lightweight lexical retrieval: term-frequency vectors and cosine similarity.
+"""轻量词法检索：词频向量与余弦相似度。
 
-The RAG layer needs a way to pick the *most relevant* slice of a long README, and to rank prior
-reports by relevance instead of by recency, without pulling in a model runtime or a vector
-database. This module does that with a deliberately small, dependency-free bag-of-words model:
+RAG 层需要一种方式，从一份长 README 里挑出*最相关*的一段，并按相关性而非新鲜度为
+历史报告排序，同时又不想引入模型运行时或向量数据库。本模块用一个刻意
+做小的、零依赖的词袋模型做到这点：
 
-* Text is tokenized into a mix of ASCII word tokens and CJK character bigrams, so an English
-  README and a Chinese report are both searchable.
-* Each snippet and the query are turned into TF-IDF vectors over a shared vocabulary, and ranked
-  by cosine similarity. "Relevant" means "shares the same distinctive terms", which is exactly
-  what the two call sites need: a section about "authentication" should outrank one about
-  "benchmarks" for a query about login.
+* 文本切成 ASCII 单词词元与中文字符二元组的混合，因此英文 README 与中文报告
+  都能被检索。
+* 片段与查询都转成同一份共享词表上的 TF-IDF 向量，再按余弦相似度排序。「相关」
+  意思是「共享同样的特征词」，这正是两个调用点需要的：查询登录时，讲「认证」
+  的一节应排在讲「基准测试」的一节前面。
 
-This is lexical, not semantic: it will not connect "login" to "sign-in". That is the deliberate
-cost of staying dependency-free and offline. A real embedding model is a drop-in upgrade at the
-two call sites, which never see the vectors.
+这是词法匹配而非语义匹配：它不会把「login」与「sign-in」联系起来。这是
+坚持零依赖、纯离线的刻意代价。真嵌入模型可以在这两个调用点直接替换进来，而
+它们从来看不到向量本身。
 """
 
 from __future__ import annotations
@@ -24,24 +23,23 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-#: ASCII word token (letters, digits, and the common code-symbol runs like `openai` / `v2`).
+#: ASCII 单词词元（字母、数字，以及 `openai` / `v2` 这类常见代码符号串）。
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+.-]*")
-#: A run of CJK characters, split into bigrams by the tokenizer.
+#: 一段连续的 CJK 字符，由分词器切成二元组。
 _CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+")
 
 _MIN_TERM_LENGTH = 2
-#: Number of most-relevant snippets to return when none is requested.
+#: 未指定时返回的最相关片段数量。
 DEFAULT_TOP_K = 3
 
 
 @dataclass(frozen=True, slots=True)
 class RankedSnippet:
-    """One ranked slice of source text plus its similarity to the query.
+    """一段排好序的源文本，以及它与查询的相似度。
 
-    `index` is the position the text had in the input sequence. Callers need it to map a ranked
-    result back to the row it came from: two documents can share the same text (two reports with
-    the same title and the same opening paragraph), and a text-keyed lookup would then return one
-    row twice and drop the other.
+    `index` 是这段文本在输入序列中的位置。调用方需要它把排序结果映射回
+    原来的行：两份文档可能文本完全相同（两篇标题与开头段落都一样的报告），
+    此时以文本为键的查找会把同一行返回两次，并丢掉另一行。
     """
 
     text: str
@@ -50,10 +48,10 @@ class RankedSnippet:
 
 
 def _cjk_bigrams(run: str) -> list[str]:
-    """Split one contiguous CJK run into overlapping character bigrams.
+    """把一段连续的 CJK 切成交叠的字符二元组。
 
-    A single character yields itself, so a one-character query still matches. Bigrams (rather
-    than single characters) give Chinese text enough term discrimination to matter.
+    单个字符会返回它自己，这样单字查询仍能命中。选二元组（而不是单字）是为了给
+    中文文本足够的词项区分度。
     """
     if len(run) == 1:
         return [run]
@@ -61,11 +59,11 @@ def _cjk_bigrams(run: str) -> list[str]:
 
 
 def tokenize(text: str) -> list[str]:
-    """Return the normalized term tokens of `text`.
+    """返回 `text` 归一化后的词项。
 
-    ASCII runs become lowercased word tokens; CJK runs become character bigrams. Everything
-    else (punctuation, whitespace) is a separator, so a URL or a code symbol like `repo_id`
-    contributes real terms without a separate parser.
+    ASCII 串变成小写单词词元；CJK 串变成字符二元组。其余字符（标点、空白）都是
+    分隔符，因此 URL 或 `repo_id` 这类代码符号无需单独的解析器就能贡献
+    真实的词项。
     """
     tokens: list[str] = []
     for cjk_run in _CJK_RUN_RE.split(text):
@@ -81,15 +79,15 @@ def tokenize(text: str) -> list[str]:
 
 
 def _term_frequency(tokens: Sequence[str]) -> Counter[str]:
-    """Return raw term counts for one document."""
+    """返回一份文档的原始词频计数。"""
     return Counter(tokens)
 
 
 def _idf(term: str, document_frequencies: Counter[str], document_count: int) -> float:
-    """Return the inverse document frequency of one term.
+    """返回某个词项的反文档频率。
 
-    Terms that appear in almost every snippet (like "the" or a project name) get down-weighted;
-    a term unique to one snippet gets a full weight.
+    几乎出现在每个片段里的词（如 "the" 或项目名）会被降权；某个片段
+    独有的词则拿到全权重。
     """
     occurrences = document_frequencies.get(term, 0)
     if occurrences == 0:
@@ -102,7 +100,7 @@ def _tfidf_vector(
     document_frequencies: Counter[str],
     document_count: int,
 ) -> dict[str, float]:
-    """Return the TF-IDF vector of one document as a sparse term -> weight mapping."""
+    """返回一份文档的 TF-IDF 向量，即「词项 -> 权重」的稀疏映射。"""
     frequencies = _term_frequency(tokens)
     if not frequencies:
         return {}
@@ -117,12 +115,12 @@ def _tfidf_vector(
 
 
 def _norm(vector: dict[str, float]) -> float:
-    """Return the L2 norm of a sparse vector."""
+    """返回稀疏向量的 L2 范数。"""
     return math.sqrt(sum(weight * weight for weight in vector.values()))
 
 
 def _cosine(left: dict[str, float], right: dict[str, float]) -> float:
-    """Return the cosine similarity of two sparse vectors."""
+    """返回两个稀疏向量的余弦相似度。"""
     if not left or not right:
         return 0.0
     left_norm = _norm(left)
@@ -134,11 +132,11 @@ def _cosine(left: dict[str, float], right: dict[str, float]) -> float:
 
 
 def split_snippets(text: str, max_chars: int) -> list[str]:
-    """Split `text` into snippets of at most `max_chars`, preferring paragraph boundaries.
+    """把 `text` 切成不超过 `max_chars` 的片段，优先在段落边界处切。
 
-    A README is usually already structured into sections by blank lines or Markdown headings;
-    cutting on those keeps a snippet self-contained instead of severing a sentence in the middle.
-    Oversized paragraphs are hard-cut so the guarantee on `max_chars` always holds.
+    README 通常已经由空行或 Markdown 标题分好小节；沿这些边界切能让
+    片段保持自足，而不是从句子中间截断。超长段落会被硬切，因此
+    `max_chars` 的上界保证始终成立。
     """
     if not text.strip():
         return []
@@ -148,7 +146,7 @@ def split_snippets(text: str, max_chars: int) -> list[str]:
         if len(paragraph) <= max_chars:
             snippets.append(paragraph)
             continue
-        # Hard-split an oversized paragraph; the contract is a bound, not a sentence.
+        # 硬切超长段落；契约约束的是长度上界，而不是句子完整性。
         for index in range(0, len(paragraph), max_chars):
             snippets.append(paragraph[index : index + max_chars])
     return snippets
@@ -160,11 +158,10 @@ def rank_snippets(
     *,
     top_k: int = DEFAULT_TOP_K,
 ) -> list[RankedSnippet]:
-    """Rank `snippets` by relevance to `query` and return the top `top_k`.
+    """按与 `query` 的相关性给 `snippets` 排序，返回前 `top_k` 条。
 
-    When the query is blank there is nothing to rank by, so the snippets keep their original
-    order. When no snippet shares any term with the query, every score is zero and the original
-    order is preserved too — a deterministic fallback beats a random shuffle.
+    查询为空时无从排序，片段保持原有顺序。当没有任何片段与查询共享词项时，所有
+    得分都是零，同样保留原有顺序 —— 确定性的兜底胜过随机打乱。
     """
     if not snippets:
         return []
@@ -207,10 +204,10 @@ def rank_texts(
     *,
     top_k: int = DEFAULT_TOP_K,
 ) -> list[RankedSnippet]:
-    """Rank arbitrary texts (e.g. prior-report summaries) by relevance to `query`.
+    """按与 `query` 的相关性给任意文本（例如历史报告摘要）排序。
 
-    A convenience wrapper over `rank_snippets` for callers that already have whole documents
-    rather than pre-split snippets.
+    这是 `rank_snippets` 的便捷封装，供手上已是一整份文档、而非预先切
+    好片段的调用方使用。
     """
     return rank_snippets(query, list(texts), top_k=top_k)
 

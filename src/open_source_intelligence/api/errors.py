@@ -1,9 +1,8 @@
-"""RFC 7807 Problem Details for every API failure.
+"""把每一次 API 失败都渲染成 RFC 7807 Problem Details。
 
-`docs/api-contract.md` §1 requires error responses to be Problem Details and §9 fixes the
-status-code mapping. Router code raises ordinary FastAPI or domain exceptions; this module is
-the single place that turns them into a stable body, so a client can rely on `code` without
-parsing English messages.
+`docs/api-contract.md` §1 要求错误响应是 Problem Details，§9 固定了状态码映射。路由代码只抛
+普通的 FastAPI 异常或领域异常；本模块是唯一把它们变成稳定响应体的地方，因此客户端可以只依赖
+`code`，而不必去解析英文消息。
 """
 
 from __future__ import annotations
@@ -27,10 +26,10 @@ from open_source_intelligence.topics.errors import TopicError
 
 PROBLEM_BASE = "https://example.local/problems"
 
-#: 422 is spelled out because the named Starlette constant for it is deprecated.
+#: 这里直接写出 422：Starlette 为它提供的具名常量已被弃用。
 UNPROCESSABLE_CONTENT = 422
 
-#: Fallback problem code and title for every HTTP status the API uses.
+#: API 用到的每个 HTTP 状态码所对应的兜底 problem code 与标题。
 STATUS_PROBLEMS: dict[int, tuple[str, str]] = {
     status.HTTP_400_BAD_REQUEST: ("VALIDATION_ERROR", "Bad Request"),
     status.HTTP_401_UNAUTHORIZED: ("AUTH_REQUIRED", "Authentication Required"),
@@ -45,46 +44,43 @@ STATUS_PROBLEMS: dict[int, tuple[str, str]] = {
     status.HTTP_503_SERVICE_UNAVAILABLE: ("SERVICE_UNAVAILABLE", "Service Unavailable"),
 }
 
-#: Problem code for each domain failure that carries its own stable `code`.
+#: 每个自带稳定 `code` 的领域失败所映射到的 HTTP 状态码。
 DOMAIN_PROBLEM_STATUS: dict[str, int] = {
     "NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "REPORT_STATE_INVALID": status.HTTP_409_CONFLICT,
     "PUBLISH_POLICY_BLOCKED": status.HTTP_409_CONFLICT,
     "PUBLISH_ERROR": status.HTTP_409_CONFLICT,
-    # A destination that is not on the allowlist is a bad request, not a permission problem:
-    # the caller may know the report perfectly well and simply asked for the wrong target.
+    # 不在允许清单里的目标属于请求有误，而不是权限问题：调用方可能非常清楚这份报告是什么，
+    # 只是指错了投递目标。
     "PUSH_TARGET_NOT_ALLOWED": status.HTTP_400_BAD_REQUEST,
     "PUSH_BLOCKED": status.HTTP_409_CONFLICT,
     "PUSH_APPROVAL_REQUIRED": status.HTTP_409_CONFLICT,
     "PUSH_ERROR": status.HTTP_409_CONFLICT,
-    # No delivery attempt could be made, either because pushing is switched off or because the
-    # retry budget is spent; both are upstream conditions rather than caller mistakes.
+    # 一次投递尝试都发不出去：要么推送总开关是关的，要么重试预算已经用尽；两者都是上游状态，
+    # 而不是调用方犯错。
     "PUSH_DISABLED": status.HTTP_503_SERVICE_UNAVAILABLE,
     "PUSH_DELIVERY_FAILED": status.HTTP_502_BAD_GATEWAY,
-    # Evaluation failures. A malformed dataset or an unknown variant is the caller's mistake; a
-    # conflicting version is a conflict; a switched-off subsystem is unavailable.
+    # 评测失败。数据集格式不对或指定了不存在的变体是调用方的错；版本冲突算冲突；子系统关闭算
+    # 服务不可用。
     "DATASET_INVALID": status.HTTP_400_BAD_REQUEST,
-    # The file is well formed; it is bound to a topic this deployment does not have. That is still
-    # the caller's mistake - they imported a dataset written for another environment - and the
-    # message lists the topics that do exist.
+    # 文件本身格式没问题，只是它绑定的主题在本部署里不存在。这仍然是调用方的错 —— 他们导入
+    # 了一份为另一个环境写的数据集 —— 消息里会列出确实存在的主题。
     "DATASET_TOPIC_MISSING": status.HTTP_400_BAD_REQUEST,
     "UNKNOWN_TARGET": status.HTTP_400_BAD_REQUEST,
     "DATASET_VERSION_CONFLICT": status.HTTP_409_CONFLICT,
     "EVALUATION_DISABLED": status.HTTP_503_SERVICE_UNAVAILABLE,
-    # Topic configuration. A name another topic already carries is a conflict the caller resolves by
-    # choosing a different one; a topic that recorded history references cannot be deleted at all,
-    # and that is also a conflict rather than a bad request - the request was well formed and the
-    # answer is "not this one". A missing topic is the shared `NOT_FOUND` entry above.
+    # 主题配置。名字被另一个主题占用，是调用方换一个名字就能解决的冲突；被历史
+    # 记录引用的主题根本不能删，那同样是冲突而不是请求有误 —— 请求本身合法，答案
+    # 是「不是这一个」。主题不存在走上面共享的 `NOT_FOUND` 条目。
     "TOPIC_NAME_CONFLICT": status.HTTP_409_CONFLICT,
     "TOPIC_IN_USE": status.HTTP_409_CONFLICT,
-    # A blank name is a caller mistake, not a conflict. The HTTP boundary refuses it with a `422`
-    # through Pydantic's `AfterValidator` before this table is consulted, but the same code can
-    # still arrive from a non-HTTP caller of `topics.service`, and a `409` for "your name is empty"
-    # would send that caller looking for a topic that already has it.
+    # 空名字是调用方犯错，不是冲突。HTTP 边界上 Pydantic 的
+    # `AfterValidator` 会在查这张表之前就以 `422` 拒绝，但同一个 code 仍可能
+    # 来自直接调用 `topics.service` 的非 HTTP 调用方；对「你的名字是空的」
+    # 回 `409`，会让那个调用方去找一个已经占了该名字的主题。
     "TOPIC_NAME_BLANK": UNPROCESSABLE_CONTENT,
-    # Share links. A refused report is a conflict, not a bad request: the caller named a real
-    # report and the answer is "not this one". A malformed lifetime falls to the base code, which
-    # is a caller mistake.
+    # 分享链接。报告被拒绝分享算冲突而不是请求有误：调用方说的是真实存在的报告，答案是「不是
+    # 这一份」。有效期格式不合法则落到基础 code，那是调用方的错。
     "SHARE_SENSITIVITY_REFUSED": status.HTTP_409_CONFLICT,
     "SHARE_NOT_PUBLISHED": status.HTTP_409_CONFLICT,
     "SHARE_ERROR": status.HTTP_400_BAD_REQUEST,
@@ -98,7 +94,7 @@ def problem_response(
     code: str,
     detail: str,
 ) -> JSONResponse:
-    """Build one Problem Details response with the request correlation ID attached."""
+    """构造一个 Problem Details 响应，并附上请求关联 ID。"""
     default_code, default_title = STATUS_PROBLEMS.get(
         status_code,
         ("ERROR", "Error"),
@@ -119,19 +115,28 @@ def problem_response(
 
 
 def _domain_status(code: str, fallback: int) -> int:
-    """Return the HTTP status a domain error code maps to."""
+    """返回领域错误码映射到的 HTTP 状态码。"""
     return DOMAIN_PROBLEM_STATUS.get(code, fallback)
 
 
 def add_problem_handlers(app: FastAPI) -> None:
-    """Register the Problem Details handlers on the application."""
+    """把 Problem Details 处理器注册到应用上。
+
+    `create_app` 在装配阶段调用一次；此后每个请求只要抛出下面对应的异常，
+    Starlette 就在该请求的上下文里调用匹配的处理器，把它渲染成 Problem
+    Details，而不是交给默认错误页。
+    """
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(
         request: Request,
         exc: StarletteHTTPException,
     ) -> JSONResponse:
-        """Render FastAPI/Starlette HTTP errors as Problem Details."""
+        """把 FastAPI/Starlette 的 HTTP 错误渲染成 Problem Details。
+
+        处理器优先用异常自己带的 `code`（领域层抛出时挂上的属性），没有才交给状态码表的兜底
+        值，所以同一个状态码可以承载不同含义。
+        """
         explicit = getattr(exc, "code", None)
         code = explicit if isinstance(explicit, str) else ""
         return problem_response(
@@ -146,12 +151,12 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-        """Summarize field-level validation errors without echoing the whole payload.
+        """概括字段级校验错误，且不回显整份请求体。
 
-        Each entry pairs the field path with the reason, because the path alone tells a caller
-        where to look but not what to change - and for a rule like "a timestamp must carry a
-        timezone offset" the reason is the entire answer. The reason is Pydantic's message
-        template rather than the offending input, so including it does not echo the payload.
+        每一项都把字段路径和原因配成一对：只有路径，调用方知道去哪儿看，
+        却不知道要改什么 —— 对「时间戳必须带时区偏移」这类规则来说，
+        原因本身就是全部答案。原因取自 Pydantic 的消息模板而不是出错的输入值，
+        因此写进响应也不算回显请求体。
         """
         details: list[str] = []
         for error in exc.errors()[:5]:
@@ -173,7 +178,7 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: ReportNotFoundError,
     ) -> JSONResponse:
-        """Render a missing report or report version as `404 NOT_FOUND`."""
+        """把报告或报告版本不存在渲染成 `404 NOT_FOUND`。"""
         return problem_response(
             request,
             status_code=status.HTTP_404_NOT_FOUND,
@@ -186,7 +191,7 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: ReportStateError,
     ) -> JSONResponse:
-        """Render an illegal state-machine move as `409 REPORT_STATE_INVALID`."""
+        """把非法的状态机迁移渲染成 `409 REPORT_STATE_INVALID`。"""
         return problem_response(
             request,
             status_code=_domain_status(exc.code, status.HTTP_409_CONFLICT),
@@ -199,7 +204,7 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: PublishPolicyBlocked,
     ) -> JSONResponse:
-        """Render a blocked release as `409 PUBLISH_POLICY_BLOCKED`."""
+        """把被拦截的发布渲染成 `409 PUBLISH_POLICY_BLOCKED`。"""
         return problem_response(
             request,
             status_code=_domain_status(exc.code, status.HTTP_409_CONFLICT),
@@ -212,7 +217,7 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: ReportGenerationError,
     ) -> JSONResponse:
-        """Render a rejected compose/edit request as `400 VALIDATION_ERROR`."""
+        """把被拒绝的撰写/编辑请求渲染成 `400 VALIDATION_ERROR`。"""
         return problem_response(
             request,
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -225,11 +230,10 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: ShareError,
     ) -> JSONResponse:
-        """Render a refused share-link operation with its own stable code.
+        """用各自稳定的 code 渲染被拒绝的分享链接操作。
 
-        Registering the base class covers all three failures; the sensitivity refusal is the one
-        that matters, because it is the guard that keeps a no-login address from opening onto
-        internal content.
+        注册基类即可覆盖全部三种失败；其中最要紧的是敏感度拒绝，因为正是
+        这道守卫拦住了「免登录地址打开到内部内容」的路径。
         """
         return problem_response(
             request,
@@ -243,10 +247,10 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: PushError,
     ) -> JSONResponse:
-        """Render a refused or impossible push with its own stable push code.
+        """用各自稳定的推送 code 渲染被拒绝或无法完成的推送。
 
-        Registering the base class covers the whole hierarchy, so a new push failure only has to
-        declare a `code` and a mapping to become a correct Problem Details response.
+        注册基类即可覆盖整条继承链，因此新增一种推送失败只需声明一个 `code` 并登记映射，就能
+        自动成为正确的 Problem Details 响应。
         """
         return problem_response(
             request,
@@ -260,11 +264,10 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: EvaluationError,
     ) -> JSONResponse:
-        """Render an evaluation failure with its own stable code.
+        """用各自稳定的 code 渲染评测失败。
 
-        The base handler covers the whole evaluation hierarchy: `NOT_FOUND` lands on `404`, the
-        caller-mistake codes on `400`, a version conflict on `409`, and a disabled subsystem on
-        `503`, all from the one mapping table above.
+        基类处理器覆盖整条评测继承链：`NOT_FOUND` 落到 `404`，调用方犯错的 code 落到 `400`，
+        版本冲突落到 `409`，子系统关闭落到 `503` —— 全部出自上面那一张映射表。
         """
         return problem_response(
             request,
@@ -278,10 +281,10 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: ObservabilityError,
     ) -> JSONResponse:
-        """Render an overview or run-ledger failure with its own stable code.
+        """用各自稳定的 code 渲染概览或运行台账的失败。
 
-        The base handler covers the hierarchy: asking for a run that is not there is the
-        `NOT_FOUND` entry of the mapping table above, so it lands on `404` with no special case.
+        基类处理器覆盖整条继承链：请求一次并不存在的运行就对应上面映射表里的 `NOT_FOUND`
+        条目，因此会落到 `404`，不需要任何特例分支。
         """
         return problem_response(
             request,
@@ -295,11 +298,10 @@ def add_problem_handlers(app: FastAPI) -> None:
         request: Request,
         exc: TopicError,
     ) -> JSONResponse:
-        """Render a refused topic change with its own stable code.
+        """用各自稳定的 code 渲染被拒绝的主题变更。
 
-        The base handler covers the hierarchy, so a topic that is not there lands on `404` through
-        the shared `NOT_FOUND` entry and the two conflicts land on `409`, with no per-class
-        branches to keep in step.
+        基类处理器覆盖整条继承链：不存在的主题经共享的 `NOT_FOUND` 条目落到
+        `404`，另外两种冲突落到 `409`，无需为每个子类各写一条分支来保持同步。
         """
         return problem_response(
             request,

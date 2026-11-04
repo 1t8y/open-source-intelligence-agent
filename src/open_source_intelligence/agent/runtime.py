@@ -1,9 +1,8 @@
-"""Run one bounded research Agent over a topic window and persist the whole trail.
+"""在一个主题时间窗上运行一次有界研究 Agent，并持久化整条轨迹。
 
-The runtime is the only place that decides what a run is allowed to touch: it resolves the
-Agent config, picks the authorise-able candidate repositories, injects a trusted
-`ToolContext`, and drives the graph. Nothing about authorization is reachable from model
-arguments.
+运行时是唯一决定一次运行可以碰什么的场所：它解析 Agent 配置、挑出可授权
+的候选仓库、注入可信的 `ToolContext`，并驱动图。授权相关的任何东西都无法
+从模型参数触达。
 """
 
 from __future__ import annotations
@@ -53,16 +52,16 @@ from open_source_intelligence.persistence.models.intelligence import (
     TopicRepository,
 )
 
-#: Name of the Agent configuration row the runtime creates when none exists yet.
+#: 尚不存在任何配置时，运行时创建的 Agent 配置行名称。
 DEFAULT_AGENT_CONFIG_NAME = "default-research-agent"
 
-#: Upper bound on the failure detail kept on `pipeline_runs.metrics_json`.
+#: `pipeline_runs.metrics_json` 上保留的失败详情长度上限。
 MAX_FAILURE_DETAIL_CHARS = 2000
 
 
 @dataclass(slots=True)
 class AgentRunResult:
-    """Summary of one finished research run."""
+    """一次已完成研究运行的摘要。"""
 
     agent_run_id: int
     pipeline_run_id: int
@@ -84,7 +83,7 @@ class AgentRunResult:
     verification: VerificationResult | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe summary."""
+        """返回 JSON 安全的摘要。"""
         return {
             "agent_run_id": self.agent_run_id,
             "pipeline_run_id": self.pipeline_run_id,
@@ -109,10 +108,10 @@ class AgentRunResult:
 
 
 def resolve_allowed_tools(policy: dict[str, Any]) -> tuple[str, ...]:
-    """Intersect the configured tool policy with the hard-coded whitelist.
+    """把配置里的工具策略与硬编码白名单取交集。
 
-    A policy can only ever shrink the whitelist. When the policy is absent or malformed the
-    full whitelist applies, so a broken config cannot silently widen or silently disable tools.
+    策略只可能收窄白名单。策略缺失或格式不对时，整份白名单生效，这样一份坏配置既
+    无法悄悄放宽工具，也无法悄悄禁用工具。
     """
     requested = policy.get("tools")
     if not isinstance(requested, list):
@@ -125,11 +124,11 @@ def apply_profile(
     configured_tools: tuple[str, ...],
     profile: ExecutionProfile,
 ) -> tuple[str, ...]:
-    """Narrow an already-authorized tool set by an execution profile.
+    """用执行画像收窄一份已经授权的工具集合。
 
-    Order matters: the config narrows the whitelist, and the profile narrows the result, so an
-    ablation can only ever remove capability. `save_report_section` is re-added if the config
-    had granted it, because an ablation that produced no draft at all would measure nothing.
+    顺序很重要：配置先收窄白名单，画像再收窄结果，因此消融只可能移除能力。若配置
+    原本就授予了 `save_report_section`，它会被重新加回来，因为一次完全
+    产不出草稿的消融什么都衡量不了。
     """
     allowed = tuple(name for name in configured_tools if profile.allows(name))
     if WRITE_TOOL in configured_tools and WRITE_TOOL not in allowed:
@@ -141,10 +140,10 @@ def _plan_schemas(
     registry: ToolRegistry,
     allowed_tools: tuple[str, ...],
 ) -> tuple[ToolSchema, ...]:
-    """Return the schemas a run may plan with.
+    """返回一次运行可以用来做规划的那些 schema。
 
-    Draft writing is never a planned action - the graph calls it directly once the research
-    stage is over - so it is withheld from the model even when the run may use it.
+    起草从来不是规划动作 —— 研究阶段结束后由图直接调用 —— 所以即使运行有权使用
+    它，也不会把它交给模型。
     """
     return tuple(
         schema
@@ -154,25 +153,23 @@ def _plan_schemas(
 
 
 def evidence_tool_floor(candidate_count: int) -> int:
-    """Return the fewest tool calls a run needs before the verifier can possibly pass it.
+    """返回验证器有可能通过之前，一次运行所需的最少工具调用数。
 
-    The verifier asks for three kinds of evidence (`graph._verify_node`): a profile **and** metrics
-    for every candidate, at least one cached README, and at least one prior-report query. That is
-    `2 x candidates + 2` calls, and any budget below it produces a run that cannot succeed no
-    matter how well the model reasons.
+    验证器要求三类证据（`graph._verify_node`）：每个候选的画像**和**指标、
+    至少一份缓存的 README、至少一次历史报告查询。也就是 `2 x 候选数 + 2`
+    次调用，任何低于它的预算都会产出一个无论模型推理多好都不可能成功的运行。
 
-    This exists because the two numbers were configured independently and drifted apart: the
-    default candidate limit is 5 and the default budget was 10, so every scheduled run spent its
-    last call on the tenth profile/metrics lookup, never read a README, recorded
-    `AGENT_EVIDENCE_INCOMPLETE`, and produced no report - quietly, once a day. Tool calls cost no
-    tokens (only the model turns that request them do), so the floor lifts the budget rather than
-    shrinking the candidate set: the alternative silently narrows what the report covers.
+    它存在的原因是这两个数字曾各自独立配置并逐渐脱节：默认候选上限是 5，而默认
+    预算曾是 10，于是每次定时运行都把最后一次调用花在第十次画像/指标查询上，从不
+    读 README，记下 `AGENT_EVIDENCE_INCOMPLETE`，也不产出报告 —— 每天一次，
+    悄无声息。工具调用不花 token（只有请求它们的模型轮次才花），所以这个下限是
+    把预算抬上去，而不是把候选集缩小：后一种做法会悄悄缩窄报告的覆盖面。
     """
     return 2 * max(0, candidate_count) + 2
 
 
 def load_or_create_config(session: Session, settings: Settings) -> AgentConfig:
-    """Return the enabled Agent config, creating the default row on first use."""
+    """返回已启用的 Agent 配置，首次使用时创建默认行。"""
     config = session.scalar(
         select(AgentConfig)
         .where(AgentConfig.name == DEFAULT_AGENT_CONFIG_NAME, AgentConfig.enabled.is_(True))
@@ -206,13 +203,12 @@ def _record_crashed_run(
     pipeline_run: PipelineRun,
     error: BaseException,
 ) -> None:
-    """Write a terminal `failed` state for a run that blew up outside the graph's control.
+    """为在图控制之外炸掉的运行写入终态 `failed`。
 
-    Without this, an exception escaping a node (a broken provider adapter, a database
-    hiccup while recording a step) would leave `agent_runs` and `pipeline_runs` stuck in
-    `running` forever, so operators could not tell a live run from a dead one. The original
-    exception is always re-raised by the caller; if the recovery write itself fails, the
-    session is rolled back rather than masking the original failure.
+    没有它，从节点里逃出来的异常（供应商适配器坏了、记录步骤时数据库抖了
+    一下）会让 `agent_runs` 与 `pipeline_runs` 永远停在 `running`，运维人员
+    就分不清运行是活着还是死了。原始异常始终由调用方重新抛出；若补救写入
+    本身也失败，则回滚会话，而不是掩盖原始失败。
     """
     try:
         recorder.finish(status="failed", error_code=AGENT_INTERNAL_ERROR)
@@ -225,12 +221,12 @@ def _record_crashed_run(
             or error.__class__.__name__,
         }
         session.commit()
-    except Exception:  # noqa: BLE001 - never mask the original failure
+    except Exception:  # noqa: BLE001 - 绝不掩盖原始失败
         session.rollback()
 
 
 def load_candidate_repo_ids(session: Session, *, topic_id: int, limit: int) -> list[int]:
-    """Return the ranked, Agent-selected repository ids for one topic."""
+    """返回某个主题下按排名排序、由 Agent 选中的仓库 id。"""
     rows = session.scalars(
         select(TopicRepository.repository_id)
         .where(
@@ -250,7 +246,7 @@ def resolve_window(
     window_end: datetime | None,
     now: datetime | None = None,
 ) -> tuple[datetime, datetime]:
-    """Resolve the research window, defaulting to the topic's trailing window."""
+    """解析研究时间窗，默认取该主题的滚动窗口。"""
     resolved_end = window_end or now or utc_now()
     resolved_start = window_start or (resolved_end - timedelta(days=topic.window_days))
     if resolved_start > resolved_end:
@@ -265,7 +261,7 @@ def build_user_context(
     window_start: datetime,
     window_end: datetime,
 ) -> str:
-    """Render the machine-readable context block every provider reads."""
+    """渲染每个供应商都会读到的机器可读上下文块。"""
     window = json.dumps(
         {"start": window_start.isoformat(), "end": window_end.isoformat()},
         ensure_ascii=False,
@@ -284,14 +280,13 @@ def build_user_context(
 
 
 def _terminal_status(state: AgentState) -> tuple[str, str | None]:
-    """Decide the run's terminal status from the final graph state.
+    """由图的最终状态判定运行的终态。
 
-    Budget exhaustion and a missing evidence base are not crashes: they mean the draft needs
-    a human. Only transport, model, and payload failures mark the run as failed.
+    预算耗尽与证据基础缺失都不是崩溃：它们意味着草稿需要人工。只有传输、模型与
+    载荷失败才把运行标记为 failed。
 
-    `completed` requires both a complete evidence base and no error code at all, so a run
-    that hit a review-worthy problem (say a draft section that could not be stored) can never
-    be reported as a clean completion.
+    `completed` 同时要求证据基础完整且完全没有错误码，因此撞上过值得复核的问题的
+    运行（比如某个草稿章节存不下来），永远不会被报告成一次干净的完成。
     """
     error_code = state.get("error_code")
     verification = state.get("verification")
@@ -317,10 +312,10 @@ def run_research_agent(
     now: datetime | None = None,
     profile: ExecutionProfile = AGENT_FULL,
 ) -> AgentRunResult:
-    """Execute one bounded research run and return its summary.
+    """执行一次有界研究运行并返回其摘要。
 
-    `profile` is the ablation switch the evaluation runner uses; a production run leaves it at
-    `AGENT_FULL`, where it changes nothing.
+    `profile` 是评测运行器使用的消融开关；生产运行把它留在 `AGENT_FULL`，
+    在那里它什么都不改变。
     """
     topic = session.get(Topic, topic_id)
     if topic is None:
@@ -373,7 +368,7 @@ def run_research_agent(
     recorder = StepRecorder(session, agent_run)
     recorder.mark_running()
 
-    # The configured cap is a ceiling, not a target: the evidence bar sets a floor under it.
+    # 配置的上限是天花板而非目标：证据门槛会在它下面设一个下限。
     tool_budget = max(config.max_tool_calls, evidence_tool_floor(len(candidate_ids)))
     context = ToolContext(
         agent_run_id=agent_run.id,
@@ -441,7 +436,7 @@ def run_research_agent(
     }
     try:
         final_state = cast(AgentState, graph.invoke(initial_state))
-    except Exception as exc:  # noqa: BLE001 - the run must still reach a terminal state
+    except Exception as exc:  # noqa: BLE001 - 运行必须到达终态
         _record_crashed_run(session, recorder, pipeline_run, exc)
         raise
 

@@ -1,9 +1,8 @@
-"""HTTP webhook delivery channel.
+"""HTTP Webhook 投递渠道。
 
-The body is the JSON form of the message. When a signing secret is configured the adapter adds
-`X-OSIA-Signature: sha256=<hex>` over the exact bytes it sends, so the receiver can verify both
-the origin and that the payload was not altered in flight. A non-2xx response is a failed
-receipt, not an exception, so the row stays retryable.
+请求体是消息的 JSON 形式。配置了签名密钥时，适配器会针对它实际发送的确切字节追加
+`X-OSIA-Signature: sha256=<hex>` 头，使接收方既能校验来源，也能校验载荷在传输途中未被
+篡改。非 2xx 响应是一条失败回执而不是异常，因此该行保持可重试。
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ SIGNATURE_HEADER = "X-OSIA-Signature"
 
 
 def validate_webhook_url(destination: str) -> SplitResult:
-    """Validate the destination shape without performing DNS resolution."""
+    """校验目的地的结构，不执行 DNS 解析。"""
     parts = urlsplit(destination)
     if parts.scheme != "https" or not parts.hostname:
         raise PushTargetNotAllowed("webhook destinations must be absolute HTTPS URLs")
@@ -42,12 +41,12 @@ def validate_webhook_destination(
     *,
     allow_private: bool = False,
 ) -> None:
-    """Reject webhook URLs that resolve to loopback, private, or other non-public addresses.
+    """拒绝解析到回环、私网或其它非公网地址的 Webhook URL。
 
-    `allow_private` is the test-only escape hatch (driven by
-    `push_webhook_allow_private_targets`): a local receiver necessarily lives on a loopback or
-    private address, and flipping it lets a `local`/`test` deployment prove real delivery. The
-    setting is refused outside `local`/`test`, so the SSRF guard is never widened in production.
+    `allow_private` 是仅供测试的逃生口（由 `push_webhook_allow_private_targets` 驱动）：
+    本地接收器必然位于回环或私网地址上，打开开关后，`local`/`test` 部署就能证明真实投递
+    确实可用。该设置在 `local`/`test` 之外一律被拒绝，因此生产环境中的 SSRF 守卫绝不会
+    被放宽。
     """
     parts = validate_webhook_url(destination)
     hostname = parts.hostname
@@ -75,13 +74,13 @@ def validate_webhook_destination(
 
 
 def sign_body(secret: str, body: bytes) -> str:
-    """Return the HMAC-SHA256 signature header value for one request body."""
+    """返回某次请求体的 HMAC-SHA256 签名头值。"""
     digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
 
 
 class WebhookChannel:
-    """Deliver a report notification to an HTTP endpoint."""
+    """把一条报告通知投递到 HTTP 端点。"""
 
     def __init__(
         self,
@@ -98,11 +97,11 @@ class WebhookChannel:
 
     @property
     def channel(self) -> str:
-        """Return the channel identifier."""
+        """返回渠道标识。"""
         return "webhook"
 
     def send(self, *, destination: str, message: OutboundMessage) -> DeliveryReceipt:
-        """POST one JSON notification, signing it when a secret is configured."""
+        """POST 一条 JSON 通知，配置了密钥时对其签名。"""
         validate_webhook_destination(destination, allow_private=self._allow_private)
         body = json.dumps(message.to_dict(), ensure_ascii=False, sort_keys=True).encode()
         headers = {"Content-Type": "application/json"}

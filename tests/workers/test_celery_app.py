@@ -1,4 +1,4 @@
-"""Tests for Celery configuration and task execution."""
+"""守护 Celery 的配置与任务执行。"""
 
 from open_source_intelligence.core.config import Settings
 from open_source_intelligence.workers.celery_app import (
@@ -9,7 +9,7 @@ from open_source_intelligence.workers.tasks import healthcheck
 
 
 def build_settings() -> Settings:
-    """Create deterministic Celery test settings."""
+    """构造一套确定的 Celery 测试配置。"""
     return Settings(
         _env_file=None,
         app_env="test",
@@ -21,7 +21,7 @@ def build_settings() -> Settings:
 
 
 def test_celery_app_uses_redis_and_json_serialization() -> None:
-    """Celery must use the configured Redis broker and JSON payloads."""
+    """证明 Celery 用的是配置好的 Redis broker 与 JSON 消息体。"""
     app = create_celery_app(build_settings())
 
     assert app.conf.broker_url == "redis://localhost:6379/15"
@@ -31,7 +31,7 @@ def test_celery_app_uses_redis_and_json_serialization() -> None:
 
 
 def test_healthcheck_task_is_registered_and_eagerly_executable() -> None:
-    """The health task logic should execute without a live Redis broker in tests."""
+    """证明健康检查任务的逻辑在没有活的 Redis broker 时也能跑。"""
     app = create_celery_app(build_settings())
 
     assert HEALTHCHECK_TASK in app.tasks

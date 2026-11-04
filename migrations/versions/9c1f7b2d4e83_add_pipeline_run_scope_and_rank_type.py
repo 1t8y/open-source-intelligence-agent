@@ -1,4 +1,8 @@
-"""add pipeline run scope and rank run type
+"""允许全局流水线运行并新增 rank 运行类型
+
+把 `pipeline_runs.topic_id` 改为可空，采集、快照、排名这些不依附单一主题的阶段才能
+记录运行；同时把 `rank` 加入 `run_type` 枚举，并用新的主题范围约束限定哪些类型可以
+没有 `topic_id` —— 只有全局阶段才允许为空。
 
 Revision ID: 9c1f7b2d4e83
 Revises: 8f2c1d4a6b70
@@ -21,7 +25,7 @@ TOPIC_SCOPE_CHECK = "ck_pipeline_runs_topic_scope_valid"
 
 
 def upgrade() -> None:
-    """Allow global collect, snapshot, and rank runs and add the rank run type."""
+    """允许不带主题的采集、快照与排名运行，并新增 `rank` 运行类型。"""
     op.alter_column(
         "pipeline_runs",
         "topic_id",
@@ -44,13 +48,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Restore the topic-scoped run type constraint."""
+    """恢复按主题限定运行类型的约束。"""
     op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{TOPIC_SCOPE_CHECK}`"))
     op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{RUN_TYPE_CHECK}`"))
     op.execute(
         sa.text("DELETE FROM `pipeline_runs` WHERE `topic_id` IS NULL"),
     )
-    # MySQL refuses to change a column that is still referenced by a foreign key.
+    # MySQL 拒绝修改仍被外键引用的列，所以先删外键，改完可空性再加回来。
     op.drop_constraint(
         "fk_pipeline_runs_topic_id_topics",
         "pipeline_runs",

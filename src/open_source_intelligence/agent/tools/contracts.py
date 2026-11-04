@@ -1,8 +1,7 @@
-"""Pydantic runtime contract for the whitelisted Agent tools.
+"""白名单 Agent 工具的 Pydantic 运行时契约。
 
-The human-readable contract lives in `docs/agent-tool-contract.md`. Field names,
-types, limits, and error codes here must stay byte-for-byte consistent with that
-document and with `INTERFACES.md`.
+给人读的契约放在 `docs/agent-tool-contract.md`。这里的字段名、类型、上限与
+错误码，必须与该文档以及 `INTERFACES.md` 逐字节保持一致。
 """
 
 from __future__ import annotations
@@ -56,13 +55,13 @@ REPORT_SECTION_KEYS = (
 
 
 class StrictModel(BaseModel):
-    """Base model that rejects unknown fields and refuses type coercion."""
+    """拒绝未知字段、并拒绝类型强转的基类模型。"""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class ToolError(StrictModel):
-    """Stable, model-safe error payload."""
+    """稳定、且对模型安全的错误载荷。"""
 
     code: str
     message: str
@@ -70,7 +69,7 @@ class ToolError(StrictModel):
 
 
 class ToolMeta(StrictModel):
-    """Invocation metadata every tool result must carry."""
+    """每次工具结果都必须携带的调用元数据。"""
 
     tool_name: str
     latency_ms: int = Field(ge=0)
@@ -79,7 +78,7 @@ class ToolMeta(StrictModel):
 
 
 class ToolResult(StrictModel, Generic[T]):
-    """Uniform result envelope returned by every tool invocation."""
+    """每次工具调用都返回的统一结果信封。"""
 
     ok: bool
     data: T | None = None
@@ -88,7 +87,7 @@ class ToolResult(StrictModel, Generic[T]):
 
 
 class QueryRepoMetricsInput(StrictModel):
-    """Input for `query_repo_metrics`."""
+    """`query_repo_metrics` 的入参。"""
 
     repo_id: int = Field(gt=0)
     start: datetime
@@ -97,7 +96,7 @@ class QueryRepoMetricsInput(StrictModel):
 
     @model_validator(mode="after")
     def validate_window(self) -> QueryRepoMetricsInput:
-        """Reject inverted or over-long windows before touching the database."""
+        """在访问数据库之前，先拒绝起止颠倒或跨度过长的窗口。"""
         if self.start > self.end:
             raise ValueError("start must not be after end")
         if self.end - self.start > timedelta(days=MAX_METRIC_RANGE_DAYS):
@@ -106,7 +105,7 @@ class QueryRepoMetricsInput(StrictModel):
 
 
 class MetricPoint(StrictModel):
-    """One daily metric point for a repository."""
+    """仓库的单个每日指标点。"""
 
     snapshot_date: date
     stars: int
@@ -117,13 +116,13 @@ class MetricPoint(StrictModel):
 
 
 class GetRepositoryProfileInput(StrictModel):
-    """Input for `get_repository_profile`."""
+    """`get_repository_profile` 的入参。"""
 
     repo_id: int = Field(gt=0)
 
 
 class RepositoryProfile(StrictModel):
-    """Repository master data and latest counters."""
+    """仓库主数据与最新计数。"""
 
     repo_id: int
     provider: str
@@ -140,7 +139,7 @@ class RepositoryProfile(StrictModel):
 
 
 class GetRepositoryContentInput(StrictModel):
-    """Input for `get_repository_content`."""
+    """`get_repository_content` 的入参。"""
 
     repo_id: int = Field(gt=0)
     content_type: Literal["readme"] = "readme"
@@ -153,7 +152,7 @@ class GetRepositoryContentInput(StrictModel):
 
 
 class ContentSnippet(StrictModel):
-    """Cleaned, truncated, and always-untrusted repository content."""
+    """已清洗、已截断、且始终标记为不可信的仓库内容。"""
 
     repo_id: int
     source_url: str
@@ -164,7 +163,7 @@ class ContentSnippet(StrictModel):
 
 
 class SearchPriorReportsInput(StrictModel):
-    """Input for `search_prior_reports`."""
+    """`search_prior_reports` 的入参。"""
 
     topic_id: int = Field(gt=0)
     repo_id: int | None = Field(default=None, gt=0)
@@ -178,7 +177,7 @@ class SearchPriorReportsInput(StrictModel):
 
 
 class ReportSummary(StrictModel):
-    """Compact view of one prior report."""
+    """一份往期报告的紧凑视图。"""
 
     report_id: int
     title: str
@@ -189,12 +188,12 @@ class ReportSummary(StrictModel):
 
 
 class CitationRef(StrictModel):
-    """One evidence reference attached to a saved section.
+    """挂在某个已保存章节上的一条证据引用。
 
-    Types are still strict, but unknown fields are tolerated. A citation is the *inner* part of a
-    draft envelope, and the envelope was already relaxed to `extra="ignore"`: leaving this one
-    strict would mean a model that adds `"claim": "..."` to a citation still fails the entire
-    draft, so the failure rate would follow the envelope after all.
+    类型仍然严格，但容忍未知字段。引用是草稿信封的*内层*部分，
+    而外层信封早已放宽为 `extra="ignore"`：如果这里继续严格，模型只要给某条
+    引用加上 `"claim": "..."`，整份草稿仍会校验失败，
+    那么失败率终究还是由外层信封说了算。
     """
 
     model_config = ConfigDict(extra="ignore", strict=True)
@@ -205,7 +204,7 @@ class CitationRef(StrictModel):
 
 
 class SaveReportSectionInput(StrictModel):
-    """Input for `save_report_section`."""
+    """`save_report_section` 的入参。"""
 
     section_key: str
     content_markdown: str = Field(min_length=1, max_length=MAX_SECTION_CHARS)
@@ -218,14 +217,14 @@ class SaveReportSectionInput(StrictModel):
     @field_validator("section_key")
     @classmethod
     def validate_section_key(cls, value: str) -> str:
-        """Only report template sections may be written."""
+        """只允许写入报告模板中列出的章节。"""
         if value not in REPORT_SECTION_KEYS:
             raise ValueError(f"section_key must be one of: {', '.join(REPORT_SECTION_KEYS)}")
         return value
 
 
 class SectionRef(StrictModel):
-    """Reference to a stored report-draft section version."""
+    """指向某个已存报告草稿章节版本的引用。"""
 
     report_draft_id: int
     section_key: str

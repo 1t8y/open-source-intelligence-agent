@@ -1,4 +1,4 @@
-"""Tests for `get_repository_content`: cleaning, truncation, and untrusted flag."""
+"""守护 `get_repository_content` 的用例：清洗、截断与不可信标记。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _seed(workspace: Workspace):
 
 
 def test_returns_cleaned_untrusted_content(workspace: Workspace) -> None:
-    """Script tags and control characters are stripped before returning text."""
+    """证明返回文本之前，script 标签与控制字符已被剥掉。"""
     topic, repository, run = _seed(workspace)
     raw = "# Rocket\n<script>alert('x')</script>\n\n\n\nA tool\x07 for agents"
     workspace.add_content(repository.id, content=raw, source_url="https://example.com/readme")
@@ -52,7 +52,7 @@ def test_returns_cleaned_untrusted_content(workspace: Workspace) -> None:
 
 
 def test_long_content_is_truncated_and_flagged(workspace: Workspace) -> None:
-    """Content beyond max_chars is cut exactly at the bound and flagged."""
+    """证明超出 max_chars 的正文会在边界处被精确截断并打上标记。"""
     topic, repository, run = _seed(workspace)
     workspace.add_content(repository.id, content="a" * MAX_CONTENT_CHARS)
     registry = build_default_registry()
@@ -73,7 +73,7 @@ def test_long_content_is_truncated_and_flagged(workspace: Workspace) -> None:
 
 
 def test_short_content_is_not_truncated(workspace: Workspace) -> None:
-    """Content under the bound is returned whole with truncated=False."""
+    """证明未到边界的正文原样整份返回，truncated=False。"""
     topic, repository, run = _seed(workspace)
     workspace.add_content(repository.id, content="short readme")
     registry = build_default_registry()
@@ -91,7 +91,7 @@ def test_short_content_is_not_truncated(workspace: Workspace) -> None:
 
 
 def test_missing_content_returns_not_found(workspace: Workspace) -> None:
-    """A repository without cached content reports TOOL_NOT_FOUND."""
+    """证明没有缓存正文的仓库会返回 TOOL_NOT_FOUND。"""
     topic, repository, run = _seed(workspace)
     registry = build_default_registry()
 
@@ -108,7 +108,7 @@ def test_missing_content_returns_not_found(workspace: Workspace) -> None:
 
 
 def test_unauthorized_repository_is_denied(workspace: Workspace) -> None:
-    """Content of an unauthorized repository is not readable."""
+    """证明未授权仓库的正文读不到。"""
     topic, repository, run = _seed(workspace)
     other = workspace.add_topic(name="Other")
     workspace.add_content(repository.id, content="secret readme")

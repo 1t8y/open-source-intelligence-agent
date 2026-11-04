@@ -1,12 +1,10 @@
-"""Tests for rebuilding evidence from recorded tool observations.
+"""守护「从记录下来的工具观测重建证据」的用例。
 
-The defect these cover was invisible to every type check in the codebase: a failed tool call and
-a successful one are both JSON objects, so `isinstance(payload, dict)` accepted both. A call that
-answered `TOOL_NOT_FOUND` was therefore filed as "the cached README was read", the draft cited a
-document the model never received, and report generation later died on a citation whose source row
-does not exist. Every test below that asserts a failure is excluded is paired with the assertion
-that a success is still absorbed - otherwise "the fix" would also be satisfied by collecting
-nothing at all.
+它们覆盖的缺陷对仓库里所有类型检查都不可见：失败的工具调用与成功的调用都是 JSON
+对象，`isinstance(payload, dict)` 两者都收。于是一次回答 `TOOL_NOT_FOUND` 的调用被
+记成「缓存 README 已读过」，草稿引用了一份模型从未收到的文档，报告生成随后死在一个
+源行根本不存在的引用上。下面每一条断言「失败被排除」的用例，都配了一条断言「成功
+仍被吸收」的用例 —— 否则「什么都没收集」也能满足所谓的修复。
 """
 
 import json
@@ -24,7 +22,7 @@ REPO_ID = 99
 
 
 def tool_call(call_id: str, name: str, repo_id: int = REPO_ID) -> ChatMessage:
-    """Build the assistant turn that requested one repository tool."""
+    """构造请求某个仓库工具的 assistant 轮次。"""
     return ChatMessage(
         role="assistant",
         tool_calls=(ModelToolCall(call_id=call_id, name=name, arguments={"repo_id": repo_id}),),
@@ -32,7 +30,7 @@ def tool_call(call_id: str, name: str, repo_id: int = REPO_ID) -> ChatMessage:
 
 
 def observation(call_id: str, name: str, payload: Any) -> ChatMessage:
-    """Build the tool message the graph would have appended for that call."""
+    """构造图本该为那次调用追加的 tool 消息。"""
     return ChatMessage(
         role="tool",
         name=name,
@@ -42,12 +40,12 @@ def observation(call_id: str, name: str, payload: Any) -> ChatMessage:
 
 
 def failure(code: str = "TOOL_NOT_FOUND") -> dict[str, Any]:
-    """Build the failure shell the graph renders."""
+    """构造图渲染出来的失败外壳。"""
     return tool_error_payload(code, "repository content not available")
 
 
 def content_payload() -> dict[str, Any]:
-    """Build a successful `get_repository_content` payload."""
+    """构造一份成功的 `get_repository_content` 载荷。"""
     return {
         "repo_id": REPO_ID,
         "source_url": "https://github.com/example/repo/blob/main/README.md",
@@ -59,16 +57,15 @@ def content_payload() -> dict[str, Any]:
 
 
 def profile_payload() -> dict[str, Any]:
-    """Build a successful `get_repository_profile` payload."""
+    """构造一份成功的 `get_repository_profile` 载荷。"""
     return {"full_name": "example/repo", "stars": 1234}
 
 
 def readme_source_refs(messages: list[ChatMessage]) -> set[str]:
-    """Return the set of readme citations the draft would end up citing.
+    """返回草稿最终会引用到的 readme 引用集合。
 
-    A set because the same citation legitimately appears in more than one section ("risks" and
-    "appendix" both cite the cached README when one was read); what matters here is whether the
-    document is cited at all.
+    之所以用集合，是因为同一条引用合法地会出现在不止一个章节里（读到 README 时，
+    「风险」与「附录」都会引用缓存的那份）；这里在乎的只是这份文档到底有没有被引用。
     """
     sections = compose_sections(_collect_evidence(messages))
     return {
@@ -80,7 +77,7 @@ def readme_source_refs(messages: list[ChatMessage]) -> set[str]:
 
 
 def test_a_failed_read_is_not_filed_as_evidence() -> None:
-    """`TOOL_NOT_FOUND` says the document was not read, so it cannot become evidence."""
+    """证明 `TOOL_NOT_FOUND` 意味着文档没读到，因此不能变成证据。"""
     messages = [
         tool_call("c1", "get_repository_content"),
         observation("c1", "get_repository_content", failure()),
@@ -96,7 +93,7 @@ def test_a_failed_read_is_not_filed_as_evidence() -> None:
 
 
 def test_a_successful_read_is_still_absorbed() -> None:
-    """The control: filtering failures must not filter successes."""
+    """这是对照组：过滤失败不能连成功一起过滤掉。"""
     messages = [
         tool_call("c1", "get_repository_content"),
         observation("c1", "get_repository_content", content_payload()),
@@ -111,7 +108,7 @@ def test_a_successful_read_is_still_absorbed() -> None:
 
 
 def test_a_failed_read_never_becomes_a_readme_citation() -> None:
-    """The user-visible consequence: no citation to a document nobody read."""
+    """这是用户可见的后果：不会去引用一份没人读过的文档。"""
     failed = [
         tool_call("c1", "get_repository_content"),
         observation("c1", "get_repository_content", failure()),
@@ -126,7 +123,7 @@ def test_a_failed_read_never_becomes_a_readme_citation() -> None:
 
 
 def test_a_later_success_replaces_an_earlier_failure() -> None:
-    """The model may retry the same repository; only the successful read is evidence."""
+    """证明模型可以重试同一个仓库；只有成功的那次读取才算证据。"""
     messages = [
         tool_call("c1", "get_repository_content"),
         observation("c1", "get_repository_content", failure()),
@@ -141,7 +138,7 @@ def test_a_later_success_replaces_an_earlier_failure() -> None:
 
 
 def test_a_failed_metric_query_does_not_become_an_empty_series() -> None:
-    """The list-valued branches are unaffected, and stay that way."""
+    """证明取列表的那几个分支不受影响，并且继续保持不受影响。"""
     messages = [
         tool_call("c1", "query_repo_metrics"),
         observation("c1", "query_repo_metrics", failure("TOOL_NOT_FOUND")),
@@ -163,7 +160,7 @@ def test_a_failed_metric_query_does_not_become_an_empty_series() -> None:
 
 
 def test_the_failure_predicate_tells_a_shell_from_a_payload() -> None:
-    """The predicate is the shared judgement, so it is pinned on its own."""
+    """这个谓词是各处共用的判断，所以单独钉住。"""
     assert is_tool_error_payload(tool_error_payload("TOOL_NOT_FOUND", "gone"))
     assert is_tool_error_payload({"error": {"code": "X"}})
     assert not is_tool_error_payload(content_payload())
@@ -174,7 +171,7 @@ def test_the_failure_predicate_tells_a_shell_from_a_payload() -> None:
 
 
 def series(*counts: tuple[int, int]) -> list[dict[str, Any]]:
-    """Build a metric series from `(day_of_month, stars)` pairs."""
+    """用 `(日, stars)` 对构造一条指标序列。"""
     return [{"snapshot_date": f"2026-10-{day:02d}", "stars": stars} for day, stars in counts]
 
 
@@ -183,7 +180,7 @@ def evidence_messages(
     *,
     read: tuple[int, ...] = (),
 ) -> list[ChatMessage]:
-    """Build the observation turns for several repositories' metrics, plus any README reads."""
+    """为多个仓库的指标构造观测轮次，并附上需要读取的 README。"""
     messages: list[ChatMessage] = []
     call_index = 0
     for repo_id, points in series_by_repo.items():
@@ -198,18 +195,17 @@ def evidence_messages(
 
 
 def sections_by_key(messages: list[ChatMessage]) -> dict[str, str]:
-    """Return `section_key -> markdown` for a composed draft."""
+    """返回已组装草稿的 `section_key -> markdown` 映射。"""
     sections = compose_sections(_collect_evidence(messages))
     return {section["section_key"]: section["content_markdown"] for section in sections}
 
 
 def test_no_section_repeats_another_line_for_line() -> None:
-    """Two of six sections used to say the same sentence twice.
+    """证明六个章节里曾有两节把同一句话说两遍。
 
-    "本周摘要" named the top movers and "重点项目" restated them with the same label and the same
-    delta, so a six-section report carried five sections' worth of information. Each section has to
-    earn its place: the summary states the conclusion, the trend section the direction, and the
-    highlights the share of the movement each repository accounts for.
+    「本周摘要」点名了涨幅最大的几个，「重点项目」又用同样的标签、同样的增量复述一遍，
+    于是一份六节的报告只承载了五节的信息量。每一节都得挣到自己的位置：摘要给结论，
+    趋势节给方向，亮点节给各仓库在总变动中占的份额。
     """
     body = sections_by_key(
         evidence_messages(
@@ -228,13 +224,13 @@ def test_no_section_repeats_another_line_for_line() -> None:
 
     assert not set(summary) & set(highlights)
     assert not set(trend) & set(highlights)
-    # The highlight section still has to say something about the movers.
+    # 亮点节仍然得对涨得最猛的那几个说点什么。
     assert len(highlights) == 1
     assert "占本期合计净增的" in highlights[0]
 
 
 def test_highlights_rank_by_share_of_the_topic_movement() -> None:
-    """The highlight line carries information the trend line does not: the share."""
+    """证明亮点行带着趋势行没有的信息：份额。"""
     body = sections_by_key(
         evidence_messages(
             {
@@ -245,17 +241,17 @@ def test_highlights_rank_by_share_of_the_topic_movement() -> None:
     )
 
     highlights = body["highlights"]
-    # Repo 1 gained 300, repo 2 gained 2, so the total is 302 and repo 1 is 99%.
+    # 仓库 1 涨了 300，仓库 2 涨了 2，合计 302，仓库 1 占 99%。
     assert "净增 300 stars" in highlights
     assert "占本期合计净增的 99%" in highlights
 
 
 def test_an_unread_readme_is_not_reported_as_missing() -> None:
-    """The risk line must state what this code knows: the README was not read.
+    """证明风险行必须只陈述这份代码知道的事：README 没被读过。
 
-    It used to say "没有缓存到 README", an assertion about `repository_contents` that the composer
-    never checks. The offline planner stops reading content after its budget, so a cached README
-    would be reported as absent — a factual error inside a published report.
+    它原本写「没有缓存到 README」，那是关于 `repository_contents` 的断言，而组装器
+    从不检查那张表。离线规划器在预算用尽后就停止读正文，于是一份已经缓存好的 README
+    会被报成不存在 —— 一个出现在已发布报告里的事实错误。
     """
     body = sections_by_key(
         evidence_messages(

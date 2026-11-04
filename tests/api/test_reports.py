@@ -1,7 +1,6 @@
-"""Integration tests for the report API.
+"""守护报告 API：列表、读取、编辑、校验、评审、发布、回滚这条验收链路。
 
-They cover the T12 acceptance path end to end over HTTP: list, read, edit, verify, review,
-publish, and roll back — plus the access control that guards all of it.
+用例用 HTTP 把 T12 的验收路径整条走一遍，并覆盖守着它的访问控制。
 """
 
 from __future__ import annotations
@@ -37,26 +36,26 @@ BASE = "/api/v1/reports"
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def admin(session: Session) -> Actor:
-    """An administrator with a personal data scope."""
+    """数据范围为「个人」的管理员。"""
     return create_actor(session, username="admin", role="ADMIN")
 
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """An editor on the team data scope, able to read and write team reports."""
+    """团队数据范围上的编辑，能读写团队报告。"""
     return create_actor(session, username="editor", role="EDITOR", data_scope="team")
 
 
 @pytest.fixture()
 def viewer(session: Session) -> Actor:
-    """A read-only user with a personal data scope."""
+    """数据范围为「个人」的只读用户。"""
     return create_actor(session, username="viewer", role="VIEWER")
 
 
@@ -68,7 +67,7 @@ def _seed(
     visibility: str = "TEAM",
     prior_publication: bool = False,
 ) -> SeededReport:
-    """Build a report and optionally give its topic an earlier published report."""
+    """造一份报告，必要时再给它的主题补一份更早的已发布报告。"""
     case = build_report(session, workspace, publish_mode=publish_mode)
     configure_report(session, report_id=case.report_id, visibility=visibility)
     if prior_publication:
@@ -77,7 +76,7 @@ def _seed(
 
 
 # --------------------------------------------------------------------------------------
-# Access control
+# 访问控制
 # --------------------------------------------------------------------------------------
 
 
@@ -89,7 +88,7 @@ def test_list_is_filtered_by_visibility_inside_the_query(
     viewer: Actor,
     client: TestClient,
 ) -> None:
-    """Each role sees exactly the reports its visibility scope allows."""
+    """每个角色看到的，恰好是它可见范围允许的那些报告。"""
     internal = _seed(session, workspace, visibility="INTERNAL")
     team = _seed(session, workspace, visibility="TEAM")
     private = _seed(session, workspace, visibility="PRIVATE")
@@ -119,7 +118,7 @@ def test_private_report_without_an_owner_is_admin_only(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """A `PRIVATE` report with no recorded owner stays invisible to non-admins."""
+    """没记下归属人的 `PRIVATE` 报告对非管理员始终不可见。"""
     case = _seed(session, workspace, visibility="PRIVATE")
 
     assert auth_headers(client, editor)
@@ -144,7 +143,7 @@ def test_reading_outside_the_scope_returns_403_without_metadata(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A denied read must not leak the report and must be audited."""
+    """被拒的读取不能泄露报告内容，而且必须进审计。"""
     case = _seed(session, workspace, visibility="PRIVATE")
     configure_report(session, report_id=case.report_id, owner_id=editor.user_id)
 
@@ -163,7 +162,7 @@ def test_unknown_report_is_a_problem_details_not_found(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """A missing report is a 404 carrying the RFC 7807 members."""
+    """报告不存在时返回 404，并带上 RFC 7807 的各成员。"""
     response = client.get(f"{BASE}/987654", headers=auth_headers(client, admin))
 
     assert response.status_code == 404
@@ -176,7 +175,7 @@ def test_unknown_report_is_a_problem_details_not_found(
 
 
 def test_anonymous_requests_are_rejected(client: TestClient) -> None:
-    """Every report route requires a bearer token."""
+    """每一条报告路由都要 Bearer 令牌。"""
     assert client.get(BASE).status_code == 401
     assert client.post(f"{BASE}/1/publish").status_code == 401
 
@@ -188,7 +187,7 @@ def test_viewer_cannot_write(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A read-only role is refused before the service layer runs."""
+    """只读角色在进入服务层之前就被拒了。"""
     case = _seed(session, workspace)
 
     response = client.patch(
@@ -204,7 +203,7 @@ def test_viewer_cannot_write(
 
 
 # --------------------------------------------------------------------------------------
-# Editing
+# 编辑
 # --------------------------------------------------------------------------------------
 
 
@@ -215,7 +214,7 @@ def test_edit_appends_an_immutable_version_and_returns_to_draft(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """Editing the content creates a new version and parks the report for re-verification."""
+    """改正文会生成新版本，并把报告打回待复核状态。"""
     case = _seed(session, workspace)
     original = load_report(session_factory, case.report_id).content_markdown
     edited = original + "\n人工补充说明。\n"
@@ -235,7 +234,7 @@ def test_edit_appends_an_immutable_version_and_returns_to_draft(
     assert report.status == "draft"
     assert report.current_version == 2
     assert report.content_markdown == edited
-    # The new version inherits the previous citation set so it stays publishable.
+    # 新版本继承上一版的引用集合，这样它仍然具备发布条件。
     assert source_versions(session_factory, case.report_id) == {1, 2}
 
     detail = client.get(
@@ -254,7 +253,7 @@ def test_metadata_only_edit_keeps_the_version(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """Changing `visibility` does not create a version, because the artifact is unchanged."""
+    """改 `visibility` 不会产生新版本，因为交付物本身没变。"""
     case = _seed(session, workspace)
 
     response = client.patch(
@@ -277,7 +276,7 @@ def test_edit_is_refused_outside_the_editable_statuses(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """A published report must be rolled back rather than rewritten in place."""
+    """已发布的报告必须走回滚，而不是原地改写。"""
     case = _seed(session, workspace)
     configure_report(session, report_id=case.report_id, status="published")
 
@@ -297,7 +296,7 @@ def test_edit_rejects_an_unknown_visibility(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The request body is validated before the service is reached."""
+    """请求体在到达服务层之前就完成了校验。"""
     case = _seed(session, workspace)
 
     response = client.patch(
@@ -311,7 +310,7 @@ def test_edit_rejects_an_unknown_visibility(
 
 
 # --------------------------------------------------------------------------------------
-# Verify, review, publish
+# 校验、评审与发布
 # --------------------------------------------------------------------------------------
 
 
@@ -321,7 +320,7 @@ def test_verify_returns_and_stores_the_verdict(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """Running the Verifier over HTTP persists a passing verdict for the current version."""
+    """经由 HTTP 跑一次校验器，会为当前版本落下一条通过的结论。"""
     case = _seed(session, workspace)
 
     response = client.post(
@@ -353,7 +352,7 @@ def test_auto_report_is_released_by_the_publish_action(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """`AUTO` has no withdrawal window, so the publish action releases it straight away."""
+    """`AUTO` 没有撤回窗口，所以发布动作会立刻放行。"""
     case = _seed(
         session, workspace, publish_mode=AUTO, visibility="INTERNAL", prior_publication=True
     )
@@ -380,7 +379,7 @@ def test_delayed_report_waits_for_its_window(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """`AUTO_WITH_DELAY` enters the queue and the sweep leaves it there until due."""
+    """`AUTO_WITH_DELAY` 进入队列，在到期之前扫描不会把它放出去。"""
     case = _seed(session, workspace, publish_mode=AUTO_WITH_DELAY, prior_publication=True)
 
     response = client.post(
@@ -410,7 +409,7 @@ def test_manual_report_goes_to_review_then_releases_after_approval(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """The `MANUAL` path needs a recorded approval before the same action releases it."""
+    """`MANUAL` 这条路要先留下批准记录，同一个动作才会真正放行。"""
     case = _seed(
         session, workspace, publish_mode=MANUAL, visibility="INTERNAL", prior_publication=True
     )
@@ -444,7 +443,7 @@ def test_manual_release_is_blocked_without_an_approval(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """`INV-5` extra gate: a queued `MANUAL` report with no approval cannot be released."""
+    """`INV-5` 的额外闸门：排队中的 `MANUAL` 报告没有批准就不能放行。"""
     case = _seed(session, workspace, publish_mode=MANUAL, visibility="INTERNAL")
     configure_report(
         session,
@@ -470,7 +469,7 @@ def test_review_decisions_map_to_the_state_machine(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """`request_changes` sends the report back and `reject` terminates it."""
+    """`request_changes` 把报告打回，`reject` 则让它走向终止。"""
     case = _seed(session, workspace, publish_mode=MANUAL, visibility="INTERNAL")
     headers = auth_headers(client, editor)
     client.post(f"{BASE}/{case.report_id}/publish", headers=headers)
@@ -483,7 +482,7 @@ def test_review_decisions_map_to_the_state_machine(
     assert returned.status_code == 200
     assert returned.json()["status"] == "changes_requested"
 
-    # A returned report can be edited again, which puts it back in the draft queue.
+    # 被打回的报告还能再改，改了之后就回到草稿队列。
     edited = client.patch(
         f"{BASE}/{case.report_id}",
         json={
@@ -511,7 +510,7 @@ def test_sweep_reports_blocked_entries(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """One blocked release is reported and does not abort the sweep."""
+    """一次受阻的放行会被报出来，而且不会中断整次扫描。"""
     case = _seed(session, workspace, publish_mode=MANUAL, visibility="INTERNAL")
     configure_report(
         session,
@@ -528,7 +527,7 @@ def test_sweep_reports_blocked_entries(
 
 
 # --------------------------------------------------------------------------------------
-# Rollback
+# 回滚
 # --------------------------------------------------------------------------------------
 
 
@@ -539,7 +538,7 @@ def test_rollback_restores_a_historical_version_as_a_new_draft(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """Rolling back appends a version rather than rewinding the history."""
+    """回滚是追加一个版本，而不是把历史倒带。"""
     case = _seed(session, workspace)
     headers = auth_headers(client, editor)
     original = load_report(session_factory, case.report_id).content_markdown
@@ -577,7 +576,7 @@ def test_rollback_rejects_the_current_version(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """Rolling back to the version already in force is a bad request."""
+    """回滚到当前生效的那个版本，属于坏请求。"""
     case = _seed(session, workspace)
 
     response = client.post(
@@ -596,7 +595,7 @@ def test_rollback_rejects_an_unknown_version(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """A version that was never recorded is a 404, not a silent no-op."""
+    """从没记录过的版本是 404，而不是悄悄什么也不做。"""
     case = _seed(session, workspace)
 
     response = client.post(
@@ -615,7 +614,7 @@ def test_rollback_is_refused_for_a_failed_report(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """A rejected report stays terminal; rollback cannot revive it."""
+    """被驳回的报告停在终态，回滚救不回来。"""
     case = _seed(session, workspace)
     configure_report(session, report_id=case.report_id, status="failed")
 
@@ -630,7 +629,7 @@ def test_rollback_is_refused_for_a_failed_report(
 
 
 # --------------------------------------------------------------------------------------
-# Listing
+# 列表
 # --------------------------------------------------------------------------------------
 
 
@@ -640,7 +639,7 @@ def test_list_supports_filters_and_pagination(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """Status filtering and page size are honoured, with a matching total."""
+    """状态筛选与页长都生效，总数也对得上。"""
     first = _seed(session, workspace)
     _seed(session, workspace)
     configure_report(session, report_id=first.report_id, status="published")
@@ -661,7 +660,7 @@ def test_list_rejects_an_out_of_range_page_size(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """`page_size` follows the documented 1-100 bound."""
+    """`page_size` 遵守文档写明的 1–100 边界。"""
     response = client.get(
         f"{BASE}?page_size=101",
         headers=auth_headers(client, editor),
@@ -675,12 +674,12 @@ def test_list_refuses_a_timestamp_without_an_offset(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """`created_after` must say which zone it is in.
+    """`created_after` 必须说明自己处在哪个时区。
 
-    `repositories.first_seen_at` and `reports.generated_at` are both `UTCDateTime`, which refuses
-    to guess a zone for a naive value. Before T18 that refusal reached callers as a `500` from
-    inside the query builder — the parameter had never been exercised, so nothing caught it.
-    The shared `UtcDateTime` parameter type turns it into the `422` the contract promises.
+    `repositories.first_seen_at` 与 `reports.generated_at` 都是 `UTCDateTime`，
+    它拒绝为朴素值猜测时区。T18 之前，这种拒绝会从查询构造器内部以 `500` 的形式
+    抛给调用方 —— 这个参数从来没被实际用过，所以没人发现。共享的 `UtcDateTime`
+    参数类型把它变成契约承诺的 `422`。
     """
     response = client.get(
         f"{BASE}?created_after=2026-09-24T00:00:00",
@@ -696,7 +695,7 @@ def test_list_accepts_an_offset_timestamp(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The same parameter works once it names a zone."""
+    """同一个参数，只要指明了时区就能用。"""
     response = client.get(
         f"{BASE}?created_after=2026-09-24T00:00:00Z",
         headers=auth_headers(client, editor),

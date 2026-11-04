@@ -1,9 +1,9 @@
-"""Tests for the GitHub README fetch - the content half of the collector.
+"""守护 GitHub README 拉取，也就是采集器的内容那一半。
 
-The distinction under test throughout is between *"the source answered"* and *"the source could
-not answer"*: `None` versus `SourceUnavailableError`. It is the one thing the contents stage's
-`missing` and `failed` counters are built on, so a fetch that collapsed the two would quietly
-report a repository with no README as a broken upstream.
+贯穿全篇要区分的是「来源回答了」与「来源答不上来」：`None` 对
+`SourceUnavailableError`。`contents` 阶段的 `missing` 与 `failed` 两个计数器
+正是建在这条区分上，因此一旦把两者混为一谈，没有 README 的仓库就会被悄悄
+报成上游故障。
 """
 
 import base64
@@ -22,7 +22,7 @@ README_URL = "https://github.com/example/repo/blob/main/README.md"
 
 
 def build_http(handler: httpx.MockTransport) -> RetryingHttpClient:
-    """Build a retry client with no real delay for tests."""
+    """构造一个不做真实等待的重试客户端，用例才不会真的睡过去。"""
     return RetryingHttpClient(
         httpx.Client(transport=handler),
         max_attempts=3,
@@ -31,7 +31,7 @@ def build_http(handler: httpx.MockTransport) -> RetryingHttpClient:
 
 
 def readme_payload(text: str, *, html_url: str = README_URL) -> dict[str, str]:
-    """Build a GitHub-shaped README response carrying `text`."""
+    """构造一个携带 `text` 的、GitHub 形状的 README 响应。"""
     return {
         "name": "README.md",
         "path": "README.md",
@@ -42,7 +42,7 @@ def readme_payload(text: str, *, html_url: str = README_URL) -> dict[str, str]:
 
 
 def test_a_readme_is_decoded_and_carries_an_https_source() -> None:
-    """The fetched record should describe the document, not the wire format."""
+    """拉取结果描述的是文档本身，而不是 base64 的传输格式。"""
     text = "# Rocket\n\nIt flies.\n"
     seen: dict[str, str] = {}
 
@@ -66,7 +66,7 @@ def test_a_readme_is_decoded_and_carries_an_https_source() -> None:
 
 
 def test_a_repository_without_a_readme_is_an_answer_rather_than_a_failure() -> None:
-    """GitHub's 404 means "there is none"; it must not be retried or raised."""
+    """GitHub 的 404 表示「本来就没有」，既不重试，也不抛错。"""
 
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"message": "Not Found"})
@@ -77,7 +77,7 @@ def test_a_repository_without_a_readme_is_an_answer_rather_than_a_failure() -> N
 
 
 def test_a_not_found_answer_is_not_retried() -> None:
-    """A definite answer should cost exactly one request."""
+    """确定的回答只应消耗一次请求。"""
     calls: list[int] = []
 
     def handler(_: httpx.Request) -> httpx.Response:
@@ -91,7 +91,7 @@ def test_a_not_found_answer_is_not_retried() -> None:
 
 
 def test_a_server_failure_is_retried_to_the_bound_and_then_raised() -> None:
-    """A refusal is not an answer, so it keeps the retry semantics and surfaces as an error."""
+    """拒绝回答不是回答：照旧走重试语义，最终以异常浮出。"""
     calls: list[int] = []
 
     def handler(_: httpx.Request) -> httpx.Response:
@@ -106,7 +106,7 @@ def test_a_server_failure_is_retried_to_the_bound_and_then_raised() -> None:
 
 
 def test_a_response_that_is_not_an_object_is_a_source_failure() -> None:
-    """A body of the wrong shape means we did not find out, not that there is no README."""
+    """响应体形状不对意味着「没问出来」，而不是「没有 README」。"""
 
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=["not", "an", "object"])
@@ -118,7 +118,7 @@ def test_a_response_that_is_not_an_object_is_a_source_failure() -> None:
 
 
 def test_a_non_https_source_link_is_refused_before_it_reaches_the_cache() -> None:
-    """Report citations carry this URL to readers, and only https passes the citation check."""
+    """报告引用会把这个 URL 交给读者，而只有 https 能通过引用校验。"""
 
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=readme_payload("# x", html_url="http://example.com/r"))
@@ -130,7 +130,7 @@ def test_a_non_https_source_link_is_refused_before_it_reaches_the_cache() -> Non
 
 
 def test_undecodable_bytes_are_replaced_rather_than_failing_the_readme() -> None:
-    """Losing one character of an external document is not the same as losing the document."""
+    """外部文档里丢一个字符，不等于丢掉整份文档。"""
     payload = {
         "encoding": "base64",
         "content": base64.b64encode(b"\xff\xfe hello").decode("ascii"),

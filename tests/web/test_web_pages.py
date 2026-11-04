@@ -1,15 +1,13 @@
-"""Page-level tests for the sidebar shell and the pages that hang off it.
+"""守护侧边栏外壳与挂在它上面的那些页面：八页共用四条规则。
 
-The eight pages share four rules, so they are asserted together rather than eight times over:
+八页共用四条规则，所以一次断言完，而不是重复写八遍：
 
-* Every page needs a session, and the refusal is a redirect to the login form that remembers
-  where the browser was heading.
-* A page opens for exactly the roles its sidebar entry is listed under. That is the test that
-  matters most — a nav entry and a route gate are two expressions of one rule, and the failure
-  mode is a menu item that leads to a 403.
-* Exactly one entry is marked `aria-current`, or the sidebar lies about where the reader is.
-* The shell carries the resizable boundary as a real control: `role="separator"` plus `tabindex`,
-  so it is reachable by keyboard and not only by mouse.
+* 每一页都要会话；拒绝的形式是重定向到登录表单，并记住浏览器本来想去哪。
+* 一页只对它的侧边栏条目所登记的那些角色开放。这条最要紧 —— 导航条目与路由门
+  是同一条规则的两种表达，而它的失败形态就是一个点进去是 403 的菜单项。
+* 恰好一个条目被标上 `aria-current`，否则侧边栏就在谎报读者所在的位置。
+* 外壳把可拖动的边界做成真控件：`role="separator"` 加 `tabindex`，于是它能被键盘
+  够到，而不只是鼠标。
 """
 
 from __future__ import annotations
@@ -27,8 +25,8 @@ from support import Workspace
 from open_source_intelligence.persistence.models.audit import AuditLog
 from open_source_intelligence.persistence.models.intelligence import TOPIC_PUBLISH_MODES, Topic
 
-#: Every page in the sidebar shell: `(nav key, path, roles the entry is listed under)`.
-#: The roles here are the contract the other assertions check both sides of.
+#: 侧边栏外壳里的每一页：`(导航键, 路径, 该条目登记的角色)`。
+#: 这里的角色就是契约本身，其余断言从两侧去核对它。
 PAGES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("home", "/ui/home", ("ADMIN", "EDITOR", "VIEWER")),
     ("reports", "/ui/reports", ("ADMIN", "EDITOR", "VIEWER")),
@@ -43,7 +41,7 @@ PAGES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 
 ROLES = ("ADMIN", "EDITOR", "VIEWER")
 
-#: A page every signed-in identity can open, used whenever the test needs "any page".
+#: 任何已登录身份都打得开的一页，用例需要「随便哪一页」时就取它。
 OPEN_TO_ALL = "/ui/reports"
 
 TOPICS = "/ui/topics"
@@ -51,14 +49,14 @@ TOPICS = "/ui/topics"
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def actors(session: Session) -> dict[str, Actor]:
-    """One actor per standard role, on the team data scope."""
+    """每个标准角色一个账号，都落在团队数据范围上。"""
     return {
         role: create_actor(session, username=f"pages-{role.lower()}", role=role, data_scope="team")
         for role in ROLES
@@ -66,12 +64,12 @@ def actors(session: Session) -> dict[str, Actor]:
 
 
 def _nav_links(html: str) -> list[str]:
-    """Return the href of every sidebar entry in a rendered page."""
+    """返回渲染结果里每一个侧边栏条目的 href。"""
     return re.findall(r'<a class="nav-item" href="([^"]+)"', html)
 
 
 def _topic_form(**overrides: str) -> dict[str, str]:
-    """A complete create/update payload, with the list fields comma-separated."""
+    """一份完整的创建/更新载荷，其中列表字段以逗号分隔。"""
     payload = {
         "name": "topic-from-ui",
         "description": "由界面创建",
@@ -88,7 +86,7 @@ def _topic_form(**overrides: str) -> dict[str, str]:
 
 
 # --------------------------------------------------------------------------------------
-# Session and the role matrix
+# 会话与角色矩阵
 # --------------------------------------------------------------------------------------
 
 
@@ -99,7 +97,7 @@ def test_an_anonymous_browser_is_sent_to_login(
     path: str,
     allowed: tuple[str, ...],
 ) -> None:
-    """No page is readable without a session, and the login form remembers the destination."""
+    """没有会话就一页也读不了，而登录表单会记住原来的目的地。"""
     response = client.get(path, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == f"/ui/login?next={path.replace('/', '%2F')}"
@@ -115,10 +113,10 @@ def test_a_page_opens_for_exactly_the_roles_that_may_see_it(
     path: str,
     allowed: tuple[str, ...],
 ) -> None:
-    """The route gate is the same decision the sidebar entry encodes.
+    """路由门与侧边栏条目编码的是同一个决定。
 
-    A `403` here and a listed entry there would be the two halves of the same rule disagreeing,
-    which is why both directions are asserted instead of only "the allowed roles get a 200".
+    这里是 `403`、那里却列着条目，就是同一条规则的两半在互相打架，所以两个方向
+    都要断言，而不是只验「允许的角色拿到 200」。
     """
     web_login(client, actors[role])
     response = client.get(path, follow_redirects=False)
@@ -135,10 +133,10 @@ def test_the_sidebar_lists_exactly_what_that_role_can_open(
     actors: dict[str, Actor],
     role: str,
 ) -> None:
-    """Read the rendered menu back and compare it with the pages this role actually gets.
+    """把渲染出来的菜单读回来，与这个角色实际拿得到的页面对照。
 
-    This is the assertion that ties the two together: it fails if an entry is listed for a role
-    that would be refused, and it fails if a page is reachable but missing from the menu.
+    正是这条断言把两者绑在一起：给一个会被拒的角色列了条目，它会失败；一页打得开
+    却没出现在菜单里，它同样会失败。
     """
     web_login(client, actors[role])
     listing = client.get(OPEN_TO_ALL)
@@ -155,7 +153,7 @@ def test_exactly_one_sidebar_entry_is_marked_current(
     path: str,
     allowed: tuple[str, ...],
 ) -> None:
-    """The `aria-current` marker follows the page, and there is never more than one."""
+    """`aria-current` 标记跟着页面走，而且永远不超过一个。"""
     web_login(client, actors["ADMIN"])
     response = client.get(path)
     assert response.status_code == 200
@@ -163,7 +161,7 @@ def test_exactly_one_sidebar_entry_is_marked_current(
 
 
 # --------------------------------------------------------------------------------------
-# The shell
+# 外壳
 # --------------------------------------------------------------------------------------
 
 
@@ -171,11 +169,11 @@ def test_the_shell_carries_a_keyboard_reachable_resizer(
     client: TestClient,
     actors: dict[str, Actor],
 ) -> None:
-    """The boundary between the sidebar and the content is a control, not a decoration.
+    """侧边栏与正文之间的边界是控件，不是装饰。
 
-    `role="separator"` with `tabindex` and the aria value bounds is the WAI-ARIA window-splitter
-    pattern. Without the tabindex the divider is mouse-only, and the width becomes a preference
-    only the users who can drag happen to get.
+    带 `tabindex` 与 aria 数值边界的 `role="separator"`，就是 WAI-ARIA 的
+    窗口分隔模式。少了 `tabindex`，这条分隔线只有鼠标能用，宽度也就成了
+    「会拖的那部分用户碰巧才有」的偏好。
     """
     web_login(client, actors["ADMIN"])
     html = client.get(OPEN_TO_ALL).text
@@ -184,14 +182,14 @@ def test_the_shell_carries_a_keyboard_reachable_resizer(
     assert re.search(r'<div class="splitter"[^>]*role="separator"', html)
     assert 'aria-orientation="vertical"' in html
     assert re.search(r'id="splitter"[^>]*tabindex="0"', html)
-    # Remembering the width is the difference between a setting and a gesture.
+    # 记住宽度，才是「一项设置」与「一个手势」的区别。
     assert "localStorage" in html
 
 
 def test_the_shell_is_absent_from_the_signed_out_pages(
     client: TestClient,
 ) -> None:
-    """403 and 404 are rendered without a sidebar: there is no identity to build one from."""
+    """403 与 404 页面不带侧边栏：此时没有身份可以用来搭一个。"""
     page = client.get("/ui/login")
     assert page.status_code == 200
     assert 'id="splitter"' not in page.text
@@ -201,12 +199,12 @@ def test_the_shell_is_absent_from_the_signed_out_pages(
 def test_the_stylesheet_bounds_the_sidebar_and_stops_centring_the_content(
     client: TestClient,
 ) -> None:
-    """The two layout facts the resizer depends on.
+    """拖拽分隔条所依赖的两条布局事实。
 
-    The bounds live in CSS so the script reads them from one place. And the content is left
-    aligned: centring a `max-width` container inside the shell leaves a dead band between the
-    sidebar and the content — about 250px wide at a 1920 viewport — which is what makes the two
-    read as separate islands rather than as one console with a menu.
+    边界写在 CSS 里，脚本才只需要从一个地方读它。而正文是左对齐的：把
+    `max-width` 容器在外壳里居中，会在侧边栏与正文之间留下一条空带 —— 1920
+    视口下约 250px 宽 —— 正是它让两者读起来像两座孤岛，而不是一台带菜单的
+    控制台。
     """
     css = client.get("/ui/static/app.css").text
     assert re.search(r"--sidebar-min:\s*\d+px", css)
@@ -220,7 +218,7 @@ def test_the_stylesheet_bounds_the_sidebar_and_stops_centring_the_content(
 
 
 # --------------------------------------------------------------------------------------
-# Topic configuration: the only settings surface, read and write
+# 主题配置：唯一的设置面，读与写都在这里
 # --------------------------------------------------------------------------------------
 
 
@@ -229,9 +227,9 @@ def test_an_admin_creates_a_topic_and_the_row_lands_in_the_database(
     session: Session,
     actors: dict[str, Actor],
 ) -> None:
-    """The write path through the form, checked against the table rather than the redirect.
+    """走表单的写入路径，核对的是表里的行，而不是那次重定向。
 
-    A `303` only says the handler chose to redirect; it is the row that says the write happened.
+    `303` 只说明处理器决定重定向；真正说明「写进去了」的是那一行。
     """
     web_login(client, actors["ADMIN"])
     client.get(TOPICS)
@@ -267,10 +265,9 @@ def test_a_taken_name_is_refused_with_the_page_still_filled_in(
     workspace: Workspace,
     actors: dict[str, Actor],
 ) -> None:
-    """A duplicate name comes back as a `409` on the page, not as a redirect that hides it.
+    """重名在页面上以 `409` 回来，而不是用一个重定向把它藏起来。
 
-    The form is re-rendered with what was typed: nine fields are too many to retype because one
-    of them collided.
+    表单会带上刚填的内容重新渲染：九个字段太多，不该为一个撞了的字段重敲一遍。
     """
     workspace.add_topic(name="already-here")
     session.commit()
@@ -296,10 +293,10 @@ def test_a_blank_name_is_refused_before_the_service_is_reached(
     session: Session,
     actors: dict[str, Actor],
 ) -> None:
-    """A whitespace-only name is a `400` with a message, not a row with no name.
+    """只含空白的名字会得到带说明的 `400`，而不是一行没有名字的记录。
 
-    The database has no `NOT NULL` to catch this — an empty string is a perfectly good string —
-    so the check has to exist somewhere, and this is where the operator finds out.
+    数据库里没有 `NOT NULL` 能拦住它 —— 空字符串本身是个完全合格的字符串 —— 所以
+    这个检查必须存在于某处，而运维者就在这里知道结果。
     """
     web_login(client, actors["ADMIN"])
     client.get(TOPICS)
@@ -309,9 +306,9 @@ def test_a_blank_name_is_refused_before_the_service_is_reached(
         follow_redirects=False,
     )
     assert response.status_code == 400
-    # The service's own message is English and aimed at a log line. The page maps the code to a
-    # sentence: `str(exc)` in a Chinese page is the kind of thing a reviewer notices and a test
-    # that only asserts the status code never would.
+    # 服务层自己的消息是英文的，面向日志行。页面负责把错误码换成一句人话：
+    # 中文页面上冒出 `str(exc)` 正是评审者会注意到，而只断言状态码的测试
+    # 永远发现不了的东西。
     assert "主题名不能为空" in response.text
     assert session.scalar(select(Topic).where(Topic.name == "")) is None
 
@@ -320,7 +317,7 @@ def test_a_non_numeric_bound_is_a_message_rather_than_a_validation_dump(
     client: TestClient,
     actors: dict[str, Actor],
 ) -> None:
-    """The form sends text; "eight" in a number field becomes a sentence, not a JSON pointer."""
+    """表单发来的是文本；数字字段写「八天」该变成一句话，而非一个 JSON 指针。"""
     web_login(client, actors["ADMIN"])
     client.get(TOPICS)
     response = client.post(
@@ -338,7 +335,7 @@ def test_the_edit_form_writes_only_the_topic_it_belongs_to(
     workspace: Workspace,
     actors: dict[str, Actor],
 ) -> None:
-    """The update path, with a second row left alone as the control."""
+    """更新路径；另有一行全程不动，作为对照。"""
     target = workspace.add_topic(name="editable")
     bystander = workspace.add_topic(name="untouched")
     session.commit()
@@ -368,8 +365,8 @@ def test_the_edit_form_writes_only_the_topic_it_belongs_to(
     session.expire_all()
     updated = session.get(Topic, target.id)
     assert updated is not None
-    # An empty list field means "no restriction", stored as NULL — not an empty list, which would
-    # select nothing at all and is the opposite of what a blank field asks for.
+    # 列表字段留空表示「不加限制」，存成 NULL —— 而不是空列表，那会一个
+    # 都选不中，正好与「留空」的本意相反。
     assert updated.languages_json is None
     assert updated.keywords_json == ["rust"]
     assert updated.min_stars == 42
@@ -383,11 +380,10 @@ def test_a_topic_with_recorded_history_cannot_be_deleted(
     workspace: Workspace,
     actors: dict[str, Actor],
 ) -> None:
-    """The delete guard names the tables that still point at the topic.
+    """删除守卫要点名那些仍然指向该主题的表。
 
-    The foreign keys are `RESTRICT`, not `CASCADE`: cascading would take the reports with it, which
-    is the one outcome this page must not have. Disabling the topic is the supported alternative,
-    and the page says so.
+    这些外键是 `RESTRICT` 而不是 `CASCADE`：级联会把报告一起带走，而这恰是这一页
+    绝不能出现的结果。受支持的替代做法是停用主题，页面也这样写明。
     """
     topic = workspace.add_topic(name="has-history")
     workspace.add_agent_run(topic.id)
@@ -402,8 +398,7 @@ def test_a_topic_with_recorded_history_cannot_be_deleted(
     )
     assert response.status_code == 409
     assert "agent_runs" in response.text
-    # The refusal names the tables from `reference_counts` rather than by parsing them out of the
-    # service's English sentence.
+    # 拒绝里点名的表来自 `reference_counts`，而不是从服务层那句英文解析出来的。
     assert "不能删除" in response.text
     assert "停用" in response.text
     session.expire_all()
@@ -416,11 +411,11 @@ def test_an_unreferenced_topic_is_deleted_and_the_row_is_gone(
     workspace: Workspace,
     actors: dict[str, Actor],
 ) -> None:
-    """The happy path of the same guard, on a topic nothing points at."""
+    """同一个守卫的顺利路径，只是对象换成没有东西指向它。"""
     topic = workspace.add_topic(name="disposable")
     session.commit()
-    # Read the id before the request: once the row is gone, touching the instance raises
-    # `ObjectDeletedError` instead of telling the assertion something useful.
+    # 发送请求之前先把 id 读出来：行一旦没了，再碰这个实例只会抛
+    # `ObjectDeletedError`，而不是告诉断言什么有用的东西。
     topic_id = topic.id
 
     web_login(client, actors["ADMIN"])
@@ -442,7 +437,7 @@ def test_toggling_flips_only_the_enabled_column(
     workspace: Workspace,
     actors: dict[str, Actor],
 ) -> None:
-    """Disabling is the alternative the delete refusal points at, so it has to work."""
+    """停用正是删除被拒时指向的那条替代路，所以它必须真的能用。"""
     topic = workspace.add_topic(name="togglable", enabled=True)
     session.commit()
 
@@ -467,10 +462,10 @@ def test_only_an_admin_may_write_topics(
     actors: dict[str, Actor],
     role: str,
 ) -> None:
-    """A topic fixes the public-API quota and the model budget the next run spends.
+    """一个主题就定下了公开 API 的配额，以及下一次运行要花掉的模型预算。
 
-    That is the same reasoning `docs/api-contract.md` §3.1 gives for refusing `POST /sources`, so
-    `EDITOR`'s write permission — which covers reports and nothing else — does not reach here.
+    这与 `docs/api-contract.md` §3.1 拒绝 `POST /sources` 的理由相同，
+    所以 `EDITOR` 那个只管报告的写权限，到不了这里。
     """
     topic = workspace.add_topic(name="not-yours")
     session.commit()
@@ -492,7 +487,7 @@ def test_a_write_without_the_csrf_field_is_refused_and_audited(
     session: Session,
     actors: dict[str, Actor],
 ) -> None:
-    """The double-submit token is checked before anything is written, and the refusal is filed."""
+    """双提交令牌在任何写入发生之前就被校验，而这次拒绝也会被归档。"""
     web_login(client, actors["ADMIN"])
     client.get(TOPICS)
     response = client.post(TOPICS, data=_topic_form(), follow_redirects=False)
@@ -509,7 +504,7 @@ def test_the_create_form_offers_exactly_the_publish_modes_the_table_accepts(
     client: TestClient,
     actors: dict[str, Actor],
 ) -> None:
-    """Every offered mode comes from the model's tuple, so the form proposes no refused value."""
+    """每个给出的模式都来自模型里那个元组，所以表单不会提供一个会被拒的值。"""
     web_login(client, actors["ADMIN"])
     page = client.get(TOPICS)
     assert page.status_code == 200
@@ -522,10 +517,10 @@ def test_a_tampered_publish_mode_is_re_reported_instead_of_crashing(
     session: Session,
     actors: dict[str, Actor],
 ) -> None:
-    """An unknown `publish_mode` must re-render the form, not reach the table's CHECK constraint.
+    """未知的 `publish_mode` 必须重新渲染表单，而不是撞到表上的 CHECK 约束。
 
-    The API types this field as a `Literal`; the form did not, so a tampered value fell through to
-    the database, raised `IntegrityError`, and surfaced as a 500 for what is a user-input problem.
+    API 把这个字段声明成 `Literal`，表单没有，于是被篡改的值一路落到数据库，抛出
+    `IntegrityError`，把一个用户输入问题变成了 500。
     """
     web_login(client, actors["ADMIN"])
     client.get(TOPICS)

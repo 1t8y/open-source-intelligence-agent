@@ -1,4 +1,4 @@
-"""Retrying synchronous HTTP helper for public repository APIs."""
+"""为公共仓库 API 提供带重试的同步 HTTP 调用。"""
 
 import time
 from collections.abc import Mapping
@@ -12,30 +12,30 @@ from open_source_intelligence.collectors.types import SourceUnavailableError
 
 @dataclass(frozen=True, slots=True)
 class JsonResponse:
-    """Decoded JSON together with the headers a caller may need in order to page.
+    """解码后的 JSON，以及调用方分页时可能需要的响应头。
 
-    Pagination is answered in a header, not in a body: GitHub states whether another page
-    exists in `Link`. A client that could only ever return `response.json()` would push
-    every adapter into a second request path that re-implements retry and pacing by hand,
-    which is how the retry policy ends up with two definitions that drift.
+    分页的答案在响应头里，而不在响应体里：GitHub 用 `Link` 说明是否还
+    存在下一页。一个只能返回 `response.json()` 的客户端，会把每个适配
+    器都逼进第二条请求路径，在那里手工重新实现重试与节流 —— 重试策略
+    就是这么变成两份、然后逐渐漂移的。
 
-    `headers` keys are lowercased, because a plain dict is case-sensitive while HTTP header
-    names are not. Reading a header through `header()` is therefore not a convenience but
-    the only correct way: `headers["Link"]` would silently miss the `link` that the server
-    actually sent, and a paging walk reading a missing `Link` concludes it has reached the
-    end of a history it has not begun to read.
+    `headers` 的键统一转成小写，因为普通 dict 区分大小写，而 HTTP 头
+    名不区分。所以通过 `header()` 读头不是便利，而是唯一正确的做法：
+    `headers["Link"]` 会悄悄错过服务器实际发出的 `link`，而一个分页
+    走查读到缺失的 `Link`，就会认定自己已经走到一段尚未开始读的历史的
+    尽头。
     """
 
     data: Any
     headers: Mapping[str, str]
 
     def header(self, name: str) -> str | None:
-        """Return one header case-insensitively."""
+        """按大小写不敏感的方式返回一个响应头。"""
         return self.headers.get(name.lower())
 
 
 class RetryingHttpClient:
-    """Retry transient source failures with bounded exponential backoff."""
+    """以有界指数退避重试源的瞬时故障。"""
 
     def __init__(
         self,
@@ -57,7 +57,7 @@ class RetryingHttpClient:
         params: dict[str, str | int] | None = None,
         headers: dict[str, str] | None = None,
     ) -> Any:
-        """Return decoded JSON, retrying rate limits and server failures."""
+        """返回解码后的 JSON，并对限流与服务器故障重试。"""
         return self.get_json_response(url, params=params, headers=headers).data
 
     def get_json_response(
@@ -67,9 +67,9 @@ class RetryingHttpClient:
         params: dict[str, str | int] | None = None,
         headers: dict[str, str] | None = None,
     ) -> JsonResponse:
-        """Return decoded JSON and the response headers, retrying transient failures."""
+        """返回解码后的 JSON 与响应头，对瞬时故障重试。"""
         response = self._request_json(url, params=params, headers=headers, allow_not_found=False)
-        if response is None:  # pragma: no cover - `allow_not_found=False` never returns None
+        if response is None:  # pragma: no cover - `allow_not_found=False` 时不会返回 None
             raise SourceUnavailableError(f"failed to collect from {url}: unexpected empty response")
         return response
 
@@ -80,14 +80,13 @@ class RetryingHttpClient:
         params: dict[str, str | int] | None = None,
         headers: dict[str, str] | None = None,
     ) -> JsonResponse | None:
-        """Return decoded JSON, or `None` when the source answers `404`.
+        """返回解码后的 JSON；源回 `404` 时返回 `None`。
 
-        A `404` on a per-resource endpoint is the source stating a fact - this repository
-        has no README - and it must stay distinguishable from "the request failed". Folding
-        it into the retry path would turn a definite answer into a retried error and then
-        into a reported failure, which is how a repository with no README ends up looking
-        like a broken source. Every other status keeps the retry semantics of
-        `get_json_response`.
+        在针对单个资源的端点上，`404` 是源在陈述一个事实 —— 这个仓库
+        没有 README —— 它必须与「请求失败了」保持可区分。把它并进重试
+        路径，会把一个确定的答案变成一次被重试的错误，再变成一次被上报
+        的失败；一个没有 README 的仓库，就是这么看起来像坏掉的源。其它
+        任何状态码都保留 `get_json_response` 的重试语义。
         """
         return self._request_json(url, params=params, headers=headers, allow_not_found=True)
 
@@ -99,7 +98,7 @@ class RetryingHttpClient:
         headers: dict[str, str] | None,
         allow_not_found: bool,
     ) -> JsonResponse | None:
-        """Run the bounded retry loop and decode the body of a successful response."""
+        """运行有界重试循环，并解码成功响应的响应体。"""
         last_error: Exception | None = None
         for attempt in range(self._max_attempts):
             try:
@@ -136,7 +135,7 @@ class RetryingHttpClient:
         raise SourceUnavailableError(message) from last_error
 
     def _sleep_before_retry(self, response: httpx.Response, attempt: int) -> None:
-        """Honor Retry-After when present, otherwise use exponential backoff."""
+        """响应头里有 `Retry-After` 就照办，否则用指数退避。"""
         retry_after = response.headers.get("Retry-After")
         if retry_after is not None:
             try:

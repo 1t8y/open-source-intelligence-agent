@@ -1,4 +1,4 @@
-"""Tests for idempotent daily repository snapshots."""
+"""守护每日仓库快照的幂等性与增量计算。"""
 
 from datetime import UTC, date, datetime, timedelta
 
@@ -20,7 +20,7 @@ from open_source_intelligence.pipeline.snapshots import (
 
 
 def build_session_factory() -> sessionmaker[Session]:
-    """Build a shared in-memory database for pipeline tests."""
+    """构造流水线测试共用的内存数据库。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -37,7 +37,7 @@ def add_repository(
     forks: int = 10,
     open_issues: int | None = 8,
 ) -> Repository:
-    """Insert one repository with deterministic counters."""
+    """插入一个计数器取值确定的仓库。"""
     source = DataSource(
         name="GitHub",
         source_type="github",
@@ -61,7 +61,7 @@ def add_repository(
 
 
 def test_snapshot_creation_is_idempotent_and_computes_daily_deltas() -> None:
-    """Repeated runs update one row per day and calculate deltas from history."""
+    """重复运行每天只落一行，增量则从历史里算出来。"""
     session_factory = build_session_factory()
     first_day = date(2026, 10, 1)
     second_day = first_day + timedelta(days=1)

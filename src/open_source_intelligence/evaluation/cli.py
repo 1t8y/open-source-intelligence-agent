@@ -1,8 +1,8 @@
-"""Command-line entry point for importing datasets, running evaluations, and comparing.
+"""提供导入数据集、运行评测与比较结果的命令行入口。
 
-`--action run` is the one that actually executes the Agent; `list` and `compare` are read-only
-and exist so an operator can inspect a dataset and its last comparison without touching the API.
-Every action prints one JSON document, matching the other CLIs in this codebase.
+`--action run` 是真正执行 Agent 的那一个；`list` 与 `compare` 是只读的，存在的目的是让
+运维不碰 API 也能查看某个数据集及其最近一次比较。每个动作都打印一份 JSON 文档，与本代码库
+其它 CLI 保持一致。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ ACTIONS = ("list", "import", "run", "compare")
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the action, its dataset, and the optional target selection."""
+    """解析动作、其数据集以及可选的目标选择。"""
     parser = argparse.ArgumentParser(description="Import and run offline evaluations")
     parser.add_argument("--action", choices=ACTIONS, default="list")
     parser.add_argument("--dataset-file")
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _load_specs(args: argparse.Namespace) -> list[DatasetSpec]:
-    """Return the dataset documents to import."""
+    """返回待导入的数据集文档。"""
     if args.dataset_file:
         return [load_dataset_file(args.dataset_file)]
     paths = discover_dataset_files(args.dataset_dir)
@@ -66,7 +66,7 @@ def _load_specs(args: argparse.Namespace) -> list[DatasetSpec]:
 
 
 def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
-    """Execute one CLI action against the given session."""
+    """在给定会话上执行一个 CLI 动作。"""
     if args.action == "list":
         if args.limit < 1:
             raise SystemExit("--limit must be at least 1")
@@ -85,10 +85,9 @@ def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
     if args.action == "import":
         imported: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-        # Directory mode means "import everything that applies here"; a dataset written for
-        # another deployment is not an error in that mode, it is simply not applicable. Naming
-        # one file explicitly means the opposite - the operator asked for that file, so a missing
-        # topic has to be loud.
+        # 目录模式的含义是「把这里适用的东西全部导入」；在这个模式下，为别的部署写的数据集
+        # 不算错误，只是不适用。显式点名一个文件则正相反 —— 运维要的就是那个文件，所以主题
+        # 缺失时必须大声报错。
         directory_mode = args.dataset_file is None
         for spec in _load_specs(args):
             try:
@@ -123,7 +122,7 @@ def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run one action and print a JSON summary."""
+    """执行一个动作并打印 JSON 摘要。"""
     args = parse_args()
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
@@ -132,8 +131,8 @@ def main() -> None:
         with session_factory() as session:
             payload = run_action(args, session)
     except EvaluationError as exc:
-        # The stable `code` lets a script branch on the failure without matching on message text,
-        # exactly as the API answers with it.
+        # 稳定的 `code` 让脚本可以按失败类型分支，不必去匹配消息文本，与 API 的应答方式
+        # 完全一致。
         print(
             json.dumps(
                 {"action": args.action, "code": exc.code, "error": str(exc)},

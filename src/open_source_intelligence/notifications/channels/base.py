@@ -1,9 +1,8 @@
-"""Channel-neutral delivery contract.
+"""与渠道无关的投递契约。
 
-Every adapter implements the same tiny surface: take a destination and an `OutboundMessage`,
-return a `DeliveryReceipt`. Nothing above this layer knows how a message travels, which is what
-lets the offline adapter stand in for SMTP and HTTP during local runs and continuous
-integration without any calling code changing.
+每个适配器都实现同一套极小接口：接收一个目的地与一个 `OutboundMessage`，返回一个
+`DeliveryReceipt`。这一层之上没有任何代码知道消息如何传输，正因如此，离线适配器才能在
+本地运行与持续集成中顶替 SMTP 与 HTTP，而调用方无需改动任何代码。
 """
 
 from __future__ import annotations
@@ -11,13 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-#: Longest transport detail kept on a push row; receipts are diagnostic, not archival.
+#: 推送行上保留的最长传输细节；回执用于诊断，不用于归档。
 MAX_DETAIL_LENGTH = 512
 
 
 @dataclass(frozen=True, slots=True)
 class OutboundMessage:
-    """One report notification ready to be delivered."""
+    """一条待投递的报告通知。"""
 
     report_id: int
     version: int
@@ -25,7 +24,7 @@ class OutboundMessage:
     body: str
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload for the push record and the webhook body."""
+        """返回供推送记录与 Webhook 请求体使用的 JSON 安全载荷。"""
         return {
             "report_id": self.report_id,
             "version": self.version,
@@ -36,10 +35,9 @@ class OutboundMessage:
 
 @dataclass(frozen=True, slots=True)
 class DeliveryReceipt:
-    """Outcome of one delivery attempt.
+    """一次投递尝试的结果。
 
-    `ok=False` is a normal, recorded result rather than an exception: it is what turns a push
-    row into a retry candidate.
+    `ok=False` 是正常记录下来的结果，而不是异常：正是它把一条推送行变成重试候选。
     """
 
     ok: bool
@@ -48,13 +46,13 @@ class DeliveryReceipt:
 
 @runtime_checkable
 class NotificationChannel(Protocol):
-    """Delivery adapter for one transport."""
+    """针对单一传输方式的投递适配器。"""
 
     @property
     def channel(self) -> str:
-        """Return the channel identifier recorded on the target and the push row."""
+        """返回记录在目标与推送行上的渠道标识。"""
         ...
 
     def send(self, *, destination: str, message: OutboundMessage) -> DeliveryReceipt:
-        """Deliver one message, returning a receipt instead of raising on transport failure."""
+        """投递一条消息，传输失败时返回回执而不是抛异常。"""
         ...

@@ -1,1 +1,1 @@
-"""Whitelisted Agent tools and their runtime contract."""
+"""白名单内的 Agent 工具及其运行时契约。"""

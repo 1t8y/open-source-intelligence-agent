@@ -1,4 +1,9 @@
-"""Exercise the T2 ORM and constraints against a real MySQL database."""
+"""针对真实 MySQL 数据库验证 T2 的 ORM 映射与约束。
+
+脚本先建用户、角色、数据源、主题、仓库、快照、候选与审计各一行，提交后回读关联属性；
+再故意写入重复快照与非法状态，确认数据库把两者都拒掉。运行前需导出 `DATABASE_URL`，
+通过判据是末尾打印 `t2_mysql_smoke=ok`，且两条越界写入都输出 `=rejected`。
+"""
 
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ from open_source_intelligence.persistence.session import (
 
 
 def expect_integrity_error(session: Session, label: str) -> None:
-    """Assert that committing the current unit of work violates a constraint."""
+    """断言当前工作单元的提交会违反一条约束。"""
     try:
         session.commit()
     except (IntegrityError, OperationalError):
@@ -37,7 +42,7 @@ def expect_integrity_error(session: Session, label: str) -> None:
 
 
 def main() -> None:
-    """Run a representative MySQL insert, query, and constraint smoke."""
+    """跑一遍有代表性的 MySQL 写入、查询与约束冒烟。"""
     database_url = os.environ["DATABASE_URL"]
     engine = create_database_engine(database_url)
     session_factory = create_session_factory(engine)

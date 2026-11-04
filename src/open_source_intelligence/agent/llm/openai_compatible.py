@@ -1,7 +1,7 @@
-"""OpenAI-compatible chat completions adapter.
+"""OpenAI 兼容的 Chat Completions 适配器：把统一消息契约译成请求与响应。
 
-This adapter targets the `/chat/completions` shape shared by many vendors and gateways,
-so switching provider is a configuration change rather than a code change.
+本适配器对准的是许多供应商与网关共用的 `/chat/completions` 形状，
+因此换供应商只是改配置，而不是改代码。
 """
 
 from __future__ import annotations
@@ -24,15 +24,15 @@ from .messages import ChatMessage, ModelToolCall, ModelTurn, ToolSchema
 
 DEFAULT_TIMEOUT_SECONDS = 60
 RATE_LIMIT_STATUS = 429
-#: Output ceiling for one completion. A reasoning model that also spends tokens on its chain of
-#: thought needs an explicit cap on the *answer* length or it silently truncates a long JSON
-#: draft mid-object, which the draft parser then rejects as "not a JSON object". This is large
-#: enough for six full report sections and small enough to keep a stray run from burning budget.
+#: 单次 completion 的输出上限。会额外把 token 花在思维链上的推理模型，
+#: 必须对*答案*长度设一个显式上限，否则它会在对象中途悄悄截断一份长
+#: JSON 草稿，而草稿解析器随后只会报「不是 JSON 对象」。这个值大到足以
+#: 装下六个完整报告小节，小到能让失控的运行不至于烧穿预算。
 DEFAULT_MAX_TOKENS = 8192
 
 
 def _usage_field(usage: Any, key: str) -> int:
-    """Read a non-negative token count, treating anything unexpected as zero."""
+    """读取一个非负的 token 计数，遇到任何意外值一律按 0 处理。"""
     if not isinstance(usage, dict):
         return 0
     value = usage.get(key)
@@ -42,10 +42,10 @@ def _usage_field(usage: Any, key: str) -> int:
 
 
 def _decode_arguments(raw: Any) -> dict[str, Any]:
-    """Decode tool-call arguments.
+    """解码工具调用参数。
 
-    Malformed arguments degrade to an empty mapping so the tool layer can reject them with
-    a recorded `TOOL_INVALID_ARGUMENT` instead of aborting the whole run.
+    格式错误的参数降级为空映射，让工具层能用一条记录下来的
+    `TOOL_INVALID_ARGUMENT` 拒绝它，而不是中断整次运行。
     """
     if isinstance(raw, dict):
         return raw
@@ -59,7 +59,7 @@ def _decode_arguments(raw: Any) -> dict[str, Any]:
 
 
 def _encode_message(message: ChatMessage) -> dict[str, Any]:
-    """Convert one normalized message into the wire format."""
+    """把一条规范化消息转换成线上格式。"""
     if message.role == "tool":
         return {
             "role": "tool",
@@ -86,7 +86,7 @@ def _encode_message(message: ChatMessage) -> dict[str, Any]:
 
 
 def _encode_tool(schema: ToolSchema) -> dict[str, Any]:
-    """Convert one tool schema into the wire format."""
+    """把一个工具 schema 转换成线上格式。"""
     return {
         "type": "function",
         "function": {
@@ -98,7 +98,7 @@ def _encode_tool(schema: ToolSchema) -> dict[str, Any]:
 
 
 class OpenAICompatibleClient:
-    """Call any OpenAI-compatible chat completions endpoint."""
+    """调用任意 OpenAI 兼容的 chat completions 端点。"""
 
     def __init__(
         self,
@@ -123,12 +123,12 @@ class OpenAICompatibleClient:
 
     @property
     def provider(self) -> str:
-        """Return the provider identifier recorded on the Agent config."""
+        """返回记录在 Agent 配置上的供应商标识。"""
         return "openai_compatible"
 
     @property
     def model(self) -> str:
-        """Return the concrete model identifier."""
+        """返回具体的模型标识。"""
         return self._model_name
 
     def complete(
@@ -136,7 +136,7 @@ class OpenAICompatibleClient:
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSchema],
     ) -> ModelTurn:
-        """Send one chat completion request and normalize the response."""
+        """发送一次 chat completion 请求并归一化响应。"""
         payload = self._build_payload(messages, tools)
         try:
             response = self._post(payload)
@@ -158,7 +158,7 @@ class OpenAICompatibleClient:
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSchema],
     ) -> dict[str, Any]:
-        """Build the request body, omitting tools when none are offered."""
+        """构造请求体；没有提供工具时省略 `tools`。"""
         payload: dict[str, Any] = {
             "model": self._model_name,
             "messages": [_encode_message(message) for message in messages],
@@ -170,7 +170,7 @@ class OpenAICompatibleClient:
         return payload
 
     def _post(self, payload: dict[str, Any]) -> httpx.Response:
-        """POST the payload, reusing an injected client during tests."""
+        """POST 请求体，测试期间复用注入的客户端。"""
         url = f"{self._api_base}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -187,7 +187,7 @@ class OpenAICompatibleClient:
             return client.post(url, json=payload, headers=headers)
 
     def _parse(self, response: httpx.Response) -> ModelTurn:
-        """Normalize a provider response into a `ModelTurn`."""
+        """把供应商响应归一化成 `ModelTurn`。"""
         try:
             body: Any = response.json()
         except ValueError as exc:
@@ -200,9 +200,9 @@ class OpenAICompatibleClient:
         first = choices[0]
         if not isinstance(first, dict):
             raise ModelClientError(MODEL_INVALID_RESPONSE, "model choice was not an object")
-        # The usage block is read before any shape check, because a response that is unusable
-        # as a draft is still a response the provider billed for. Every raise below carries it,
-        # so a truncated call cannot vanish from the run's token and cost accounting.
+        # usage 块在任何形状检查之前读取，因为一份不能当草稿用的响应，
+        # 仍然是供应商计过费的响应。下面每次抛出都带上它，被截断的调用
+        # 才不会从本次运行的 token 与成本统计里消失。
         usage = body.get("usage")
         prompt_tokens = _usage_field(usage, "prompt_tokens")
         completion_tokens = _usage_field(usage, "completion_tokens")
@@ -216,10 +216,10 @@ class OpenAICompatibleClient:
                 completion_tokens=completion_tokens,
                 cost=billed_cost,
             )
-        # A response cut off by the output ceiling (`finish_reason: "length"`) is an incomplete
-        # answer: a truncated JSON draft would otherwise reach the parser and fail downstream as
-        # "not a JSON object", hiding the real cause. Surface it here while it is still a
-        # transport-level fact.
+        # 被输出上限截断的响应（`finish_reason: "length"`）是一份不完整的
+        # 答案：否则被截断的 JSON 草稿会一路走到解析器，在下游以「不是
+        # JSON 对象」的形式失败，掩盖真正的原因。趁它还是一个传输层事实，
+        # 在这里就把它暴露出来。
         finish_reason = first.get("finish_reason")
         if finish_reason == "length":
             raise ModelClientError(
@@ -240,12 +240,12 @@ class OpenAICompatibleClient:
         )
 
     def _price_turn(self, prompt_tokens: int, completion_tokens: int) -> Decimal:
-        """Price one turn from the configured per-million-token rates.
+        """按配置的「每百万 token」单价为这一轮计价。
 
-        The provider reports token counts but no monetary amount, so the cost is computed here
-        and flows into `agent_runs.estimated_cost` through the graph's accumulator. When no
-        price is configured the turn costs zero, which keeps the offline default and any
-        provider without a billing table from fabricating a number.
+        供应商只报 token 数、不报金额，所以成本在这里算出来，再经由图的
+        累加器流进 `agent_runs.estimated_cost`。没有配置价格时这一轮成本
+        为零，从而让离线默认值、以及任何没有价目表的供应商都不会凭空编出
+        一个数字。
         """
         cost = (
             Decimal(prompt_tokens) * self._input_price_per_mtok
@@ -255,7 +255,7 @@ class OpenAICompatibleClient:
 
     @staticmethod
     def _parse_tool_calls(raw: Any) -> tuple[ModelToolCall, ...]:
-        """Normalize the provider tool-call list, skipping unusable entries."""
+        """归一化供应商的工具调用列表，跳过不可用的条目。"""
         if not isinstance(raw, list):
             return ()
         calls: list[ModelToolCall] = []

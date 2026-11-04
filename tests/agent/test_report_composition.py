@@ -1,4 +1,4 @@
-"""Tests for draft promotion, report versioning, and citation validation."""
+"""守护草稿晋升、报告版本与引用校验的用例。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from open_source_intelligence.reports.errors import ReportGenerationError
 
 @dataclass(slots=True)
 class DraftedRun:
-    """One completed Agent run with its persisted draft."""
+    """一次已完成的 Agent 运行及其落库的草稿。"""
 
     agent_run_id: int
     draft_id: int
@@ -42,7 +42,7 @@ class DraftedRun:
 
 @pytest.fixture
 def drafted_run(session: Session, workspace: Workspace) -> Iterator[DraftedRun]:
-    """Generate one deterministic draft through the real Agent runtime."""
+    """通过真实 Agent 运行时生成一份确定性的草稿。"""
     seeded = seed_topic(workspace, repo_count=1)
     result = run_research_agent(
         session,
@@ -75,7 +75,7 @@ def test_generate_report_composes_sections_and_traceable_sources(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """A valid draft becomes one report with the full template and source rows."""
+    """证明一份合法草稿会变成一份报告，模板章节与来源行齐全。"""
     result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
 
     report = session.get(Report, result.report_id)
@@ -114,7 +114,7 @@ def test_generate_report_is_idempotent_for_unchanged_draft(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """Re-running the same draft does not create a duplicate version or report."""
+    """证明重复跑同一份草稿不会造出重复的版本或报告。"""
     first = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     second = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
 
@@ -133,7 +133,7 @@ def test_changed_section_increments_report_version(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """A changed draft creates a new immutable report version."""
+    """证明草稿一改就生成一个新的、不可变的报告版本。"""
     generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     section = _latest_section(session, drafted_run.draft_id, "summary")
     section.content_markdown = section.content_markdown + "\n补充观察。"
@@ -158,7 +158,7 @@ def test_missing_citations_are_rejected(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """A generated report section may not be promoted without evidence."""
+    """证明没有证据的章节不得被晋升进报告。"""
     section = _latest_section(session, drafted_run.draft_id, "summary")
     section.citations_json = []
     session.commit()
@@ -171,7 +171,7 @@ def test_invalid_metric_reference_is_rejected_before_write(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """Fabricated metric references fail without creating a partial report."""
+    """证明伪造的指标引用会失败，且不会留下半份报告。"""
     section = _latest_section(session, drafted_run.draft_id, "summary")
     section.citations_json = [
         {
@@ -191,7 +191,7 @@ def test_published_report_cannot_be_overwritten(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """Published content is immutable until an explicit review workflow changes it."""
+    """证明已发布内容不可变，除非走显式的复核流程来改它。"""
     generated = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     report = session.get(Report, generated.report_id)
     assert report is not None
@@ -209,7 +209,7 @@ def test_prior_report_citation_requires_published_status(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Published historical reports resolve; drafts cannot become citations."""
+    """证明已发布的历史报告才能解析成功；草稿不能变成引用。"""
     topic = workspace.add_topic()
     source = workspace.add_source()
     workspace.add_repository(source_id=source.id)
@@ -238,7 +238,7 @@ def test_generated_sources_anchor_on_full_name_not_mutable_id(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """Generated reports cite repositories by stable `owner/name`, not the auto-increment id."""
+    """证明生成的报告按稳定的 `owner/name` 引用仓库，而不是用自增 id。"""
     result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     report = session.get(Report, result.report_id)
     assert report is not None
@@ -246,9 +246,9 @@ def test_generated_sources_anchor_on_full_name_not_mutable_id(
     sources = session.scalars(select(ReportSource).where(ReportSource.report_id == report.id)).all()
     metric_refs = [s.source_ref for s in sources if s.source_type == "metric"]
     assert metric_refs
-    # Every metric citation now anchors on a full name (contains a `/`) rather than a bare id.
+    # 现在每条指标引用都锚在全名（含 `/`）上，而不是一个光秃秃的 id。
     assert all("/" in ref.split(":")[1] for ref in metric_refs)
-    # And the rendered report body carries the same stable form.
+    # 渲染出来的报告正文里也是同一种稳定写法。
     for ref in metric_refs:
         assert ref in report.content_markdown
 
@@ -257,7 +257,7 @@ def test_full_name_citation_resolves_after_the_id_changes(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """A citation by full name resolves even when the repository id is not the drafting key."""
+    """证明即使仓库 id 不是起草时的键，按全名给出的引用也能解析。"""
     generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     report = session.scalar(select(Report).order_by(Report.id.desc()))
     assert report is not None
@@ -278,7 +278,7 @@ def test_report_body_records_candidates_and_window(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """The report body carries a provenance block: candidates, window, cited snapshot count."""
+    """证明报告正文带一块来源说明：候选、窗口、被引用的快照数。"""
     result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     report = session.get(Report, result.report_id)
     assert report is not None
@@ -291,15 +291,15 @@ def test_evidence_section_deduplicates_and_groups_sources(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """One snapshot cited by several sections appears once in the evidence section."""
+    """证明被多个章节引用的同一份快照，在证据区只出现一次。"""
     result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     report = session.get(Report, result.report_id)
     assert report is not None
 
     evidence = report.content_markdown.split("## 引用与证据", 1)[1]
-    # Grouped under the metric heading.
+    # 归在指标小标题之下。
     assert "### 指标快照" in evidence
-    # No single source_ref should appear twice in the evidence block.
+    # 证据块里任何一个 `source_ref` 都不该出现两次。
     metric_refs = [
         line
         for line in evidence.splitlines()
@@ -312,17 +312,15 @@ def test_provenance_counts_evidence_not_citations(
     session: Session,
     drafted_run: DraftedRun,
 ) -> None:
-    """The provenance line describes the run's input, not the citation list.
+    """证明来源行描述的是这次运行的输入，而不是引用清单。
 
-    Two numbers were wrong in the same direction: "指标观测点" counted `(section, ref)` pairs, so
-    one snapshot quoted by three sections read as three observations, and "本轮候选仓库" was derived
-    from the cited repositories, so a candidate that was researched but not quoted disappeared
-    from the list of what the run could see.
+    有两个数字错在同一个方向上：「指标观测点」数的是 `(章节, 引用)` 对，于是一份被三节
+    引用的快照会读成三次观测；「本轮候选仓库」则从被引用的仓库推出来，于是一个研究过、
+    只是没被引用的候选，就从「这次运行看得到什么」的清单里消失了。
 
-    The line also had to stop being called an observation count: the body reports how many
-    snapshots each *series covers* (four, say), so one word carried two totals and the report
-    contradicted itself — "引用快照 3 个" beside "覆盖 4 个快照" is two different, both-correct
-    quantities.
+    这一行还得不再叫观测数：正文另外报的是每条*序列覆盖*多少份快照（比如四份），于是
+    同一个词承载了两个总数，报告自相矛盾 —— 「引用快照 3 个」与「覆盖 4 个快照」是两个
+    不同且都正确的量。
     """
     result = generate_report(session, agent_run_id=drafted_run.agent_run_id, now=NOW)
     report = session.get(Report, result.report_id)
@@ -340,7 +338,7 @@ def test_provenance_counts_evidence_not_citations(
     body = report.content_markdown
     assert f"引用快照 {len(metric_refs)} 个" in body
 
-    # Candidate links are the run's input; the block must name them all, cited or not.
+    # 候选链接是这次运行的输入；无论是否被引用，这一块都得把它们全写出来。
     candidate_names = {
         row[0]
         for row in session.execute(
@@ -360,12 +358,11 @@ def test_a_duplicate_full_name_resolves_through_the_snapshot(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A full name is not unique on its own, so the date decides which source the citation means.
+    """证明全名本身并不唯一，所以由日期决定这条引用指的是哪个来源。
 
-    `repositories` is unique on `(source_id, provider_repo_id)`, so two data sources can hold the
-    same `owner/name`. Resolving the name first and then hoping that row owns the snapshot made the
-    answer depend on insertion order: a citation that clearly named the second source's snapshot
-    failed as "not found".
+    `repositories` 只在 `(source_id, provider_repo_id)` 上唯一，因此两个数据源可以持有
+    同一个 `owner/name`。先按名字解析、再指望这一行恰好拥有那份快照，会让答案取决于
+    插入顺序：一条明明点明了第二个来源快照的引用，会被判成「找不到」。
     """
     first_source = workspace.add_source()
     second_source = workspace.add_source(source_type="huggingface")
@@ -394,11 +391,10 @@ def test_a_duplicate_full_name_resolves_through_the_snapshot(
 
 
 def test_the_key_numbers_table_is_computed_not_drafted() -> None:
-    """The share column is arithmetic, so it is rendered from rows rather than asked for.
+    """证明份额这一列是算出来的，因此由数据行渲染，而不是向模型索取。
 
-    A live run reported 84,713 of 92,667 as "64.8%". A reader cannot tell a wrong percentage from
-    a right one without redoing the division, which is exactly the kind of number a report should
-    not take from a language model.
+    一次真实运行把 92,667 中的 84,713 报成了 64.8%。读者不重算一遍除法，就看不出一个
+    百分比是错还是对，而这正是报告不该从语言模型那里拿的那类数字。
     """
 
     @dataclass

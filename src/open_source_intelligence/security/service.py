@@ -1,4 +1,4 @@
-"""Authentication queries and user credential verification."""
+"""认证查询与用户凭据校验。"""
 
 from functools import lru_cache
 
@@ -11,12 +11,12 @@ from open_source_intelligence.security.passwords import hash_password, verify_pa
 
 @lru_cache(maxsize=1)
 def _dummy_password_hash() -> str:
-    """Return a stable hash used to equalize unknown-user verification work."""
+    """返回一个固定哈希，用于让未知用户的校验耗时保持一致。"""
     return hash_password("invalid-user-password-placeholder")
 
 
 def get_user_by_username(session: Session, username: str) -> User | None:
-    """Load a user and all roles by username."""
+    """按用户名加载用户及其全部角色。"""
     statement = (
         select(User)
         .where(User.username == username)
@@ -26,7 +26,7 @@ def get_user_by_username(session: Session, username: str) -> User | None:
 
 
 def get_user_by_id(session: Session, user_id: int) -> User | None:
-    """Load a user and all roles by primary key."""
+    """按主键加载用户及其全部角色。"""
     statement = (
         select(User)
         .where(User.id == user_id)
@@ -36,7 +36,7 @@ def get_user_by_id(session: Session, user_id: int) -> User | None:
 
 
 def authenticate_user(session: Session, username: str, password: str) -> User | None:
-    """Return an active user when credentials are valid."""
+    """凭据有效时返回处于活跃状态的用户。"""
     user = get_user_by_username(session, username)
     if user is None:
         verify_password(_dummy_password_hash(), password)
@@ -49,12 +49,12 @@ def authenticate_user(session: Session, username: str, password: str) -> User | 
 
 
 def get_role_codes(user: User) -> set[str]:
-    """Return the current database-backed role codes for a user."""
+    """返回用户当前以数据库为准的角色编码。"""
     return {link.role.code for link in user.role_links}
 
 
 def ensure_roles(session: Session) -> dict[str, Role]:
-    """Create missing standard roles and return role definitions by code."""
+    """补齐缺失的标准角色，并按编码返回角色定义。"""
     definitions = {
         "ADMIN": "Administrator",
         "EDITOR": "Editor",
@@ -80,7 +80,7 @@ def create_user(
     role_codes: set[str],
     data_scope: str = "personal",
 ) -> User:
-    """Create a user and assign standard roles."""
+    """创建一个用户并分配标准角色。"""
     roles = ensure_roles(session)
     unknown_roles = role_codes.difference(roles)
     if unknown_roles:

@@ -1,15 +1,14 @@
-"""Carrying a finished research run the rest of the way, without an operator.
+"""在无人值守的情况下，把一次已完成的研究运行一路推进到结尾。
 
-Until this module the daily chain stopped at a draft. `reports/cli.py --action generate` turned a
-draft into a report, but nothing called it on a schedule, so an unattended day ended with
-`report_drafts` rows and no `reports` row - which meant nothing to verify, nothing to publish, and
-no email. The claim "每天早上一封周报" was true only if a human typed three commands.
+在这个模块出现之前，每日链路停在草稿上。`reports/cli.py --action generate` 能把草稿
+变成报告，但没有任何东西按计划调用它，于是无人值守的一天最后只剩 `report_drafts` 行、
+没有 `reports` 行 —— 既没有东西可验证，也没有东西可发布，更不会有邮件。「每天早上一封
+周报」这句话，只在有人手动敲三条命令时才成立。
 
-`finish_run_report` is that missing edge, kept out of the worker task so it can be tested without
-Celery and reused by a CLI. It does not weaken any gate: the report still has to compose (every
-numbered section needs a resolvable metric citation), still has to pass verification, and still
-goes through the publish policy - a run whose evidence was thin comes back as `pending_review`,
-not as a published report.
+`finish_run_report` 就是缺失的那条边，它被留在 Worker 任务之外，因此可以脱离 Celery
+测试，也能被 CLI 复用。它不放松任何一道关卡：报告仍然必须编排成功（每个带编号的章节
+都需要一条可解析的指标引用），仍然必须通过验证，仍然要走发布策略 —— 证据单薄的运行会
+以 `pending_review` 返回，而不是变成一份已发布的报告。
 """
 
 from __future__ import annotations
@@ -25,11 +24,11 @@ from open_source_intelligence.reports.verification import verify_report
 
 
 def finish_run_report(session: Session, *, agent_run_id: int) -> dict[str, Any]:
-    """Compose a run's draft into a report, verify it, and apply the publish policy.
+    """把一次运行的草稿编排成报告，验证它，再套用发布策略。
 
-    Returns a small JSON-ready summary rather than raising: a run whose draft does not compose is
-    a normal outcome of a thin evidence base, and the caller (a Celery task) has to report it
-    without failing the task and triggering a retry that would spend model budget again.
+    返回一份可直接转 JSON 的摘要而不是抛异常：草稿编排不成功本就是证据单薄时的正常
+    结果，调用方（一个 Celery 任务）必须把它报上去，同时不能让任务失败 —— 那会触发
+    重试，再烧一遍模型预算。
     """
     try:
         generated = generate_report(session, agent_run_id=agent_run_id)
@@ -52,8 +51,8 @@ def finish_run_report(session: Session, *, agent_run_id: int) -> dict[str, Any]:
         "reason_codes": list(verification.reason_codes),
     }
     if verification.verdict != "passed":
-        # The report exists and a human can now look at it; publishing is the policy's call and
-        # a failed verification is exactly what the review queue is for.
+        # 报告已经存在，人现在可以查看它；发不发布由策略决定，而验证失败正是评审队列
+        # 存在的理由。
         return summary
 
     outcome = publish_or_request_review(session, report_id=generated.report_id)

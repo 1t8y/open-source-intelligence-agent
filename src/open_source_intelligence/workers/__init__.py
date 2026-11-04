@@ -1,1 +1,1 @@
-"""Celery workers and periodic task definitions."""
+"""Celery Worker 与周期任务定义。"""

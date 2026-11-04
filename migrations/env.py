@@ -1,4 +1,4 @@
-"""Alembic migration environment using the shared SQLAlchemy metadata."""
+"""Alembic 迁移环境，复用项目共享的 SQLAlchemy `metadata`。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """Generate SQL without creating a database connection."""
+    """不建立数据库连接，只生成 SQL。"""
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
@@ -40,7 +40,7 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    """Run migrations through an existing connection."""
+    """在既有连接上执行迁移。"""
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
@@ -52,7 +52,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 def run_migrations_online() -> None:
-    """Create a connection and run migrations against the database."""
+    """建立连接，并针对数据库执行迁移。"""
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

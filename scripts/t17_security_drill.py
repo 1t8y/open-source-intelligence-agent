@@ -1,29 +1,24 @@
-"""Run the T17 security and failure drill against a real database.
+"""针对真实数据库跑 T17 的安全与故障演练。
 
-The drill is the acceptance evidence for four claims that no single unit test can carry,
-because each one is a property of how the shipped pieces behave *together*:
+这场演练是四条主张的验收证据，而任何单个单元测试都扛不起它们，因为每一条都是
+已发布组件*协同*行为的一种性质：
 
-1. **Authorization** - the real FastAPI application, over real rows, refuses the wrong reader
-   and the wrong writer on both surfaces, says nothing about what it refused, and leaves an
-   audit row that does name it.
-2. **Prompt injection** - untrusted README text goes through the real collector, the real
-   daily pipeline, and the real Agent runtime; the guard strips the instruction lines before
-   the model reads them, and the run is parked for review instead of being published.
-3. **API failure** - a source answering `500` or timing out is retried, classified, and
-   recorded as a failed stage rather than crashing the batch; a transport that refuses a push
-   is a recorded, retryable result rather than an exception.
-4. **Repeated work** - the same collection, release sweep, and push, run a second time,
-   produce no second set of rows.
+1. **授权** —— 真正的 FastAPI 应用在真实行上，对两个界面都拒绝错误的读者与错误的
+   写者，对被拒的东西一字不提，却在审计行里点出它的名字。
+2. **提示注入** —— 不可信的 README 文本经过真正的采集器、真正的每日流水线与真正的
+   Agent 运行时；守卫在模型读到之前剥掉指令行，于是这次运行被停在待审核，而不是
+   被发布出去。
+3. **API 故障** —— 一个回 `500` 或超时的数据源会被重试、归类，并记成失败的阶段，
+   而不是让整批崩掉；一个拒绝推送的传输方会变成一条可重试的记录结果，而不是异常。
+4. **重复劳动** —— 同样的采集、放行清扫与推送，跑第二遍不再产出一批新行。
 
-Nothing here re-implements the code under test. The collectors are the real adapters reading a
-mock *transport* (so URL building, retry, `Link` parsing, and normalization are the shipped
-ones), the API is the real ASGI application in process, and the Agent is the real graph over
-the deterministic offline model client.
+这里没有任何一处重新实现被测代码。采集器是真正的适配器，只是对着 mock 的*传输层*
+读（所以 URL 拼接、重试、`Link` 解析与归一化都是已发布的那套），API 是进程内真正的
+ASGI 应用，Agent 是跑在确定性离线模型客户端上的真图。
 
-The drill is also written to be repeatable against a database that is already in use: it removes
-exactly the rows it added (by primary-key watermark, plus a literal-prefix purge for the rows that
-carry a marker) and it measures what the accounts could already read before it asserts anything
-about what they can read now. `verify_t17.ps1` leans on both - it never drops the volume.
+这场演练还写成能对一个正在使用的数据库反复运行：它只删自己加的行（按主键水位线，
+外加对带标记的行做一次字面前缀清理），并且在断言账号现在能读什么之前，先测量它们
+本来就能读什么。`verify_t17.ps1` 两处都仰仗着 —— 它从不删数据卷。
 """
 
 from __future__ import annotations
@@ -97,7 +92,7 @@ from open_source_intelligence.security.service import create_user
 from open_source_intelligence.web.security import CSRF_COOKIE
 
 # --------------------------------------------------------------------------------------
-# Drill-owned names, dates, and clocks
+# 演练自己持有的名字、日期与时钟
 # --------------------------------------------------------------------------------------
 
 TOPIC_NAME = "__T17 Security Drill Topic__"
@@ -106,38 +101,37 @@ REPO_PREFIX = "__t17_drill_"
 DRILL_QUERY = "__t17_drill__ stars:>0"
 ACTOR_PREFIX = "__t17_"
 DRILL_CONFIG_NAME = "__t17_drill_config__"
-#: The two labels the drill gives rows that carry no other marker. The purge matches both as
-#: **literal** prefixes (`startswith(..., autoescape=True)`): every one of these labels contains
-#: `_`, which is a single-character wildcard in `LIKE`, so the obvious `title.like("__T17%")` also
-#: matches a report titled `abT17foo` that the drill never wrote. `PUSH_TARGET_PREFIX` ends in `_`
-#: because it prefixes `drill_target__` and `repeat_target__` alike.
+#: 演练给那些没有别的标记的行贴的两个标签。清理把两者都按**字面**前缀匹配
+#: （`startswith(..., autoescape=True)`）：这些标签每一个都含 `_`，而它在 `LIKE` 里是
+#: 单字符通配符，所以想当然的 `title.like("__T17%")` 连演练从没写过的 `abT17foo`
+#: 也会命中。`PUSH_TARGET_PREFIX` 以 `_` 结尾，因为它要同时给 `drill_target__` 与
+#: `repeat_target__` 当前缀。
 REPORT_TITLE_PREFIX = "__T17"
 PUSH_TARGET_PREFIX = "__t17_"
 SMOKE_PASSWORD = "t17-drill-password-not-for-production"
 PUSH_DESTINATION = "t17-drill@example.com"
 
-#: A synthetic business day, deliberately far in the future. The snapshot stage touches every
-#: repository, so its rows must carry a date no real run can have written.
+#: 一个合成的业务日，刻意放到很远的将来。快照阶段会碰到每一个仓库，所以它写下的行
+#: 必须带一个真实运行不可能用过的日期。
 BUSINESS_DATE = date(2099, 9, 9)
 BUSINESS_NOW = datetime(2099, 9, 9, 12, 0, tzinfo=UTC)
 DRILL_NOW = datetime(2099, 9, 9, 9, 0, tzinfo=UTC)
 
-#: Two repositories, for the same reason T16 uses two: the deterministic offline client
-#: researches every candidate it is shown (`2n + 3` calls against a budget of 10), so a larger
-#: topic would degrade the budget and the run would fail for a reason this drill is not testing.
+#: 两个仓库，理由与 T16 用两个相同：确定性的离线客户端会研究它看到的每一个候选
+#: （`2n + 3` 次调用，预算只有 10），所以更大的主题会把预算拖到降级，运行就会因为
+#: 一个本演练并不打算测的原因失败。
 AGENT_CANDIDATES = 2
 DAILY_LIMIT = 4
 MOCK_STARS = 900
 
-#: How many rows of a report list the authorization half reads. `GET /api/v1/reports` caps
-#: `page_size` at 100, so that is as much of a role's view as one request can see - and it is why
-#: `measure_visibility_baseline` refuses to run against a database that already holds more than
-#: this many readable reports for any of the drill accounts: past that point the ids on the page
-#: stop being the whole answer, and an assertion built on them would be measuring pagination.
+#: 授权那一半会读多少行报告列表。`GET /api/v1/reports` 把 `page_size` 封顶在 100，
+#: 所以一个请求最多也就看到某个角色视野的这么多；也正因如此，
+#: `measure_visibility_baseline` 会拒绝在这样一份库上运行：任一演练账号已经能读到的
+#: 报告数超过这个值，页面上的 id 就不再是全部答案，建在它们之上的断言测的就成了分页。
 MAX_LIST_PAGE = 100
 
-#: The instruction lines planted in the repository README. Two languages, because the guard
-#: ships both pattern sets and a drill that only proves one of them proves half a guard.
+#: 埋在仓库 README 里的指令行。两种语言，因为守卫两套模式都发版，一场只证明其中一套
+#: 的演练，只证明了半个守卫。
 INJECTED_README = (
     "# Super Tool\n"
     "A genuinely useful repository description.\n"
@@ -146,7 +140,7 @@ INJECTED_README = (
     "Normal trailing text that must survive the guard.\n"
 )
 
-#: Strings that must never reach the model or the ledger.
+#: 绝不能到达模型或账本的字符串。
 CONFIDENTIAL_STRINGS = (
     "test-secret-key-with-at-least-32-characters",
     "app:secret@",
@@ -164,17 +158,17 @@ REPORT_TITLES = {
 
 
 # --------------------------------------------------------------------------------------
-# Mock infrastructure
+# mock 基础设施
 # --------------------------------------------------------------------------------------
 
 
 class DrillGitHub:
-    """The real GitHub adapter, answering from a transport this drill controls.
+    """真正的 GitHub 适配器，答案来自演练自己控制的传输层。
 
-    The mock decides what the *server* said - which repositories exist and whether a request
-    fails - but not how the client behaves. The URL is built by `GitHubCollector`, retries are
-    `RetryingHttpClient`'s, and the rows are written by `collect_from_collector`, so a passing
-    check is evidence about the shipped code rather than about this file.
+    mock 只决定*服务端*说了什么 —— 哪些仓库存在、某个请求是否失败 —— 不决定客户端
+    怎么表现。URL 由 `GitHubCollector` 拼，重试是 `RetryingHttpClient` 的，行由
+    `collect_from_collector` 写入，所以通过的检查是在为已发布的代码提供证据，而不是
+    为本文件提供证据。
     """
 
     def __init__(
@@ -197,7 +191,7 @@ class DrillGitHub:
         )
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
-        """Answer one search request the way GitHub's search API would."""
+        """按 GitHub 搜索 API 的方式回答一次搜索请求。"""
         del request
         self.requests += 1
         if self.failure == "server_error":
@@ -215,7 +209,7 @@ class DrillGitHub:
         )
 
     def _item(self, index: int) -> dict[str, Any]:
-        """Return one GitHub repository object."""
+        """返回一个 GitHub 仓库对象。"""
         provider_id = f"{REPO_PREFIX}{self.label}_{index}"
         return {
             "id": provider_id,
@@ -230,15 +224,15 @@ class DrillGitHub:
         }
 
     def close(self) -> None:
-        """Release the transport the mock owns."""
+        """释放这个 mock 持有的传输层。"""
         self._client.close()
 
 
 class RefusingChannel:
-    """A delivery adapter whose transport refuses everything it is handed.
+    """传输层拒绝一切投递的投递适配器。
 
-    It stands in for "the mail server said no": the push service must record that as a failed,
-    retryable attempt rather than raising, because a push sits inside the publish path.
+    它替代的是「邮件服务器说不」：推送服务必须把它记成一次失败、可重试的尝试，而不是
+    抛异常，因为推送就坐在发布路径里面。
     """
 
     def __init__(self, channel: str = "email") -> None:
@@ -247,18 +241,18 @@ class RefusingChannel:
 
     @property
     def channel(self) -> str:
-        """Return the channel this adapter stands in for."""
+        """返回本适配器所替代的渠道。"""
         return self._channel
 
     def send(self, *, destination: str, message: OutboundMessage) -> DeliveryReceipt:
-        """Refuse the delivery and count the attempt."""
+        """拒绝这次投递，并把尝试计数加一。"""
         del destination, message
         self.attempts += 1
         return DeliveryReceipt(ok=False, detail="mock transport refused the delivery")
 
 
 class AcceptingChannel:
-    """A delivery adapter that accepts everything, so a retry can be seen to succeed."""
+    """接受一切投递的投递适配器，好让重试被看到成功。"""
 
     def __init__(self, channel: str = "email") -> None:
         self._channel = channel
@@ -266,17 +260,17 @@ class AcceptingChannel:
 
     @property
     def channel(self) -> str:
-        """Return the channel this adapter stands in for."""
+        """返回本适配器所替代的渠道。"""
         return self._channel
 
     def send(self, *, destination: str, message: OutboundMessage) -> DeliveryReceipt:
-        """Accept the delivery and count the attempt."""
+        """接受这次投递，并把尝试计数加一。"""
         self.attempts += 1
         return DeliveryReceipt(ok=True, detail=f"accepted:{destination}:{message.report_id}")
 
 
 class PromptRecordingClient:
-    """Deterministic offline client that keeps every message list it was handed."""
+    """确定性的离线客户端，把交给它的每一份消息列表都留下来。"""
 
     def __init__(self) -> None:
         self._offline = OfflineModelClient()
@@ -284,12 +278,12 @@ class PromptRecordingClient:
 
     @property
     def provider(self) -> str:
-        """Return the offline provider identifier."""
+        """返回离线提供方的标识。"""
         return self._offline.provider
 
     @property
     def model(self) -> str:
-        """Return the stub model identifier."""
+        """返回桩模型的标识。"""
         return self._offline.model
 
     def complete(
@@ -297,22 +291,22 @@ class PromptRecordingClient:
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSchema],
     ) -> ModelTurn:
-        """Record the conversation, then delegate to the deterministic stub."""
+        """记下这段对话，然后交给确定性桩。"""
         self.calls.append(tuple(messages))
         return self._offline.complete(messages, tools)
 
 
 class UnavailableModelClient:
-    """Model client that always reports a transport failure."""
+    """总是报告传输失败的模型客户端。"""
 
     @property
     def provider(self) -> str:
-        """Return the provider identifier."""
+        """返回提供方标识。"""
         return "drill-unavailable"
 
     @property
     def model(self) -> str:
-        """Return the model identifier."""
+        """返回模型标识。"""
         return "drill-unavailable-v1"
 
     def complete(
@@ -320,25 +314,25 @@ class UnavailableModelClient:
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSchema],
     ) -> ModelTurn:
-        """Fail the way a provider outage fails."""
+        """按提供方故障的样子失败。"""
         del messages, tools
         raise ModelClientError(MODEL_REQUEST_FAILED, "drill: simulated provider outage")
 
 
 # --------------------------------------------------------------------------------------
-# Schema watermark and cleanup
+# 表结构水位线与清理
 # --------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class Watermark:
-    """The highest primary key each table held before the drill wrote anything.
+    """演练写入任何东西之前，每张表所持有的最高主键。
 
-    The drill cleans up by deleting rows above its watermark rather than by matching a marker,
-    because half of what it creates (`pipeline_runs`, `agent_steps`, `tool_calls`, `audit_logs`)
-    carries no marker to match on. That is safe only while the drill is the only writer: the delete
-    cannot tell the drill's rows from a concurrent writer's, and `scripts/verify_t17.ps1` does not
-    drop the database volume, so rows from an earlier run are still there and stay below the mark.
+    演练按水位线以上删除来清理，而不是靠匹配标记，因为它创建的东西有一半
+    （`pipeline_runs`、`agent_steps`、`tool_calls`、`audit_logs`）根本没有标记可匹配。
+    这只有在演练是唯一写入方时才安全：那次删除分不清演练的行和并发写入方的行；而
+    `scripts/verify_t17.ps1` 从不删数据卷，所以上一轮留下的行还在，并且仍在水位线
+    之下。
     """
 
     pipeline_runs: int
@@ -353,12 +347,12 @@ class Watermark:
 
 
 def _max_id(session: Session, entity: Any) -> int:
-    """Return the highest primary key of one table, or zero when it is empty."""
+    """返回单张表的最高主键；表为空时返回零。"""
     return int(session.scalar(select(func.coalesce(func.max(entity.id), 0))) or 0)
 
 
 def take_watermark(session: Session) -> Watermark:
-    """Record the primary-key high-water mark of every table the drill writes."""
+    """记下演练会写到的每张表的主键高水位。"""
     return Watermark(
         pipeline_runs=_max_id(session, PipelineRun),
         agent_runs=_max_id(session, AgentRun),
@@ -384,12 +378,12 @@ def _delete_rows(
     topic_ids: Sequence[int],
     user_ids: Sequence[int],
 ) -> None:
-    """Delete one set of drill rows in dependency order.
+    """按依赖顺序删掉一组演练行。
 
-    The order is load-bearing rather than cosmetic. `reports` and `report_drafts` both point at
-    `agent_runs`, `report_sections` points at `report_drafts`, and `report_sources` points at
-    `repositories`, so deleting parents first trips the foreign keys - which the SQLite fixture
-    enforces (`PRAGMA foreign_keys=ON`) exactly as MySQL does.
+    这个顺序是承重的，不是装饰。`reports` 与 `report_drafts` 都指向 `agent_runs`，
+    `report_sections` 指向 `report_drafts`，`report_sources` 指向 `repositories`，
+    所以先删父行会踩到外键 —— 而 SQLite 夹具（`PRAGMA foreign_keys=ON`）和 MySQL
+    一样会执行这些外键。
     """
     draft_ids: list[int] = []
     if agent_run_ids:
@@ -466,7 +460,7 @@ def _delete_rows(
 
 
 def cleanup_drill_records(session: Session, mark: Watermark) -> None:
-    """Delete everything the drill created above its watermark."""
+    """删掉演练在水位线之上创建的一切。"""
 
     def ids_above(entity: Any, floor: int) -> list[int]:
         return list(session.scalars(select(entity.id).where(entity.id > floor)).all())
@@ -483,9 +477,8 @@ def cleanup_drill_records(session: Session, mark: Watermark) -> None:
         user_ids=ids_above(User, mark.users),
     )
     session.query(AuditLog).filter(AuditLog.id > mark.audit_logs).delete(synchronize_session=False)
-    # The agent config is keyed by name and shared by every run of the drill, so it is deleted
-    # by name once the runs that referenced it are gone - not by watermark, which would delete
-    # a row the next run is about to look for.
+    # Agent 配置以名字为键，且被演练的每一次运行共用，所以等引用它的那些运行都没了之后
+    # 按名字删除 —— 而不是按水位线，那会删掉下一轮正要找的那一行。
     session.query(AgentConfig).filter(AgentConfig.name == DRILL_CONFIG_NAME).delete(
         synchronize_session=False
     )
@@ -493,11 +486,11 @@ def cleanup_drill_records(session: Session, mark: Watermark) -> None:
 
 
 def purge_drill_rows(session: Session) -> None:
-    """Delete rows this drill owns by name, for the cleanup-only entry point.
+    """按名字删掉本演练拥有的行，供只清理那个入口使用。
 
-    The normal path deletes by watermark, which needs a mark taken before the run. This one is
-    for the other case: a run that died and left rows behind. It matches on the drill's own
-    names, so it can only ever remove the drill's rows from a shared database.
+    常规路径按水位线删，而水位线需要在运行开始前拍下来。这一条是给另一种情况的：
+    一次运行死掉，把行留在了后面。它匹配的是演练自己的名字，所以在一份共用的库上，
+    它也只可能删掉演练的行。
     """
     topic_ids = list(session.scalars(select(Topic.id).where(Topic.name == TOPIC_NAME)).all())
     report_ids = list(
@@ -559,12 +552,12 @@ def purge_drill_rows(session: Session) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Seeding
+# 播种
 # --------------------------------------------------------------------------------------
 
 
 def seed_actors(session: Session) -> dict[str, int]:
-    """Create the drill's three accounts and return their ids by role name."""
+    """建出演练的三个账号，并按角色名返回它们的 id。"""
     for code, name in (("ADMIN", "Administrator"), ("EDITOR", "Editor"), ("VIEWER", "Viewer")):
         if session.scalar(select(Role.id).where(Role.code == code)) is None:
             session.add(Role(code=code, name=name))
@@ -586,7 +579,7 @@ def seed_actors(session: Session) -> dict[str, int]:
 
 
 def seed_topic(session: Session, *, actor_id: int) -> int:
-    """Create the drill topic and return its id."""
+    """建出演练主题，并返回它的 id。"""
     topic = Topic(
         name=TOPIC_NAME,
         description="T17 security and failure drill topic",
@@ -613,7 +606,7 @@ def _seed_report(
     owner_id: int | None,
     status: str = "published",
 ) -> int:
-    """Insert one report row and return its id."""
+    """插入一行报告，并返回它的 id。"""
     report = Report(
         agent_run_id=agent_run_id,
         topic_id=topic_id,
@@ -634,11 +627,11 @@ def _seed_report(
 
 
 def seed_reports(session: Session, *, topic_id: int, actor_ids: dict[str, int]) -> dict[str, int]:
-    """Create four reports covering every visibility and ownership combination that matters.
+    """建出四份报告，覆盖每一种要紧的可见性与归属组合。
 
-    They are inserted directly rather than generated: this half of the drill is about who may
-    reach a row, and generating one would only add an Agent run whose outcome the assertions do
-    not read. The Agent-generated report is the subject of the injection half.
+    它们是直接插入的，不是生成出来的：演练的这一半问的是谁可以够到某一行，生成一份
+    只会多出一次运行，而断言根本不读它的结果。Agent 生成的那份报告是注入那一半的
+    主角。
     """
     run = PipelineRun(
         topic_id=topic_id,
@@ -721,12 +714,12 @@ def seed_reports(session: Session, *, topic_id: int, actor_ids: dict[str, int]) 
 
 
 # --------------------------------------------------------------------------------------
-# Part A - authorization
+# A 部分 —— 授权
 # --------------------------------------------------------------------------------------
 
 
 def _api_login(client: TestClient, suffix: str) -> dict[str, str]:
-    """Return the bearer header for one drill account."""
+    """返回某个演练账号的 Bearer 请求头。"""
     response = client.post(
         "/api/v1/auth/login",
         json={"username": f"{ACTOR_PREFIX}{suffix}__", "password": SMOKE_PASSWORD},
@@ -737,7 +730,7 @@ def _api_login(client: TestClient, suffix: str) -> dict[str, str]:
 
 
 def _csrf(client: TestClient) -> str:
-    """Return the CSRF value the browser currently holds."""
+    """返回浏览器此刻持有的 CSRF 值。"""
     token = client.cookies.get(CSRF_COOKIE)
     if not token:
         raise RuntimeError("the UI never issued a CSRF cookie")
@@ -745,7 +738,7 @@ def _csrf(client: TestClient) -> str:
 
 
 def _ui_login(client: TestClient, suffix: str) -> Any:
-    """Sign one drill account in through the real login form."""
+    """通过真正的登录表单登录一个演练账号。"""
     page = client.get("/ui/login", follow_redirects=False)
     if page.status_code != 200:
         raise RuntimeError(f"login page returned {page.status_code}")
@@ -762,11 +755,10 @@ def _ui_login(client: TestClient, suffix: str) -> Any:
 
 
 def _api_readable_ids(client: TestClient, headers: dict[str, str]) -> tuple[list[int], int]:
-    """Return every report id the caller may read and the list's reported total.
+    """返回调用方有权读取的全部报告 id，以及列表报出的总数。
 
-    The total is returned as well as the ids because "the filter ran in the database" and "the
-    rows were fetched and filtered afterwards" are indistinguishable from the ids alone: both
-    hand back the same list. Only the total tells them apart.
+    除了 id 还要返回总数，因为「过滤在数据库里跑了」和「把行取回来再过滤」单看 id
+    是分不出来的：两者交回同一份列表。只有总数能把它们区分开。
     """
     response = client.get(f"/api/v1/reports?page=1&page_size={MAX_LIST_PAGE}", headers=headers)
     if response.status_code != 200:
@@ -776,7 +768,7 @@ def _api_readable_ids(client: TestClient, headers: dict[str, str]) -> tuple[list
 
 
 def _denials_by_action(factory: sessionmaker[Session], mark: int) -> dict[str, set[str | None]]:
-    """Return the resource each denied audit action was filed against."""
+    """返回每一种被拒的审计动作所对应的资源。"""
     with factory() as session:
         rows = session.scalars(
             select(AuditLog).where(AuditLog.id > mark, AuditLog.result == "denied")
@@ -789,7 +781,7 @@ def _denials_by_action(factory: sessionmaker[Session], mark: int) -> dict[str, s
 
 @dataclass(frozen=True)
 class RoleView:
-    """One drill account's view of the reports table: the ids on the first page, and the total."""
+    """某个演练账号对报告表的视野：第一页上的 id，以及总数。"""
 
     ids: tuple[int, ...]
     total: int
@@ -797,7 +789,7 @@ class RoleView:
 
 @dataclass(frozen=True)
 class VisibilityBaseline:
-    """What each account could already read before the drill seeded its own four reports."""
+    """在演练种下自己那四份报告之前，每个账号本来就能读到什么。"""
 
     admin: RoleView
     editor: RoleView
@@ -805,24 +797,22 @@ class VisibilityBaseline:
 
 
 def measure_visibility_baseline(session: Session, *, editor_id: int) -> VisibilityBaseline:
-    """Measure what the drill accounts could read *before* the drill wrote anything.
+    """测量演练账号在演练写入任何东西*之前*能读到什么。
 
-    `verify_t17.ps1` never drops the database volume, and MySQL does not reset `AUTO_INCREMENT`
-    when rows are deleted, so the drill's own reports do not start at id 1 on a database that has
-    seen any use - after one run of this very drill the table is empty again but the next report
-    still gets the next id. An assertion written against the literal `1` therefore measures the
-    operator's history rather than the access rule: it passes on a fresh volume and fails on a
-    used one, with the same code on both sides. Measuring the pre-existing rows here is what turns
-    "the viewer sees exactly one report" into a claim about the four reports this drill wrote.
+    `verify_t17.ps1` 从不删数据卷，而 MySQL 在删行之后不会重置 `AUTO_INCREMENT`，所以
+    在任何一个用过的库上，演练自己的报告都不会从 id 1 开始 —— 跑完这一场演练之后表
+    又空了，但下一份报告拿到的仍是下一个 id。于是写死 `1` 的断言，测的是运维的历史，
+    而不是访问规则：它在全新数据卷上通过，在用过的数据卷上失败，而两边的代码一模一样。
+    在这里把既有行量出来，才把「只读角色恰好看到一份报告」变成一句关于本演练所写
+    那四份报告的主张。
 
-    The rule is restated as plain SQL over `visibility` and `owner_id`, while the application
-    states it as a SQLAlchemy predicate in `security/authorization.py`. They are two independent
-    expressions of `docs/security-and-privacy.md` §3.3, which is what keeps the comparison below
-    an assertion rather than a tautology.
+    这条规则这里用普通 SQL 按 `visibility` 与 `owner_id` 重述了一遍，而应用把它写成
+    `security/authorization.py` 里的一条 SQLAlchemy 谓词。它们是
+    `docs/security-and-privacy.md` §3.3 的两种独立表达 —— 正因如此，下面的比较才是
+    一条断言，而不是一句同义反复。
 
-    A role that can already read more reports than one page holds is refused outright: the drill
-    would be comparing a truncated page against a full expectation, and silently asserting the
-    wrong thing is worse than not running.
+    已经能读到超过一页报告的角色会被直接拒绝：那样演练就是在拿一页被截断的结果去对
+    一份完整的预期，而悄悄断言一件错事，比不跑更糟。
     """
     every = set(session.scalars(select(Report.id)).all())
     internal = set(
@@ -837,12 +827,12 @@ def measure_visibility_baseline(session: Session, *, editor_id: int) -> Visibili
         ).all()
     )
     baseline = VisibilityBaseline(
-        # `ADMIN` sees every report, regardless of visibility or owner (`can_read_report`).
+        # `ADMIN` 能看到每一份报告，不管可见性与归属（`can_read_report`）。
         admin=RoleView(tuple(sorted(every)), len(every)),
-        # The editor holds the team data scope, so it adds `TEAM` rows to the shared `INTERNAL`
-        # ones and its own `PRIVATE` ones.
+        # 编辑持有 team 数据范围，所以它在共享的 `INTERNAL` 之外再加上 `TEAM` 行，以及
+        # 自己的 `PRIVATE` 行。
         editor=RoleView(tuple(sorted(internal | team | owned)), len(internal | team | owned)),
-        # The viewer holds the personal scope: `INTERNAL` only.
+        # 只读角色持有 personal 范围：只有 `INTERNAL`。
         viewer=RoleView(tuple(sorted(internal)), len(internal)),
     )
     views = {
@@ -863,16 +853,14 @@ def measure_visibility_baseline(session: Session, *, editor_id: int) -> Visibili
 def visibility_expectations(
     reports: dict[str, int], baseline: VisibilityBaseline
 ) -> tuple[dict[str, list[int]], dict[str, int]]:
-    """Return, per role, the report ids and the list total the API is expected to answer with.
+    """按角色返回 API 预期答出的报告 id 与列表总数。
 
-    Both are built from the ids the drill created and from what the accounts could already read -
-    never from the ids' values. The verification script compares the API against these rather than
-    against literals, so the claim being asserted is "the API returned exactly the drill's four
-    reports, filed under the right visibilities" rather than "the operator's volume was clean".
+    两者都由演练创建的 id 加上账号本来就能读到的东西拼成，绝不依赖 id 的具体取值。
+    验证脚本拿 API 的结果与它们比，而不是与字面量比，于是被断言的事情是「API 恰好
+    返回了演练那四份报告，并归在正确的可见性下」，而不是「运维的数据卷是干净的」。
 
-    The deltas are the four combinations the drill seeds: every role gains the `INTERNAL` report;
-    the editor also gains `TEAM` and its own `PRIVATE` one, which is why the administrator gains
-    all four and the viewer only one.
+    增量正是演练种下的那四种组合：每个角色都会多出 `INTERNAL` 那份报告；编辑还会多出
+    `TEAM` 与自己那份 `PRIVATE`；所以管理员多出四份，只读角色只多一份。
     """
     expected_visible = {
         "admin": sorted((*baseline.admin.ids, *reports.values())),
@@ -903,7 +891,7 @@ def authorization_checks(
     *,
     baseline: VisibilityBaseline,
 ) -> dict[str, Any]:
-    """Drive the real application through the access-control matrix on both surfaces."""
+    """让真正的应用在两个界面上走一遍访问控制矩阵。"""
     anonymous = client.get("/api/v1/reports")
     anonymous_ui = client.get("/ui/reports", follow_redirects=False)
 
@@ -929,7 +917,7 @@ def authorization_checks(
         f"/api/v1/reports/{reports['internal']}/verify", headers=viewer_headers
     )
 
-    # The UI adds the session and the double-submit token on top of the same rules.
+    # 界面在同一套规则之上，再加会话与双提交令牌。
     _ui_login(client, "viewer")
     viewer_ui_write = client.post(
         f"/ui/reports/{reports['internal']}/verify",
@@ -942,8 +930,8 @@ def authorization_checks(
         data={"csrf_token": "not-the-issued-token"},
     )
 
-    # The UI adds the session and the double-submit token on top of the same rules. The cookie
-    # jar is cleared first so the editor's request is obviously the editor's, not a leftover.
+    # 界面在同一套规则之上，再加会话与双提交令牌。先清空 Cookie 罐，编辑的请求才明显
+    # 是编辑的，而不是残留。
     client.cookies.clear()
     _ui_login(client, "editor")
     editor_ui_write_orphan = client.post(
@@ -951,17 +939,16 @@ def authorization_checks(
         data={"csrf_token": _csrf(client)},
     )
 
-    # `resource_id` is compared as text because "no resource named" (`None`) and "resource
-    # named 1" are different answers, and a JSON round trip would blur them.
+    # `resource_id` 按文本比较，因为「没点名资源」（`None`）与「点名的资源是 1」是两个
+    # 不同的答案，而一次 JSON 往返会把它们糊在一起。
     denials = _denials_by_action(factory, mark)
     sorted_denials = {
         action: sorted(str(value) for value in values) for action, values in denials.items()
     }
     expected_visible, expected_totals = visibility_expectations(reports, baseline)
-    # The refusals name the report they addressed: the viewer's two refused reads (the team report
-    # and the ownerless private one), the viewer's two refused writes (`auth.rbac` on the internal
-    # report, and the dashboard, which names no resource at all), and its two refused CSRF tokens
-    # (the same report twice, so one entry).
+    # 这些拒绝都点出了它们针对的报告：只读角色两次被拒的读（team 报告与无主的私有
+    # 报告）、两次被拒的写（针对 internal 报告的 `auth.rbac`，以及根本不点名任何资源的
+    # 看板），还有两次被拒的 CSRF 令牌（同一份报告两次，所以只算一条）。
     expected_denials = {
         "report.read": sorted(str(value) for value in (reports["team"], reports["private_orphan"])),
         "auth.rbac": sorted(str(value) for value in (reports["internal"], None)),
@@ -975,10 +962,9 @@ def authorization_checks(
         "api_editor_visible": sorted(editor_ids),
         "api_viewer_visible": sorted(viewer_ids),
         "api_totals": {"admin": admin_total, "editor": editor_total, "viewer": viewer_total},
-        # Reported so the verification script's one-line summary can print the *delta* rather than
-        # the absolute totals: "the viewer gained exactly one report" is a statement about this
-        # drill, while "the viewer's total is 1" is a statement about how full the database was
-        # before it started. The summary is the line two engines are compared on.
+        # 报出来，是为了让验证脚本那句单行摘要能打印*增量*，而不是绝对总数：「只读角色
+        # 恰好多出一份报告」是关于本演练的陈述，而「只读角色的总数是 1」则是关于库在
+        # 开跑前有多满的陈述。那句摘要正是两个引擎互相比对的那一行。
         "baseline_totals": {
             "admin": baseline.admin.total,
             "editor": baseline.editor.total,
@@ -1005,17 +991,16 @@ def authorization_checks(
 
 
 # --------------------------------------------------------------------------------------
-# Part B - prompt injection
+# B 部分 —— 提示注入
 # --------------------------------------------------------------------------------------
 
 
 def _cache_injected_readme(session: Session, *, topic_id: int) -> int:
-    """Cache the hostile README against the first ranked candidate and return its repo id.
+    """把那份带敌意的 README 缓存到排名第一的候选上，并返回它的仓库 id。
 
-    The dictionary the Agent reads is `repository_contents`, which T7 defines as a cache of
-    cleaned external text that the tools may read but never fetch. Nothing in `src/` populates
-    it yet - the fetcher is out of the first phase's scope - so the drill writes the cache
-    entry directly. Everything downstream of the cache is the shipped path.
+    Agent 读的字典是 `repository_contents`，T7 把它定义为清洗过的外部文本缓存 —— 工具
+    可以读，但绝不去抓。`src/` 里目前还没有东西填它（抓取器不在第一阶段范围内），所以
+    演练直接写入这条缓存。缓存下游的一切都走着已发布的路径。
     """
     link = session.scalar(
         select(TopicRepository)
@@ -1045,7 +1030,7 @@ def injection_checks(
     topic_id: int,
     settings: Settings,
 ) -> dict[str, Any]:
-    """Collect, rank, and research a topic whose README tries to give the Agent orders."""
+    """采集、排名并研究一个 README 试图给 Agent 下命令的主题。"""
     mock = DrillGitHub(label="injection")
     try:
         result = run_daily_pipeline(
@@ -1127,12 +1112,12 @@ def injection_checks(
 
 
 # --------------------------------------------------------------------------------------
-# Part C - API failure
+# C 部分 —— API 故障
 # --------------------------------------------------------------------------------------
 
 
 def source_failure_checks(session: Session, *, label: str, failure: str) -> dict[str, Any]:
-    """Run one daily pipeline whose only source cannot answer, and report what was recorded."""
+    """跑一趟只有一个数据源、而它答不上来的每日流水线，并报告记下了什么。"""
     mock = DrillGitHub(label=label, failure=failure)
     mark = _max_id(session, PipelineRun)
     try:
@@ -1167,7 +1152,7 @@ def source_failure_checks(session: Session, *, label: str, failure: str) -> dict
 
 
 def model_outage_checks(session: Session, *, topic_id: int, settings: Settings) -> dict[str, Any]:
-    """Run the Agent against an unavailable provider and read the recorded outcome."""
+    """让 Agent 对着一个不可用的提供方跑，并读出记下的结果。"""
     result = run_research_agent(
         session,
         topic_id=topic_id,
@@ -1193,7 +1178,7 @@ def push_failure_checks(
     report_id: int,
     settings: Settings,
 ) -> dict[str, Any]:
-    """Push an approved report through a refusing transport, then retry it into success."""
+    """把一份已批准的报告经一个拒绝投递的传输方推出去，再重试到成功。"""
     target = PushTarget(
         name=f"{PUSH_TARGET_PREFIX}drill_target__",
         channel="email",
@@ -1271,7 +1256,7 @@ def push_failure_checks(
 
 
 # --------------------------------------------------------------------------------------
-# Part D - repeated work
+# D 部分 —— 重复劳动
 # --------------------------------------------------------------------------------------
 
 
@@ -1282,7 +1267,7 @@ def repeated_work_checks(
     report_id: int,
     settings: Settings,
 ) -> dict[str, Any]:
-    """Run the same collection, release sweep, and push twice and count the rows."""
+    """把同样的采集、放行清扫与推送各跑两遍，然后数行。"""
 
     def repository_rows() -> int:
         return int(
@@ -1324,9 +1309,9 @@ def repeated_work_checks(
         or 0
     )
 
-    # A target of its own: the push half of the drill already delivered to its own target, and
-    # reusing that one would make the first push here a replay, which is the property this part
-    # is trying to establish rather than assume.
+    # 用一个自己的目标：演练的推送那一半已经往它自己的目标投递过，复用那个会让这里的
+    # 第一次推送变成一次重放 —— 而「第一次不会重放」正是这一部分要建立的结论，不是
+    # 它该假设的前提。
     target = PushTarget(
         name=f"{PUSH_TARGET_PREFIX}repeat_target__",
         channel="email",
@@ -1377,12 +1362,12 @@ def repeated_work_checks(
 
 
 # --------------------------------------------------------------------------------------
-# Entry point
+# 入口
 # --------------------------------------------------------------------------------------
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run the T17 security and failure drill")
     parser.add_argument(
         "--cleanup-only",
@@ -1393,14 +1378,13 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the drill against the configured database and print the assertion payload.
+    """对着配置好的数据库跑演练，并打印断言结果。
 
-    The drill is written to run against a database that is already in use: it cleans up by
-    primary-key watermark, so a run leaves behind exactly the rows that were there before it, and
-    its authorization expectations are measured against what it found rather than against ids it
-    assumes (`measure_visibility_baseline`). The precondition it *does* rely on is that it is the
-    only writer for the duration - the watermark delete cannot tell the drill's rows from a
-    concurrent writer's - which is why `scripts/verify_t17.ps1` runs it as a single drill step.
+    演练是按「对着一个正在使用的数据库运行」写的：它按主键水位线清理，所以一次运行
+    留下的行恰好是它来之前就有的那些；它的授权预期也是对着它发现的东西量的，而不是
+    对着它假设的 id（`measure_visibility_baseline`）。它*确实*依赖的前提是：在整个
+    运行期间它是唯一的写入方 —— 水位线删除分不清演练的行与并发写入方的行 —— 这也
+    正是 `scripts/verify_t17.ps1` 把它当作单个演练步骤来跑的原因。
     """
     args = _parse_args()
     settings = get_settings()
@@ -1422,8 +1406,8 @@ def main() -> None:
         with factory() as session:
             actor_ids = seed_actors(session)
             topic_id = seed_topic(session, actor_id=actor_ids["editor"])
-            # Measured after the accounts exist and before the drill's own reports do, so it
-            # describes the database as the drill found it and nothing the drill wrote.
+            # 在账号已经存在、而演练自己的报告还没有的时候测量，这样它描述的是演练看到的
+            # 那份库，不含演练写下的任何东西。
             baseline = measure_visibility_baseline(session, editor_id=actor_ids["editor"])
             reports = seed_reports(session, topic_id=topic_id, actor_ids=actor_ids)
             denial_mark = _max_id(session, AuditLog)

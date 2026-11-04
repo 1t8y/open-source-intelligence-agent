@@ -1,4 +1,4 @@
-"""Tests for idempotent collector ingestion and audit logging."""
+"""守护采集入库的幂等性、行接管与审计留痕。"""
 
 from datetime import UTC, datetime
 
@@ -18,7 +18,7 @@ from open_source_intelligence.persistence.models.intelligence import Repository
 
 
 class FakeCollector:
-    """Test collector returning deterministic normalized repositories."""
+    """返回确定性归一化仓库的测试用采集器。"""
 
     provider = "github"
     display_name = "GitHub"
@@ -51,7 +51,7 @@ class FakeCollector:
 
 
 def build_session_factory() -> sessionmaker[Session]:
-    """Build a shared in-memory SQLite session factory."""
+    """构造共享的内存 SQLite 会话工厂，两次采集才会落在同一个库上。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -62,7 +62,7 @@ def build_session_factory() -> sessionmaker[Session]:
 
 
 def test_repeated_collection_is_idempotent_and_updates_metrics() -> None:
-    """Repeated collection should update existing repositories in place."""
+    """重复采集应原地更新已有仓库，指标取最新值而不是再插一行。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         collect_repositories(session, [FakeCollector(stars=10)], limit=2)
@@ -79,19 +79,19 @@ def test_repeated_collection_is_idempotent_and_updates_metrics() -> None:
 
 
 def test_collection_adopts_a_row_keyed_on_its_name() -> None:
-    """A repository already on file under its name must not gain a second row.
+    """已按名称入库的仓库，不能因为标识键不同就多出一行。
 
-    The demo seeder writes GitHub rows keyed on `owner/name`, because it never sees the numeric
-    provider id. When the collector later meets the same repository it carries that id, the unique
-    key `(source_id, provider_repo_id)` does not fire — the ids differ — and the insert used to
-    create a second row for one project: two star counts, two snapshot histories, and a topic that
-    ranks the same repository twice. The collector has to adopt the existing row instead.
+    演示数据播种器只能按 `owner/name` 写 GitHub 行，因为它拿不到数字形式的
+    供应商 id。采集器随后遇到同一个仓库时带着那个 id，唯一键
+    `(source_id, provider_repo_id)` 因两个 id 不同而不会命中，插入语句便会
+    给一个项目留下两行：两套 star 数、两段快照历史，以及一个把同一仓库排两次
+    的主题。采集器必须改为接管已有的那一行。
     """
     session_factory = build_session_factory()
     with session_factory() as session:
         collect_repositories(session, [FakeCollector(stars=10)], limit=1)
         seeded = session.query(Repository).one()
-        # Rewrite it into the shape the seeder leaves behind: name-shaped id, stale counters.
+        # 把它改写成播种器留下的形状：名称形式的 id、过期的计数。
         seeded.provider_repo_id = seeded.full_name
         seeded.stars = 1
         session.commit()
@@ -108,7 +108,7 @@ def test_collection_adopts_a_row_keyed_on_its_name() -> None:
 
 
 def test_collector_failure_is_audited_and_summarized() -> None:
-    """Provider failures should not abort other sources and must be audited."""
+    """单个来源失败不该中断其它来源，而且必须留下审计记录。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         summary = collect_repositories(session, [FakeCollector(stars=0, fail=True)], limit=1)

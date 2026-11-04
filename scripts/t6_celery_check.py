@@ -1,8 +1,11 @@
-"""Dispatch the T6 daily pipeline through Celery and report the outcome.
+"""把 T6 的每日流水线经 Celery 派发出去，并报告执行结果。
 
-Success mode proves the scheduled task can be executed end to end by a worker
-through the broker. Retry mode proves a failing attempt is recorded and retried,
-and that both attempts stay queryable in ``pipeline_runs``.
+成功模式证明：调度任务能被 worker 通过 broker 端到端跑完。重试模式证明：失败的那次尝试
+会被记录下来并触发重试，且两次尝试都还能在 ``pipeline_runs`` 里查到。
+
+运行方式为 `--mode success|retry --date YYYY-MM-DD`，脚本自己完成判据核对：成功模式下
+状态必须是 `succeeded` 或 `partial`、首次尝试号为 1、阶段序为 collect → snapshot →
+若干 rank；重试模式下必须恰好留下两轮全失败的尝试，错误码统一为 `COLLECTOR_FAILED`。
 """
 
 import argparse
@@ -25,7 +28,7 @@ BUSINESS_DATE_PATH = "$.business_date"
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse dispatch mode, target date, and queue."""
+    """解析派发模式、目标日期与队列。"""
     parser = argparse.ArgumentParser(description="Dispatch the daily pipeline task")
     parser.add_argument("--mode", choices=("success", "retry"), required=True)
     parser.add_argument("--date", required=True, help="Business date in YYYY-MM-DD")
@@ -37,7 +40,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_collect_attempts(business_date: str) -> list[dict[str, Any]]:
-    """Return the recorded collect attempts for one business date."""
+    """返回某个业务日期已记录的采集尝试。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
@@ -66,7 +69,7 @@ def read_collect_attempts(business_date: str) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    """Dispatch one daily pipeline task and verify its recorded outcome."""
+    """派发一次每日流水线任务，并核对它留下的执行结果。"""
     args = parse_args()
     app = create_celery_app()
     async_result = app.send_task(
@@ -89,7 +92,7 @@ def main() -> None:
     error: Exception | None = None
     try:
         value = async_result.get(timeout=args.timeout)
-    except Exception as exc:  # noqa: BLE001 - the failure is the expected outcome in retry mode
+    except Exception as exc:  # noqa: BLE001 - 重试模式下失败本身就是预期结果
         error = exc
 
     if args.mode == "success":

@@ -1,35 +1,33 @@
-"""Check that the documentation set and the code still describe the same system.
+"""检查文档集与代码是否仍在描述同一个系统。
 
-T18's acceptance is "架构、API、数据模型和评测文档与代码一致", and the first time it was checked by
-reading the documents it turned up four API resource groups that the contract declared and the
-code had never implemented. Reading is what let that go unnoticed for seventeen tasks: a reader
-sees a plausible endpoint table, not a diff. This script is the same check expressed as a
-comparison, so it can be run instead of remembered.
+T18 的验收标准是「架构、API、数据模型和评测文档与代码一致」，而第一次靠读文档来
+检查时，就翻出了契约声明过、代码从未实现的四组 API 资源。正因为「读」才让这件事
+躲过十七个任务：读者看到的是一张看似合理的端点表，而不是一份差异。本脚本把同一个
+检查表达成一次比较，于是它可以被「跑」，而不必靠「记得」。
 
-Ten checks, each of which can only fail for a reason worth a human's attention:
+十项检查，每一项失败都只会因为一个值得人看一眼的理由：
 
-1. **Endpoints** - every endpoint the contract declares resolves to a registered route, and every
-   registered route is mentioned somewhere in the contract.
-2. **Tables** - every table in `Base.metadata` has a section in `docs/data-model.md`, and every
-   table documented but not implemented is listed as planned.
-3. **Architecture summary** - `ARCHITECTURE.md` §7 lists every table in `Base.metadata`, and no
-   planned table appears there without the marker.
-4. **Evaluation targets** - `docs/evaluation.md` §1 lists the variants `TARGET_ORDER` defines, in
-   order, and names the promotion target.
-5. **Configuration** - every `Settings` field appears in `.env.example`, and `.env.example`
-   carries nothing beyond the settings plus the documented Compose-only variables.
-6. **Doc index** - every file in `docs/` is linked from `README.md`, and every `docs/` link in
-   `README.md` points at a file that exists.
-7. **Migrations** - exactly one Alembic head, so `upgrade head` is unambiguous.
-8. **Secrets** - no credential-shaped value in the tracked `.env.example`.
-9. **Status lines** - the status line in `README.md` and `INTERFACES.md` names the last task
-   `ARCHITECTURE.md` §14 marks complete.
-10. **Version** - `__version__` and `pyproject.toml` agree.
+1. **端点** —— 契约声明的每个端点都能解析到一条已注册的路由，每条已注册的路由都在
+   契约的某处被提到。
+2. **数据表** —— `Base.metadata` 里的每张表在 `docs/data-model.md` 都有一节；文档里
+   写了、代码却没实现的每张表都被标为计划内。
+3. **架构摘要** —— `ARCHITECTURE.md` §7 列出 `Base.metadata` 里的每张表；任何计划内
+   的表出现在那里都必须带标记。
+4. **评测变体** —— `docs/evaluation.md` §1 按顺序列出 `TARGET_ORDER` 定义的变体，并
+   点名晋级目标。
+5. **配置** —— `Settings` 的每个字段都出现在 `.env.example`；而 `.env.example` 除了
+   这些配置项与文档里那批 Compose 专用变量之外，不多带任何东西。
+6. **文档索引** —— `docs/` 下的每个文件都被 `README.md` 链接到，而 `README.md` 里
+   每个 `docs/` 链接都指向一个存在的文件。
+7. **迁移** —— 恰好一个 Alembic head，这样 `upgrade head` 才没有歧义。
+8. **密钥** —— 受版本控制的 `.env.example` 里没有任何凭据形状的值。
+9. **状态行** —— `README.md` 与 `INTERFACES.md` 的状态行，点名
+   `ARCHITECTURE.md` §14 里标记为完成的最后一个任务。
+10. **版本** —— `__version__` 与 `pyproject.toml` 一致。
 
-Exit code is 0 only when every check passed *and* every check ran: `--only` narrows the input, so
-the payload reports how many comparisons ran and whether that was all of them, and a partial run
-exits non-zero. The payload goes to stdout as one JSON object on the last line, which is the
-convention `scripts/verify_*.ps1` reads.
+只有每项检查都通过*并且*每项检查都跑过时，退出码才是 0：`--only` 会收窄输入，所以
+结果会报出跑了多少项比较、那是不是全部，而一次部分运行以非零退出。结果以单个 JSON
+对象打印在 stdout 的最后一行，这是 `scripts/verify_*.ps1` 读取的约定。
 """
 
 from __future__ import annotations
@@ -44,10 +42,9 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-#: Paths FastAPI registers on its own behalf. They are real endpoints and they are deliberately
-#: not in the contract: the contract describes the product's API surface, not the framework's.
-#: `/` is *not* in this set - the application owns it as a browser-preview redirect and the
-#: contract documents it.
+#: FastAPI 为自己注册的路径。它们是真实端点，但刻意不进契约：契约描述的是产品的 API
+#: 面，不是框架的面。`/` *不*在这个集合里 —— 应用把它当作浏览器预览的跳转自己占着，
+#: 契约也记录过它。
 FRAMEWORK_PATHS = frozenset(
     {
         "/docs",
@@ -57,10 +54,9 @@ FRAMEWORK_PATHS = frozenset(
     }
 )
 
-#: The `.env.example` entries that exist for Compose rather than for `Settings`. `Settings` uses
-#: `extra="forbid"`, so these are exactly the keys a developer must strip when copying the file
-#: into `.env`; listing them here is what turns "somewhere between zero and five extras" into a
-#: number that has to stay right.
+#: `.env.example` 里为 Compose 而不是为 `Settings` 存在的条目。`Settings` 用的是
+#: `extra="forbid"`，所以这些恰好就是开发者把它拷成 `.env` 时必须剥掉的键；把它们列在
+#: 这里，才把「大约零到五个额外键」变成一必须一直算对的数。
 COMPOSE_ONLY_ENV = frozenset(
     {
         "MYSQL_DATABASE",
@@ -71,22 +67,22 @@ COMPOSE_ONLY_ENV = frozenset(
     }
 )
 
-#: Marker in `docs/data-model.md` introducing the tables that are designed but not implemented.
+#: `docs/data-model.md` 里引出「已设计、尚未实现」那批表的标记。
 PLANNED_TABLE_MARKER = "计划内、尚未实现"
 
-#: Root documents whose status line has to name the last task the architecture document marks
-#: complete. `REQUIREMENTS.md` is deliberately absent: its status line records whether the user
-#: has confirmed the requirements baseline, which no task list can derive.
+#: 根目录文档，它们的状态行必须点名架构文档标记为完成的最后一个任务。`REQUIREMENTS.md`
+#: 刻意不在其中：它的状态行记录的是用户有没有确认需求基线，那不是任何任务列表能推出来的。
 STATUS_DOCUMENTS = {
     "README.md": "> 项目状态：",
     "INTERFACES.md": "> 文档状态：",
 }
 
-#: The task list entries in `ARCHITECTURE.md` §14, e.g. `- [x] T16 数据回填与端到端演示 — ...`.
+#: `ARCHITECTURE.md` §14 里的任务清单条目，例如
+#: `- [x] T16 数据回填与端到端演示 — ...`。
 TASK_LINE = re.compile(r"^- \[([ x])\] T(\d+) ", re.MULTILINE)
 
-#: The first column of the variant table in `docs/evaluation.md` §1, e.g.
-#: `| \`agent_no_tools\` | 只使用一次候选数据… | … |`.
+#: `docs/evaluation.md` §1 里变体表的第一列，例如
+#: `| \`agent_no_tools\` | 只使用一次候选数据… | … |`。
 VARIANT_ROW = re.compile(r"^\| `([a-z_]+)` \|", re.MULTILINE)
 
 BACKTICKED = re.compile(r"`([^`]+)`")
@@ -94,15 +90,15 @@ METHOD_PATH = re.compile(r"\b([A-Z]{3,7})\s+(/[A-Za-z0-9{}/_.\-,]*)")
 PATH_PARAM = re.compile(r"\{[^}]*\}")
 BRACE_CHOICE = re.compile(r"\{([^{}]*,[^{}]*)\}")
 
-#: A name that *ends* in one of these is a credential; one that merely contains them is not.
-#: `AGENT_MAX_TOKENS` is a budget, `GITHUB_TOKEN` is a secret, and the difference is the suffix.
+#: 以这些之一*结尾*的名字是凭据；只是包含它们的不算。`AGENT_MAX_TOKENS` 是预算，
+#: `GITHUB_TOKEN` 是密钥，区别就在后缀。
 SECRET_NAME = re.compile(r"(SECRET|TOKEN|PASSWORD|KEY)$")
 PLACEHOLDER = re.compile(r"(replace-with|change-me|example|placeholder|xxx|^$)")
 
 
 @dataclass
 class Check:
-    """One named comparison plus whatever it found."""
+    """一项具名比较，外加它查到的所有东西。"""
 
     name: str
     failures: list[str] = field(default_factory=list)
@@ -110,17 +106,16 @@ class Check:
 
     @property
     def ok(self) -> bool:
-        """Return whether this check found nothing to report."""
+        """返回这项检查有没有查出要报的东西。"""
         return not self.failures
 
 
 def _prose(document: str) -> str:
-    """Return the document with fenced code blocks removed.
+    """返回剔掉围栏代码块之后的文档。
 
-    Backticks inside a fence do not open inline code, so scanning the raw text pairs them wrongly
-    and shifts every token after the first fence: the JSON examples' prose then reads like
-    documented endpoints, and the real endpoint headings stop being found at all. Stripping the
-    fences first is what keeps the pairing honest.
+    围栏内的反引号并不会开启行内代码，所以直接扫原文会把它们配错对，并把第一个围栏
+    之后的每个 token 都挪了位：JSON 示例里的说明文字于是读起来像被记录的端点，而真正的
+    端点标题反而一个也找不到了。先把围栏剥掉，配对才是诚实的。
     """
     kept: list[str] = []
     in_fence = False
@@ -134,27 +129,24 @@ def _prose(document: str) -> str:
 
 
 def _normalize(path: str) -> str:
-    """Replace path parameters so the contract's names may differ from the router's.
+    """替换掉路径参数，好让契约里的参数名可以与路由里的不同。
 
-    They legitimately do differ: the contract documents
-    `/agent/runs/{agent_run_id}/steps` while the route declares `/agent/runs/{run_id}/steps`.
-    The parameter's name is not part of the URL a client sends, so comparing them literally would
-    report a difference that no caller can observe.
+    它们本来就允许不同：契约写的是 `/agent/runs/{agent_run_id}/steps`，而路由声明的是
+    `/agent/runs/{run_id}/steps`。参数名不是客户端发出的 URL 的一部分，所以按字面比较
+    会报出一处调用方根本观察不到的差异。
     """
     trimmed = path.rstrip("/") or "/"
     return PATH_PARAM.sub("{}", trimmed)
 
 
 def _expand_brace_choices(path: str) -> list[str]:
-    """Expand the contract's shorthand, e.g. `/reports/{id}/{verify,review}`.
+    """展开契约里的简写，例如 `/reports/{id}/{verify,review}`。
 
-    The documents use this shorthand in several tables and it is worth honouring rather than
-    avoiding: writing each combination out would make the tables unreadable, and a checker that
-    cannot read them would just be ignoring part of the contract.
+    几处表格都用了这种简写，值得照它读懂而不是绕开：把每种组合都写开会让表格没法读，
+    而一个读不懂它们的检查器，无非是在忽略契约的一部分。
 
-    The braces are removed by the expansion, not kept: `{verify,review}` means the two paths
-    `/verify` and `/review`, and leaving them on would make both normalize to `{}` and collapse
-    into a single endpoint that matches nothing.
+    展开时会删掉花括号，而不是留着：`{verify,review}` 的意思是那两条路径 `/verify` 与
+    `/review`；留着它们会让两者都归一化成 `{}`，塌成一个谁也匹配不上的端点。
     """
     match = BRACE_CHOICE.search(path)
     if match is None:
@@ -167,12 +159,11 @@ def _expand_brace_choices(path: str) -> list[str]:
 
 
 def _documented_endpoints(contract: str) -> set[tuple[str, str]]:
-    """Return every `(method, normalized path)` the contract names, in any position.
+    """返回契约点名过的每一组 `(方法, 归一化路径)`，位置不限。
 
-    Both shapes count: a heading (`### `GET /reports``) and an inline mention inside a table
-    (`| `POST /reports/{id}/push` |`). Relative fragments such as `/{id}/verify` are kept as they
-    are written and matched by suffix later, because the contract names the resource in one place
-    and then refers to it by the short form.
+    两种形态都算：标题（`### `GET /reports``）与表格里的行内提及
+    （`| `POST /reports/{id}/push` |`）。像 `/{id}/verify` 这样的相对片段按它写的样子
+    留下，之后再按后缀匹配，因为契约在一处命名了资源，随后就用短形式指代它。
     """
     found: set[tuple[str, str]] = set()
     for token in BACKTICKED.findall(_prose(contract)):
@@ -183,13 +174,12 @@ def _documented_endpoints(contract: str) -> set[tuple[str, str]]:
 
 
 def _declared_endpoints(contract: str) -> set[tuple[str, str]]:
-    """Return the endpoints the contract *asserts exist*.
+    """返回契约*断言其存在*的那些端点。
 
-    Only two positions assert that: a heading, and a table row. Prose does not. The distinction
-    is load-bearing here because the contract also names endpoints in order to say they were
-    removed - `POST /topics/{id}/run` and `POST /agent/runs` are both written down by the
-    paragraph that explains why they are not offered. Counting a denial as a promise would make
-    the one document that gets it right the one the checker refuses to accept.
+    只有两个位置构成断言：标题与表格行。正文不算。这个区别在这里是承重的，因为契约
+    也会点名端点，只是为了说明它们已被移除 —— `POST /topics/{id}/run` 与
+    `POST /agent/runs` 都写在「为什么不再提供它们」的那一段里。把一次否认当成一句
+    承诺，就会让唯一一份写对了的文档，变成检查器拒绝接受的那一份。
     """
     declared = "\n".join(
         line for line in _prose(contract).splitlines() if line.lstrip().startswith(("#", "|"))
@@ -198,7 +188,7 @@ def _declared_endpoints(contract: str) -> set[tuple[str, str]]:
 
 
 def _documented_paths(contract: str) -> set[str]:
-    """Return every normalized path the contract names, in any position."""
+    """返回契约点名过的每一个归一化路径，位置不限。"""
     paths: set[str] = set()
     for _, path in _documented_endpoints(contract):
         paths.add(path)
@@ -210,22 +200,20 @@ def _documented_paths(contract: str) -> set[str]:
     return paths
 
 
-#: Attributes that hold the routes an `app.routes` node delegates to. `include_router` behaves
-#: differently across FastAPI versions: on some it copies the child routes into the parent, and
-#: from 0.143 it keeps them behind an `_IncludedRouter` node that exposes the router it was given
-#: as `original_router`. Both shapes have to be walked, or the same source tree yields 41 routes
-#: on one interpreter and none on another.
+#: 一个 `app.routes` 节点所委派到的路由，挂在这些属性上。`include_router` 在不同
+#: FastAPI 版本里行为不同：有些版本把子路由拷进父节点，而从 0.143 起，它把子路由留在
+#: 一个 `_IncludedRouter` 节点后面，并把收到的路由暴露成 `original_router`。两种形态
+#: 都必须走，否则同一份源码在一个解释器上给出 41 条路由，在另一个上一条也没有。
 ROUTE_CHILD_ATTRIBUTES = ("routes", "original_router")
 
 
 def _registered_routes(routes: object) -> list[tuple[str, set[str]]]:
-    """Walk the application's route tree and return `(path, methods)` for every real route.
+    """走一遍应用的路由树，为每条真实路由返回 `(路径, 方法集)`。
 
-    The walk is recursive rather than one flat pass over `app.routes`, because `include_router`
-    does not always flatten. The host interpreter and the container run different FastAPI
-    versions and disagree: a flat loop found all 41 routes locally and none at all inside the
-    image. A checker that silently discovers nothing and then reports every documented endpoint as
-    missing is worse than no checker, so the caller also refuses to believe an empty result.
+    这里递归地走，而不是对 `app.routes` 平铺一遍，因为 `include_router` 并不总会拍平。
+    宿主解释器与容器跑着不同的 FastAPI 版本，而且彼此不一致：一个平铺的循环在本地能
+    找到全部 41 条路由，在镜像里却一条都找不到。一个悄悄什么也没发现、随后把每个被
+    记录的端点都报成缺失的检查器，比没有检查器更糟，所以调用方也不肯相信空结果。
     """
     found: list[tuple[str, set[str]]] = []
     stack = list(getattr(routes, "__iter__", lambda: [])())
@@ -246,17 +234,16 @@ def _registered_routes(routes: object) -> list[tuple[str, set[str]]]:
 
 
 def check_endpoints() -> Check:
-    """Compare the contract's endpoint headings against the registered routes."""
+    """把契约里的端点标题与已注册的路由比一遍。"""
     check = Check("endpoints")
     from open_source_intelligence.api.app import create_app
     from open_source_intelligence.core.config import Settings
 
-    # Enumerating routes must not depend on a populated `.env`. `create_app()` falls back to
-    # `get_settings()`, which builds `Settings` from the gitignored `.env` and demands three
-    # fields with no default (`database_url`, `redis_url`, `secret_key`). A clean CI checkout has
-    # no `.env`, so the check would raise `ValidationError` before it could compare anything.
-    # Inject an explicit test configuration instead: the engine is only constructed, never
-    # connected, so the connection targets are placeholders.
+    # 枚举路由不能依赖一个填好的 `.env`。`create_app()` 会回落到 `get_settings()`，后者
+    # 从被 gitignore 的 `.env` 构造 `Settings`，并要求三个没有默认值的字段
+    # （`database_url`、`redis_url`、`secret_key`）。干净的 CI 检出里没有 `.env`，于是
+    # 这项检查还没来得及比较任何东西，就会抛 `ValidationError`。改为注入一份显式的测试
+    # 配置：引擎只会被构造，从不连接，所以那些连接目标只是占位。
     app = create_app(
         settings=Settings(
             database_url="mysql+pymysql://app:secret@127.0.0.1:3306/osint",
@@ -271,8 +258,8 @@ def check_endpoints() -> Check:
             continue
         registered.setdefault(_normalize(path), set()).update(methods - {"HEAD", "OPTIONS"})
 
-    # An empty result means the walk failed, not that the application serves nothing. Saying so
-    # out loud is what keeps a broken walk from looking like a clean contract.
+    # 空结果意味着这趟遍历失败了，而不是应用什么都不提供。把这句话说出来，才不会让
+    # 一趟坏掉的遍历看起来像一份干净的契约。
     if not registered:
         check.failures.append("no routes were discovered - the route walk found nothing to compare")
         return check
@@ -280,15 +267,13 @@ def check_endpoints() -> Check:
     contract = (PROJECT_ROOT / "docs" / "api-contract.md").read_text(encoding="utf-8")
     documented = _documented_paths(contract)
 
-    # Direction one: what the document promises must exist. This is the check that caught the
-    # four resource groups the contract declared and the code had never implemented.
+    # 方向一：文档承诺的必须存在。正是这项检查抓到了契约声明过、代码却从未实现的那
+    # 四组资源。
     #
-    # Every declared endpoint is reported, with no length heuristic applied first. An earlier
-    # version only complained about paths with two or more slashes, on the theory that a shorter
-    # path was a fragment rather than a promise - and that theory silently excused exactly the
-    # shape of the drift being hunted: `GET /sources` and `GET /topics` have one slash each.
-    # Restricting the input to headings and table rows already separates a promise from a
-    # reference, so the path's length no longer has to carry that meaning.
+    # 每一个声明过的端点都会被报出来，不先套一层长度启发式。早先的版本只抱怨斜杠数
+    # 大于等于二的路径，理由是更短的路径只是片段而不是承诺 —— 而这个理论恰好悄悄放过
+    # 了正在追查的那种漂移形态：`GET /sources` 与 `GET /topics` 各自只有一个斜杠。
+    # 把输入收窄到标题与表格行，已经足够把承诺与引用分开，路径长度不必再承载这层含义。
     for method, path in sorted(_declared_endpoints(contract)):
         candidates = [route for route in registered if route == path or route.endswith(path)]
         if not candidates:
@@ -297,8 +282,7 @@ def check_endpoints() -> Check:
         if not any(method in registered[route] for route in candidates):
             check.failures.append(f"documented method not registered: {method} {path}")
 
-    # Direction two: every route is mentioned somewhere. A route nobody wrote down is a route
-    # nobody reviews.
+    # 方向二：每条路由都被某处提到过。没人写下来的路由，就是没人评审的路由。
     for route, methods in sorted(registered.items()):
         if any(route == path or route.endswith(path) for path in documented):
             continue
@@ -309,7 +293,7 @@ def check_endpoints() -> Check:
 
 
 def check_tables() -> Check:
-    """Compare `Base.metadata` against the table sections in `docs/data-model.md`."""
+    """把 `Base.metadata` 与 `docs/data-model.md` 里的表小节比一遍。"""
     check = Check("tables")
     import open_source_intelligence.persistence.models  # noqa: F401
     from open_source_intelligence.persistence.base import Base
@@ -332,11 +316,11 @@ def check_tables() -> Check:
 
 
 def _backticked_names(text: str) -> set[str]:
-    """Return the backticked tokens that look like table names.
+    """返回那些看起来像表名的反引号 token。
 
-    `[a-z_]+` is what separates a table from everything else a document puts in backticks: a
-    column (`next_page`), a module path (`core/logging.py`) and a requirement id (`FR-D-05`) all
-    fail the test, and no table name is uppercase or dotted.
+    `[a-z_]+` 正是把表与文档放进反引号的其他东西区分开的东西：列名（`next_page`）、
+    模块路径（`core/logging.py`）与需求编号（`FR-D-05`）都过不了这一关，而表名既不
+    大写，也不带点。
     """
     return {
         token for token in BACKTICKED.findall(text) if re.fullmatch(r"[a-z_]+", token) is not None
@@ -344,10 +328,10 @@ def _backticked_names(text: str) -> set[str]:
 
 
 def _planned_tables(data_model: str) -> set[str]:
-    """Return the tables `docs/data-model.md` declares as designed-but-not-implemented.
+    """返回 `docs/data-model.md` 声明为「已设计、尚未实现」的那些表。
 
-    Requiring the document to say so out loud is the point: `feedback` was listed like any other
-    table for three tasks, and nothing about that listing let a reader tell.
+    要求文档把这件事明说出来，正是重点：`feedback` 曾像其他表一样被列了三个任务，而
+    那份清单里没有任何东西能让读者分辨出来。
     """
     planned: set[str] = set()
     for line in data_model.splitlines():
@@ -357,11 +341,10 @@ def _planned_tables(data_model: str) -> set[str]:
 
 
 def _section_lines(document: str, heading_prefix: str) -> list[str]:
-    """Return the body lines of the section whose heading starts with `heading_prefix`.
+    """返回标题以 `heading_prefix` 开头的那一节的正文行。
 
-    The section ends at the next heading of the same or shallower level. Without that boundary a
-    sub-table's rows would leak into the comparison and the check would pass on the strength of a
-    heading it never meant to include.
+    这一节在下一个同级或更高级的标题处结束。没有这条边界，某个子表的行就会漏进比较里，
+    检查就会因为一个它从没打算包含的标题而通过。
     """
     lines = document.splitlines()
     start = next(
@@ -380,12 +363,12 @@ def _section_lines(document: str, heading_prefix: str) -> list[str]:
 
 
 def check_architecture_summary() -> Check:
-    """Compare the architecture document's summary table against `Base.metadata`.
+    """把架构文档的摘要表与 `Base.metadata` 比一遍。
 
-    `docs/data-model.md` is the field-level reference, but `ARCHITECTURE.md` §7 is the table a
-    newcomer reads first, and it is the one that listed `feedback` - a table with no model and no
-    migration - next to the real ones. A summary may group tables; it may not invent them or lose
-    them, so the check is the same comparison at a coarser grain.
+    `docs/data-model.md` 是字段级的参考，但 `ARCHITECTURE.md` §7 是新人最先读的那张
+    表，而它正是把 `feedback` —— 一张既没有模型、也没有迁移的表 —— 列在真表旁边的那
+    张。摘要可以对表分组，但不能凭空造表或漏表，所以这项检查就是同一次比较，只是粒度
+    更粗。
     """
     check = Check("architecture-summary")
     import open_source_intelligence.persistence.models  # noqa: F401
@@ -405,9 +388,8 @@ def check_architecture_summary() -> Check:
             f"implemented but absent from the ARCHITECTURE.md §7 summary: {missing}"
         )
 
-    # A planned table has to carry the marker everywhere it is presented as a table. The
-    # `data-model.md` section has its own heading and is where the marker is defined, so only the
-    # documents that *refer* to that section are scanned here.
+    # 计划内的表在每一处以表格形式呈现的地方，都必须带着标记。`data-model.md` 的那一节
+    # 有自己的标题，也是标记被定义的地方，所以这里只扫那些*引用*该节的文档。
     for name in ("ARCHITECTURE.md", "INTERFACES.md"):
         text = (PROJECT_ROOT / name).read_text(encoding="utf-8")
         for number, line in enumerate(text.splitlines(), start=1):
@@ -423,13 +405,12 @@ def check_architecture_summary() -> Check:
 
 
 def check_status_lines() -> Check:
-    """Check that the root documents' status lines name the last completed task.
+    """检查根目录文档的状态行是否点名了最后一个已完成的任务。
 
-    The status line is the first thing a reader sees and the last thing anyone updates. `README.md`
-    announced "T1-T12 已完成，进入 T13" through four further tasks, because nothing compared it to
-    the task list that was being ticked off. Deriving the answer from `ARCHITECTURE.md` §14 and
-    requiring the headers to match is the smallest comparison that catches it, and it needs no
-    judgement about how stale is too stale.
+    状态行是读者看到的第一样东西，也是最后才有人去更新的东西。`README.md` 曾把
+    「T1-T12 已完成，进入 T13」这句公告又挂了四个任务，因为没有任何东西拿它去对那份
+    正在被勾选的任务清单。从 `ARCHITECTURE.md` §14 推出答案、并要求标题与它一致，
+    是能抓住这件事的最小比较，而且不必去判断「多旧才算太旧」。
     """
     check = Check("status-lines")
     architecture = (PROJECT_ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
@@ -456,14 +437,13 @@ def check_status_lines() -> Check:
 
 
 def check_evaluation_targets() -> Check:
-    """Compare the evaluation variants in `docs/evaluation.md` §1 against `TARGET_ORDER`.
+    """把 `docs/evaluation.md` §1 里的评测变体与 `TARGET_ORDER` 比一遍。
 
-    Adding a variant is a change that has to land in four places - `TARGET_ORDER`,
-    `EVAL_TARGET_TYPES`, `ABLATION_PROFILES` and the migration's CHECK constraint - and the
-    document is a fifth. Only the document was unguarded, which is the same asymmetry that let
-    `feedback` be listed as a real table: the code cannot drift from itself, so the place nobody
-    compares is the place that drifts. §1 claims its list and order are identical to
-    `TARGET_ORDER`, so the comparison is a literal one.
+    增加一个变体，这项改动必须落在四个地方 —— `TARGET_ORDER`、`EVAL_TARGET_TYPES`、
+    `ABLATION_PROFILES`，以及迁移里的 CHECK 约束 —— 文档是第五处。只有文档没有守卫，
+    而正是同一种不对称，让 `feedback` 被列成了一张真表：代码不会与自己漂移，所以没人
+    去比的那个地方，就是漂移发生的地方。§1 声称它的清单与顺序与 `TARGET_ORDER` 完全
+    一致，所以比较是逐字的。
     """
     check = Check("evaluation-targets")
     from open_source_intelligence.agent.profile import ABLATION_PROFILES
@@ -490,7 +470,7 @@ def check_evaluation_targets() -> Check:
 
 
 def check_configuration() -> Check:
-    """Compare `Settings` against `.env.example`."""
+    """把 `Settings` 与 `.env.example` 比一遍。"""
     check = Check("configuration")
     from open_source_intelligence.core.config import Settings
 
@@ -516,7 +496,7 @@ def check_configuration() -> Check:
 
 
 def check_doc_index() -> Check:
-    """Check that `README.md` links every document and only existing ones."""
+    """检查 `README.md` 链接到了每一份文档，且只链接存在的文档。"""
     check = Check("doc-index")
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     linked = set(re.findall(r"\]\((docs/[A-Za-z0-9._-]+\.md|docs/adr)\)", readme))
@@ -533,7 +513,7 @@ def check_doc_index() -> Check:
 
 
 def check_migrations() -> Check:
-    """Check that `upgrade head` resolves to a single revision."""
+    """检查 `upgrade head` 是否只解析到一个修订。"""
     check = Check("migrations")
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -547,7 +527,7 @@ def check_migrations() -> Check:
 
 
 def check_secrets() -> Check:
-    """Check that the tracked environment template carries no real credential."""
+    """检查受版本控制的环境变量模板里没有真实凭据。"""
     check = Check("secrets")
     env_path = PROJECT_ROOT / ".env.example"
     for number, line in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -567,7 +547,7 @@ def check_secrets() -> Check:
 
 
 def check_version() -> Check:
-    """Check that the package version and the project metadata agree."""
+    """检查包版本与项目元数据是否一致。"""
     check = Check("version")
     from open_source_intelligence import __version__
 
@@ -597,7 +577,7 @@ CHECKS = (
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run every check, print one JSON payload, and exit non-zero on any drift."""
+    """跑完每一项检查，打印一份 JSON 结果，任何漂移都以非零退出。"""
     parser = argparse.ArgumentParser(description="Check documentation and code consistency.")
     parser.add_argument(
         "--only",
@@ -625,10 +605,9 @@ def main(argv: list[str] | None = None) -> int:
         },
         "failures": sum(len(result.failures) for result in results),
         "passed": all(result.ok for result in results),
-        # `passed` is only a statement about the checks that ran. Saying how many ran, and whether
-        # that was all of them, is what keeps `--only endpoints` from being read as "the whole
-        # documentation set is consistent" - a checker whose verdict can be widened by narrowing
-        # its input has the same hole it was built to close.
+        # `passed` 只是对跑过的那几项检查的陈述。说清跑了多少项、那是不是全部，才不至于
+        # 让 `--only endpoints` 被读成「整份文档集都一致」—— 一个能靠收窄输入把结论放大
+        # 的检查器，身上就有它本来要补的那个洞。
         "run": len(results),
         "total": len(CHECKS),
         "complete": len(results) == len(CHECKS),

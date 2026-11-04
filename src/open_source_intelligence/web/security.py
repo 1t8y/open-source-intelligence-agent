@@ -1,9 +1,8 @@
-"""Cookie session and CSRF protection for the server-rendered admin UI.
+"""为服务端渲染的管理界面提供 Cookie 会话与 CSRF 防护。
 
-The UI authenticates with the same JWT the API issues but keeps it in an `HttpOnly` cookie,
-so no script can read it (`docs/security-and-privacy.md` §3.1). Every mutating form
-additionally carries a double-submit CSRF token: a random value lives in a cookie and is
-echoed in a hidden field, and the two must match byte for byte.
+界面沿用 API 签发的同一份 JWT 完成认证，但把它放进 `HttpOnly` Cookie，脚本读不到它
+（`docs/security-and-privacy.md` §3.1）。每个会改变状态的表单还要额外携带一个双提交
+CSRF 令牌：随机值存在 Cookie 里，同时回填到隐藏字段，两者必须逐字节一致。
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ LOGIN_PATH = "/ui/login"
 
 
 class WebRedirect(Exception):
-    """Raised by UI dependencies to send the browser elsewhere instead of rendering."""
+    """由界面依赖抛出，用于把浏览器送去别处，而不是渲染页面。"""
 
     def __init__(self, location: str, status_code: int = 303) -> None:
         self.location = location
@@ -35,11 +34,11 @@ class WebRedirect(Exception):
 
 
 class WebForbidden(Exception):
-    """Raised when the signed-in user may not perform the requested UI action.
+    """当已登录用户无权执行所请求的界面操作时抛出。
 
-    `action` carries the audit action the refusal is recorded under, so a UI denial and the
-    JSON API's denial of the same request land in the trail under the same name. It defaults to
-    the role check because that is the common case.
+    `action` 携带这次拒绝记入审计时使用的动作名，于是同一个请求在界面上被拒、
+    在 JSON API 上被拒，都会以同一个名字落进审计链。它默认取角色校验对应的动作，
+    因为那是最常见的情形。
     """
 
     def __init__(
@@ -53,7 +52,7 @@ class WebForbidden(Exception):
 
 
 class WebNotFound(Exception):
-    """Raised when the addressed UI resource does not exist."""
+    """当被寻址的界面资源不存在时抛出。"""
 
     def __init__(self, message: str = "资源不存在") -> None:
         self.message = message
@@ -61,24 +60,24 @@ class WebNotFound(Exception):
 
 @dataclass(frozen=True, slots=True)
 class WebSession:
-    """The authenticated user plus the raw session token behind the CSRF cookie."""
+    """已认证的用户，以及 CSRF Cookie 背后的原始会话令牌。"""
 
     user: User
     token: str
 
 
 def new_csrf_token() -> str:
-    """Return a fresh random CSRF value."""
+    """返回一个新的随机 CSRF 值。"""
     return secrets.token_urlsafe(32)
 
 
 def cookie_secure(settings: Settings) -> bool:
-    """Mark cookies `Secure` everywhere except local development and tests."""
+    """除本地开发与测试之外，一律把 Cookie 标记为 `Secure`。"""
     return settings.app_env not in {"local", "test"}
 
 
 def login_url(request: Request) -> str:
-    """Return the login URL, remembering where the browser was heading."""
+    """返回登录地址，同时记住浏览器原本要去哪里。"""
     target = request.url.path
     if request.url.query:
         target = f"{target}?{request.url.query}"
@@ -88,7 +87,7 @@ def login_url(request: Request) -> str:
 
 
 def load_web_session(request: Request, session: Session) -> WebSession:
-    """Resolve the cookie session, or redirect to the login page."""
+    """解析 Cookie 会话，失败则重定向到登录页。"""
     settings: Settings = request.app.state.settings
     token = request.cookies.get(SESSION_COOKIE, "")
     if not token:
@@ -104,7 +103,7 @@ def load_web_session(request: Request, session: Session) -> WebSession:
 
 
 def verify_csrf(request: Request, submitted: str | None) -> None:
-    """Reject a mutating request whose CSRF field does not match its cookie."""
+    """拒绝 CSRF 字段与 Cookie 不一致的写请求。"""
     expected = request.cookies.get(CSRF_COOKIE, "")
     if not expected or not submitted or not secrets.compare_digest(expected, submitted):
         raise WebForbidden("CSRF 校验失败，请刷新页面后重试", action="auth.csrf")

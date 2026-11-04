@@ -1,17 +1,16 @@
-"""Topic endpoints: the monitoring-scope configuration.
+"""主题端点：监控范围的配置。
 
-`docs/api-contract.md` §3.2 is the contract; this module shapes requests and responses and
-delegates every decision. Two delegation choices are worth naming:
+`docs/api-contract.md` §3.2 是契约；本模块只整形请求与响应，把每个决定都委托出去。有两处委托
+选择值得点名：
 
-* **The single-row read goes through `authorize_topic_read`**, the same function the repository
-  catalog uses to validate a `topic_id` filter. There is one implementation of "may this caller see
-  this topic", and it is not in this file.
-* **The writes call the service and let its exceptions carry the answer.** A missing topic becomes
-  `404` through the `TopicError` handler rather than through a pre-fetch in the route, so there is
-  one existence check per operation instead of two that can disagree.
+* **单行读取走 `authorize_topic_read`**，与仓库目录校验 `topic_id` 筛选时用的是同一个函数。
+  「这个调用方能不能看这个主题」只有一份实现，而且不在本文件里。
+* **写操作调用服务，让服务抛出的异常自己携带答案。** 主题不存在经由 `TopicError` 处理器变成
+  `404`，而不是靠路由里的一次预取，这样一个操作只做一次存在性检查，而不是两次可能互相打脸的
+  检查。
 
-Nothing here triggers a research run. `POST /topics/{id}/run` is absent on purpose: a run spends
-model budget, and that trigger belongs to the scheduler and the operator CLI (§3.2).
+这里没有任何东西会触发研究运行。`POST /topics/{id}/run` 是故意不存在的：
+一次运行要花模型预算，这个触发权属于调度器与运维 CLI（§3.2）。
 """
 
 from __future__ import annotations
@@ -57,17 +56,17 @@ TopicTerm = Annotated[str, Field(min_length=1, max_length=64)]
 
 
 def _require_usable_name(value: str) -> str:
-    """Validate the `name` field with the writer's own definition of a usable name.
+    """用写入方自己对「可用名字」的定义校验 `name` 字段。
 
-    The body is a call to `topics.require_usable_name` and nothing else, which is the point: the
-    boundary does not restate the rule, it invokes it. `require_usable_name` raises
-    `TopicNameBlank`, a `ValueError`, so Pydantic turns the refusal into a `422` naming the field
-    while the same exception is what a script calling the service directly receives.
+    函数体只有一句对 `topics.require_usable_name` 的调用，这正是重点：边界
+    不复述规则，而是调用规则。`require_usable_name` 抛的是 `TopicNameBlank`
+    （一个 `ValueError`），于是 Pydantic 把这次拒绝变成点名字段的 `422`，
+    而直接调用服务的脚本收到的也是同一个异常。
     """
     return require_usable_name(value)
 
 
-#: A topic name validated and trimmed at the boundary.
+#: 在边界上完成校验与去空白的主题名。
 TopicName = Annotated[
     str,
     AfterValidator(_require_usable_name),
@@ -76,7 +75,7 @@ TopicName = Annotated[
 
 
 class TopicResponse(BaseModel):
-    """One monitoring topic."""
+    """一个监控主题。"""
 
     id: int
     name: str
@@ -94,7 +93,7 @@ class TopicResponse(BaseModel):
 
 
 class TopicListResponse(BaseModel):
-    """One page of visible topics."""
+    """一页可见的主题。"""
 
     items: list[TopicResponse]
     page: int
@@ -103,14 +102,13 @@ class TopicListResponse(BaseModel):
 
 
 class _TopicFields(BaseModel):
-    """The optional half of a topic request: everything the two required columns are not.
+    """主题请求里可选的那一半字段：两个必填列之外的所有内容。
 
-    A shared base rather than a create model that the update model inherits from. Inheritance would
-    make `PATCH` redeclare `name` and `publish_mode` as optional, and widening an inherited field is
-    the one override direction the type checker rejects - correctly, because a caller holding the
-    subclass would then be able to clear a field the base promises is set. Splitting the fields the
-    two requests genuinely share keeps `POST` required and `PATCH` optional without either model
-    contradicting the other.
+    做成共享基类，而不是让更新模型继承创建模型。继承会逼 `PATCH` 把 `name` 与 `publish_mode`
+    重新声明为可选，而放宽继承来的字段正是类型检查器唯一拒绝的覆写方向 ——
+    它拒绝得对，因为持有子类的调用方从此就能清空基类保证有值的字段。只抽出
+    两个请求真正共享的字段，就能让 `POST` 保持必填、`PATCH` 保持可选，而
+    两个模型互不矛盾。
     """
 
     description: str | None = Field(default=None, max_length=2000)
@@ -123,11 +121,10 @@ class _TopicFields(BaseModel):
 
 
 class TopicCreateRequest(_TopicFields):
-    """The fields a new topic must carry.
+    """新建主题必须携带的字段。
 
-    Every optional field defaults to `None` and the request model restates none of the column
-    defaults: a field the caller did not send is absent from `model_dump(exclude_unset=True)`, so
-    the columns stay the single definition of what a new topic looks like.
+    每个可选字段默认都是 `None`，请求模型也不复述任何一列的默认值：调用方没发过来的字段不会
+    出现在 `model_dump(exclude_unset=True)` 里，于是「新主题长什么样」始终只由列定义一次。
     """
 
     name: TopicName
@@ -135,10 +132,10 @@ class TopicCreateRequest(_TopicFields):
 
 
 class TopicUpdateRequest(_TopicFields):
-    """The fields a PATCH may carry: the same set, all optional.
+    """`PATCH` 可以携带的字段：同一组字段，全部可选。
 
-    ``name`` and ``publish_mode`` become optional here, which is the only difference between
-    creating a topic and changing one.
+    ``name`` 与 ``publish_mode`` 在这里变成可选，这也是「新建主题」与「修改主题」之间唯一的
+    差别。
     """
 
     name: TopicName | None = None
@@ -146,7 +143,7 @@ class TopicUpdateRequest(_TopicFields):
 
 
 class TopicDeleteResponse(BaseModel):
-    """The result of deleting an unreferenced topic."""
+    """删除一个未被引用的主题后的结果。"""
 
     topic_id: int
     deleted: bool
@@ -154,11 +151,12 @@ class TopicDeleteResponse(BaseModel):
 
 
 def _to_response(topic: Topic) -> TopicResponse:
-    """Shape one topic row for egress.
+    """把一个主题行整形为对外响应。
 
-    `languages_json` / `keywords_json` leave as `languages` / `keywords`. The `_json` suffix names
-    the storage form, not the field - the catalog makes the same choice with `topics_json`. A null
-    list means "no restriction of this kind", which is what the column holds when it is not set.
+    `languages_json` / `keywords_json` 以 `languages` / `keywords` 的名字
+    出去。`_json` 后缀命名的是存储形态而不是字段本身 —— 目录层对
+    `topics_json` 做了同样的取舍。列表为 null 表示「没有这一类限制」，列未
+    设置时存的就是这个值。
     """
     return TopicResponse(
         id=topic.id,
@@ -186,11 +184,10 @@ def get_topics(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> TopicListResponse:
-    """Return one page of the topics this caller may see.
+    """返回一页该调用方可见的主题。
 
-    `enabled=false` as a non-`ADMIN` yields an empty page rather than a `403`: the visibility rule
-    and the requested filter are intersected, and "there are no disabled topics you may see" is a
-    true answer to the question that was asked.
+    非 `ADMIN` 传 `enabled=false` 得到的是空页而不是 `403`：可见性规则与请求的筛选取交集，而
+    「你能看到的主题里没有停用的」正是对所问问题的真实回答。
     """
     result = list_topics(
         session,
@@ -215,7 +212,7 @@ def get_topic(
     user: ReadUser,
     session: DbSession,
 ) -> TopicResponse:
-    """Return one topic, or refuse in the two ways the catalog's `topic_id` filter refuses."""
+    """返回一个主题；拒绝方式与目录的 `topic_id` 筛选完全相同。"""
     topic = authorize_topic_read(session, request, user, topic_id=topic_id, action="topic.read")
     return _to_response(topic)
 
@@ -227,7 +224,7 @@ def create_topic_endpoint(
     user: WriteUser,
     session: DbSession,
 ) -> TopicResponse:
-    """Create one monitoring topic."""
+    """新建一个监控主题。"""
     provided = payload.model_dump(exclude_unset=True)
     name = provided.pop("name")
     publish_mode = provided.pop("publish_mode")
@@ -250,10 +247,10 @@ def update_topic_endpoint(
     user: WriteUser,
     session: DbSession,
 ) -> TopicResponse:
-    """Apply the fields the caller sent to one topic.
+    """把调用方发来的字段应用到某个主题上。
 
-    `exclude_unset=True` is load-bearing: it is what makes "did not send `description`" and "sent
-    `description: null`" two different requests rather than one.
+    `exclude_unset=True` 是有承重作用的：正是它让「没发 `description`」和「发了
+    `description: null`」成为两个不同的请求，而不是一个。
     """
     topic, _changed = update_topic(
         session,
@@ -272,7 +269,7 @@ def delete_topic_endpoint(
     user: WriteUser,
     session: DbSession,
 ) -> TopicDeleteResponse:
-    """Delete an unreferenced topic, or refuse with the tables that still point at it."""
+    """删除一个未被引用的主题；若有表仍指向它就拒绝，并说明是哪张表。"""
     unlinked = delete_topic(
         session,
         actor_id=user.id,

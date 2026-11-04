@@ -1,4 +1,4 @@
-"""Agent configuration, run, step, and tool-call persistence models."""
+"""Agent 配置、运行、步骤与工具调用的持久化模型。"""
 
 from __future__ import annotations
 
@@ -25,17 +25,16 @@ from ..base import Base, UTCDateTime, uint64_pk, unsigned_bigint, utc_now
 AGENT_RUN_STATUSES = ("pending", "running", "needs_review", "completed", "failed")
 AGENT_STEP_TYPES = ("plan", "tool", "observe", "verify", "write")
 TOOL_CALL_STATUSES = ("success", "failed", "denied")
-#: What a human concluded after reading a `needs_review` run.
+#: 人工读完一次 `needs_review` 运行后给出的结论。
 #:
-#: Deliberately not "approve/reject": a run is a terminal fact, not a proposal. There is nothing
-#: to approve — the question a reviewer answers is "is this explanation good enough to stop
-#: looking, or does it need another attempt". A verdict therefore describes the *next move*, and
-#: it does not move the run's own status: the run still has no report either way.
+#: 刻意不叫「approve/reject」：运行是一个已经发生的事实，而不是一份提案。这里没有东西可批准
+#: —— 审核者要回答的问题是「这份解释是否已经够好、可以不再看下去，还是需要再试一次」。因此
+#: 结论描述的是*下一步动作*，它不改变运行自身的状态：无论给出哪种结论，这次运行依然没有报告。
 AGENT_RUN_REVIEW_VERDICTS = ("acknowledged", "needs_rerun")
 
 
 class AgentConfig(Base):
-    """Versioned Agent model, prompt, and tool-budget configuration."""
+    """带版本的 Agent 模型、Prompt 与工具预算配置。"""
 
     __tablename__ = "agent_configs"
     __table_args__ = (
@@ -56,9 +55,9 @@ class AgentConfig(Base):
     tool_policy_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     max_loops: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
     max_model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
-    #: Mirrors `Settings.agent_max_tool_calls`. Both sit above the evidence floor
-    #: (`2 x candidates + 2` = 12 at the default five candidates) on purpose: a budget equal to
-    #: the floor leaves no room for a wasted call. See `agent/runtime.py:evidence_tool_floor`.
+    #: 与 `Settings.agent_max_tool_calls` 保持一致。两者都刻意高于证据下限（默认五个候选时
+    #: `2 x candidates + 2` = 12）：预算恰好等于下限，就等于不给任何一次白跑的调用留余地。
+    #: 参见 `agent/runtime.py:evidence_tool_floor`。
     max_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=12000)
     max_cost: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
@@ -71,7 +70,7 @@ class AgentConfig(Base):
 
 
 class AgentRun(Base):
-    """One research Agent execution tied to a pipeline run and topic."""
+    """一次研究 Agent 执行，绑定到某个流水线运行与主题。"""
 
     __tablename__ = "agent_runs"
     __table_args__ = (
@@ -131,7 +130,7 @@ class AgentRun(Base):
 
 
 class AgentStep(Base):
-    """One ordered step inside an Agent run."""
+    """Agent 运行内一个按序编号的步骤。"""
 
     __tablename__ = "agent_steps"
     __table_args__ = (
@@ -169,7 +168,7 @@ class AgentStep(Base):
 
 
 class ToolCall(Base):
-    """Recorded invocation of one whitelisted Agent tool."""
+    """一次受白名单约束的 Agent 工具调用记录。"""
 
     __tablename__ = "tool_calls"
     __table_args__ = (
@@ -207,15 +206,14 @@ class ToolCall(Base):
 
 
 class AgentRunReview(Base):
-    """One human conclusion about a run that stopped without a report.
+    """人工对一次「没产出报告就停下」的运行所下的结论。
 
-    A `needs_review` run is terminal: nothing downstream can approve it, because it produced no
-    draft to approve. What was missing was somewhere to put the *reading* — an operator opens the
-    trajectory, decides whether the evidence gap is understood or needs another attempt, and that
-    judgement went nowhere, so the same rows stayed untouched and unexplained forever.
+    `needs_review` 运行是终态：下游没有任何环节能批准它，因为它没有产出可批准的草稿。真正缺
+    的是一个存放*阅读结论*的地方 —— 运维打开轨迹，判断证据缺口是否已经理解清楚、还是需要再
+    试一次，而这个判断无处可落，同一批数据行于是永远保持原样、也永远无人解释。
 
-    Rows are append-only, like `report_reviews`: re-reading a run adds a line rather than editing
-    the last one, so "who thought what, when" survives a change of mind.
+    数据行与 `report_reviews` 一样只追加：重读一次运行是新增一行，而不是改写上一行，因此
+    「谁在什么时候想了什么」在改变主意之后依然留得下来。
     """
 
     __tablename__ = "agent_run_reviews"

@@ -1,4 +1,4 @@
-"""GitHub repository search collector."""
+"""通过 GitHub 搜索 API 采集仓库。"""
 
 import base64
 import binascii
@@ -21,15 +21,15 @@ from open_source_intelligence.collectors.types import (
 )
 
 LINK_PATTERN = re.compile(r"<([^>]+)>\s*;\s*rel\s*=\s*\"?([^\";,]+)\"?")
-"""RFC 8288 `Link` header entries, as GitHub emits them."""
+"""RFC 8288 `Link` 头的条目格式，与 GitHub 输出的形态一致。"""
 
 
 def parse_link_header(value: str | None) -> dict[str, str]:
-    """Parse a `Link` header into a `rel -> target` map.
+    """解析 `Link` 头，得到 `rel -> 目标` 的映射。
 
-    This is the authoritative answer to "is there another page?". GitHub stops
-    advertising `rel="next"` once a search walks past its 1000-result cap, so a page
-    number derived from `total_count` would promise pages that the API will not serve.
+    这才是「是否还有下一页」的权威答案。一旦搜索走过 1000 条上限，
+    GitHub 就不再声明 `rel="next"`，所以用 `total_count` 推出来的页
+    码，会承诺一些 API 根本不会提供的页。
     """
     if not value:
         return {}
@@ -37,11 +37,11 @@ def parse_link_header(value: str | None) -> dict[str, str]:
 
 
 def decode_readme_content(payload: dict[str, Any]) -> str:
-    """Decode the README body GitHub returns, which is base64 by default.
+    """解码 GitHub 返回的 README 正文，它默认是 base64。
 
-    Undecodable bytes are replaced rather than rejected: a README is external text that the
-    model reads for context, and losing one odd character is not the same failure as losing
-    the document. A payload with no content at all *is* that failure, so it raises.
+    无法解码的字节被替换而不是被拒绝：README 是模型用来理解上下文的外部
+    文本，丢一个怪字符与丢掉整份文档并不是同一种失败。而响应里完全没有
+    内容*才*是那种失败，所以它抛异常。
     """
     raw = payload.get("content")
     if not isinstance(raw, str) or not raw:
@@ -56,7 +56,7 @@ def decode_readme_content(payload: dict[str, Any]) -> str:
 
 
 class GitHubCollector:
-    """Collect repositories through the GitHub Search API, and their READMEs."""
+    """通过 GitHub 搜索 API 采集仓库，并抓取它们的 README。"""
 
     provider = "github"
     display_name = "GitHub"
@@ -84,11 +84,11 @@ class GitHubCollector:
             self._headers["Authorization"] = f"Bearer {token.get_secret_value()}"
 
     def collect(self, *, limit: int) -> list[CollectedRepository]:
-        """Collect and normalize up to 100 GitHub repositories from the first page."""
+        """从第一页采集并归一化至多 100 个 GitHub 仓库。"""
         return list(self.collect_page(page=1, per_page=limit).items)
 
     def collect_page(self, *, page: int, per_page: int) -> CollectedPage:
-        """Return one 1-based page of GitHub search results, ordered by the configured sort."""
+        """返回从 1 开始计数的 GitHub 搜索结果页，按配置的排序方式排列。"""
         require_page(page)
         clamp_per_page(per_page)
         response = self._http.get_json_response(
@@ -118,19 +118,18 @@ class GitHubCollector:
         )
 
     def describe_query(self) -> dict[str, Any]:
-        """Return the search parameters this collector pages."""
+        """返回该采集器分页遍历的搜索参数。"""
         return {"q": self._query, "sort": self._sort, "order": "desc"}
 
     def fetch_readme(self, full_name: str) -> FetchedContent | None:
-        """Return one repository's README, or `None` when GitHub has none to serve.
+        """返回某个仓库的 README；GitHub 没有可提供的内容时返回 `None`。
 
-        The README endpoint answers `404` both for "no README" and for "no such
-        repository", and this method reports both as `None` on purpose: from the caller's
-        side they are the same fact - there is no content to cache for this name - and the
-        alternative is to guess which one it was from a payload that both cases lack.
-        Repositories reach here from `topic_repositories`, so a name that does not exist is
-        already anomalous; turning it into a retried source failure would be worse, because
-        it would make one stale row look like a broken upstream.
+        README 端点对「没有 README」和「没有这个仓库」都回 `404`，本方法
+        刻意把两者都报成 `None`：从调用方的角度看它们是同一个事实 —— 这
+        个名字没有可缓存的内容 —— 另一种做法是从两种情形都缺失的响应体里
+        去猜到底是哪一种。仓库是从 `topic_repositories` 走到这里的，所以
+        一个不存在的名字本就属于异常；把它变成一次被重试的源故障只会更
+        糟，因为那会让一行过期数据看起来像上游坏了。
         """
         response = self._http.get_json_or_none(
             f"{self.base_url}/repos/{quote(full_name, safe='/')}/readme",
@@ -155,7 +154,7 @@ class GitHubCollector:
 
     @staticmethod
     def _normalize(item: dict[str, Any], observed_at: datetime) -> CollectedRepository:
-        """Normalize one GitHub repository object."""
+        """归一化一个 GitHub 仓库对象。"""
         repository_id = item.get("id")
         full_name = item.get("full_name")
         html_url = item.get("html_url")

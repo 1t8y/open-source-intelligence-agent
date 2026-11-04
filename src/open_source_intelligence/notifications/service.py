@@ -1,22 +1,18 @@
-"""Report push service: guard, allowlist, deliver, record, retry.
+"""报告推送服务：守卫、白名单、投递、记录、重试。
 
-The service is the only place a report leaves the system, so the ordering below is the whole
-security story:
+服务是报告离开系统的唯一出口，因此下面的顺序就是全部的安全故事：
 
-1. **Guard** the report's status. Only an `approved` or `published` report may be pushed, which
-   is what "only approved reports may be pushed" means in practice — a merely generated draft
-   has no business being mailed anywhere.
-2. **Guard** the audience. A `CONFIDENTIAL` report additionally needs a human `approve` review
-   for the version being sent, because `REQUIREMENTS.md` §7 reserves external delivery of
-   sensitive material for `MANUAL`.
-3. **Resolve** the destination against `push_targets`. The allowlist is the only way to reach a
-   real address, and a target has to be enabled and explicitly cleared for the report's
-   visibility and sensitivity.
-4. **Deliver** through a channel adapter, then **record** the attempt.
+1. 对报告状态做**守卫**。只有 `approved` 或 `published` 的报告才能推送，这就是「只有已
+   批准的报告才能推送」在实践中的含义 —— 仅仅生成出来的草稿没有理由被寄往任何地方。
+2. 对受众做**守卫**。`CONFIDENTIAL` 报告还需要针对所发版本的人工 `approve` 评审，因为
+   `REQUIREMENTS.md` §7 把敏感材料的外部投递保留给 `MANUAL`。
+3. 对照 `push_targets` **解析**目的地。白名单是抵达真实地址的唯一途径，并且目标必须已
+   启用，且针对报告的可见范围与敏感级别被明确放行。
+4. 通过渠道适配器**投递**，然后**记录**这次尝试。
 
-Delivery failure is a recorded outcome, not an exception: the `report_pushes` row keeps the
-error code and its attempt count, so `retry_failed_pushes` can pick it up and a repeated request
-for the same (report, version, target) replays the stored result instead of sending twice.
+投递失败是记录下来的结果，而不是异常：`report_pushes` 行保留错误码与尝试次数，因此
+`retry_failed_pushes` 能把它捡起来；而针对同一 (report, version, target) 的重复请求会重放
+已存结果，而不是再发一次。
 """
 
 from __future__ import annotations
@@ -57,31 +53,31 @@ from .errors import (
     PushTargetNotAllowed,
 )
 
-#: Run type recorded for a push attempt; registered alongside the other topic-scoped runs.
+#: 为一次推送尝试记录的运行类型；与其他主题范围内的运行一并注册。
 PUSH_RUN_TYPE: Final[str] = "push"
-#: Upper bound on pushes a single retry sweep attempts.
+#: 单次重试清扫最多尝试的推送数上限。
 PUSH_BATCH_LIMIT: Final[int] = 100
-#: The only statuses a report may be pushed from.
+#: 报告可以推送的唯一状态集合。
 PUSHABLE_STATUSES: Final[frozenset[str]] = frozenset({"approved", "published"})
 
 CONFIDENTIAL_SENSITIVITY: Final[str] = "CONFIDENTIAL"
 PRIVATE_VISIBILITY: Final[str] = "PRIVATE"
 REVIEW_APPROVE: Final[str] = "approve"
 
-#: Longest transport detail persisted on a push row.
+#: 持久化到推送行上的最长传输细节。
 MAX_DETAIL_LENGTH: Final[int] = 512
-#: Error code recorded when a transport refuses or fails a delivery.
+#: 传输层拒收或投递失败时记录的错误码。
 PUSH_ERROR_CODE: Final[str] = "PUSH_DELIVERY_FAILED"
-#: Error code recorded when a retry targets a version the report has already left behind.
+#: 重试指向报告已越过的版本时记录的错误码。
 PUSH_VERSION_SUPERSEDED: Final[str] = "PUSH_VERSION_SUPERSEDED"
-#: How much of the report body travels with a notification.
+#: 通知中随附的报告正文长度。
 BODY_EXCERPT_CHARS: Final[int] = 800
 SUBJECT_PREFIX: Final[str] = "[开源技术情报]"
 
 
 @dataclass(frozen=True, slots=True)
 class PushOutcome:
-    """Result of one delivery attempt, successful or not."""
+    """一次投递尝试的结果，无论成功与否。"""
 
     push_id: int
     report_id: int
@@ -96,7 +92,7 @@ class PushOutcome:
     replayed: bool
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回 JSON 安全载荷。"""
         return {
             "push_id": self.push_id,
             "report_id": self.report_id,
@@ -113,7 +109,7 @@ class PushOutcome:
 
 
 def _outcome(row: ReportPush, *, replayed: bool = False) -> PushOutcome:
-    """Build one outcome from a persisted push row."""
+    """由一条已持久化的推送行构造结果对象。"""
     return PushOutcome(
         push_id=row.id,
         report_id=row.report_id,
@@ -130,7 +126,7 @@ def _outcome(row: ReportPush, *, replayed: bool = False) -> PushOutcome:
 
 
 def _require_report(session: Session, report_id: int) -> Report:
-    """Load a report or fail with a stable error."""
+    """加载报告，失败时给出稳定错误。"""
     report = session.get(Report, report_id)
     if report is None:
         raise PushNotFound(f"report {report_id} does not exist")
@@ -138,7 +134,7 @@ def _require_report(session: Session, report_id: int) -> Report:
 
 
 def _has_approval(session: Session, report: Report) -> bool:
-    """Return whether a human approved the version currently being pushed."""
+    """返回人工是否批准了当前正在推送的版本。"""
     approval = session.scalar(
         select(ReportReview.id).where(
             ReportReview.report_id == report.id,
@@ -150,7 +146,7 @@ def _has_approval(session: Session, report: Report) -> bool:
 
 
 def build_message(session: Session, report: Report) -> OutboundMessage:
-    """Render the notification a target receives for one report version."""
+    """渲染目标针对某个报告版本收到的通知。"""
     topic = session.get(Topic, report.topic_id)
     lines = [
         f"报告：{report.title}",
@@ -178,7 +174,7 @@ def _resolve_target(
     channel: str,
     target_id: int,
 ) -> PushTarget:
-    """Return the allowlisted target, refusing anything not cleared for this report."""
+    """返回白名单中的目标，拒绝任何未针对本报告放行的条目。"""
     target = session.get(PushTarget, target_id)
     if target is None:
         raise PushTargetNotAllowed(f"push target {target_id} is not on the allowlist")
@@ -205,7 +201,7 @@ def list_targets(
     channel: str | None = None,
     enabled_only: bool = True,
 ) -> list[PushTarget]:
-    """Return the allowlist, newest first, optionally filtered."""
+    """返回白名单，最新的在前，可按条件过滤。"""
     statement = select(PushTarget)
     if channel is not None:
         statement = statement.where(PushTarget.channel == channel)
@@ -222,12 +218,11 @@ def list_pushes(
     limit: int = 50,
     access_filter: ColumnElement[bool] | None = None,
 ) -> list[ReportPush]:
-    """Return delivery records, newest first, optionally filtered.
+    """返回投递记录，最新的在前，可按条件过滤。
 
-    `access_filter` is the report ACL as a SQL predicate. The ledger names report titles, versions,
-    destinations and error text, so a role check alone is not enough: it has to be filtered in the
-    query, exactly like the report list, or a caller can read the metadata of a report it may not
-    open. `None` means "system scope" and is only correct for a background sweep.
+    `access_filter` 是作为 SQL 谓词传入的报告 ACL。这份账本会点名报告标题、版本、目的地与
+    错误文本，所以仅凭角色检查并不够：必须像报告列表那样在查询里过滤，否则调用方就能读到
+    它无权打开的报告的元数据。`None` 表示「系统范围」，只在后台清扫中才是正确的。
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -253,11 +248,10 @@ def push_report(
     now: datetime | None = None,
     version: int | None = None,
 ) -> PushOutcome:
-    """Deliver one report version to one allowlisted target.
+    """把某一个报告版本投递给某一个白名单目标。
 
-    Guard violations raise; a transport failure is recorded and returned with `status="failed"`.
-    Re-requesting a delivery that already succeeded returns the stored result untouched, which
-    is what makes the whole operation idempotent per (report, version, target).
+    守卫违规直接抛出；传输失败则被记录，并以 `status="failed"` 返回。对已经成功的投递再次
+    发起请求会原样返回已存结果，这正是整个操作按 (report, version, target) 幂等的原因。
     """
     resolved = settings or get_settings()
     if not resolved.push_enabled:
@@ -297,8 +291,8 @@ def push_report(
             f"{resolved.push_max_attempts} is exhausted"
         )
 
-    # Built before anything is written: an unconfigured live channel is a configuration error,
-    # not a delivery failure, and it must not leave a push row behind.
+    # 在写入任何内容之前构造：未配置的实时渠道是配置错误，而不是投递失败，且绝不能留下
+    # 一条推送行。
     adapter = notifier or build_channel(resolved, channel)
     message = build_message(session, report)
 
@@ -397,14 +391,14 @@ def _deliver(
     destination: str,
     message: OutboundMessage,
 ) -> DeliveryReceipt:
-    """Send through an adapter, converting any unexpected failure into a receipt.
+    """通过适配器发送，把任何意外失败转成回执。
 
-    A push sits inside the publish path, so an adapter bug must never be able to turn a
-    successful release into a crashed run; it becomes a recorded, retryable failure instead.
+    推送处在发布路径内部，所以适配器的缺陷绝不能把一次成功发布变成崩溃的运行；它只会变成
+    一条已记录、可重试的失败。
     """
     try:
         return adapter.send(destination=destination, message=message)
-    except Exception as exc:  # A broken adapter must not be able to lose the push record.
+    except Exception as exc:  # 坏掉的适配器绝不能导致推送记录丢失。
         return DeliveryReceipt(
             ok=False,
             detail=f"adapter:{exc.__class__.__name__}:{exc}"[:MAX_DETAIL_LENGTH],
@@ -412,7 +406,7 @@ def _deliver(
 
 
 def _closed_at(now: datetime | None, moment: datetime) -> datetime | None:
-    """Echo a pinned clock into a run's close time, matching the publishing convention."""
+    """把被钉住的时钟回显为运行的关闭时间，与发布的约定保持一致。"""
     return moment if now is not None else None
 
 
@@ -425,11 +419,10 @@ def push_after_publish(
     notifier: NotificationChannel | None = None,
     now: datetime | None = None,
 ) -> list[PushOutcome]:
-    """Auto-push a freshly published report to every enabled target.
+    """把刚发布的报告自动推送到每一个已启用的目标。
 
-    This runs inside the publish path, so it never raises: an unusable target or a refused
-    transport is recorded (or skipped) and the release stands. A push failure is a retry
-    candidate, never a reason to un-publish a report.
+    这段逻辑运行在发布路径内部，因此它从不抛错：不可用的目标或被拒的传输会被记录（或被
+    跳过），发布本身照常成立。推送失败是重试候选，绝不是撤回报告的理由。
     """
     resolved = settings or get_settings()
     if not resolved.push_enabled or not resolved.push_auto_after_publish:
@@ -449,7 +442,7 @@ def push_after_publish(
                     now=now,
                 )
             )
-        except Exception as exc:  # Auto-push must never break the release, whatever fails.
+        except Exception as exc:  # 自动推送绝不能破坏发布，无论哪一步失败。
             record_audit_event(
                 session,
                 action="report.push",
@@ -477,7 +470,7 @@ def retry_push(
     notifier: NotificationChannel | None = None,
     now: datetime | None = None,
 ) -> PushOutcome:
-    """Retry one recorded push by re-running its (report, version, target) triple."""
+    """按一条推送记录的 (报告, 版本, 目标) 三元组重跑，以重试它。"""
     row = session.get(ReportPush, push_id)
     if row is None:
         raise PushNotFound(f"push {push_id} does not exist")
@@ -504,14 +497,14 @@ def retry_failed_pushes(
     now: datetime | None = None,
     access_filter: ColumnElement[bool] | None = None,
 ) -> list[PushOutcome]:
-    """Retry every failed push that still has retry budget left.
+    """重试每一条仍有重试预算的失败推送。
 
-    One unusable row never stops the sweep: mirroring `publish_due_reports`, a failed retry is
-    skipped and the rest of the batch continues.
+    单条不可用的行绝不会让清扫停下：与 `publish_due_reports` 一致，失败的重试会被跳过，
+    批次中其余部分继续。
 
-    `access_filter` narrows the sweep to the reports the caller may read. An operator pressing
-    "retry" is acting on their own reports, not silently re-sending material they cannot open;
-    the scheduled sweep leaves it `None` because the beat task belongs to no single user.
+    `access_filter` 把清扫收窄到调用方有权读取的报告。操作员按下「重试」时是在处理自己的
+    报告，而不是悄悄重发它打不开的材料；定时清扫则留空为 `None`，因为 beat 任务不属于任何
+    单个用户。
     """
     resolved = settings or get_settings()
     if limit < 1:
@@ -570,8 +563,8 @@ def retry_failed_pushes(
                 )
             )
         except PushError as exc:
-            # A row can stop being retryable (the report left the pushable statuses, or the
-            # target was disabled). Record why instead of dropping it silently.
+            # 一行可能不再可重试（报告离开了可推送状态，或目标被禁用）。
+            # 记录原因，而不是静默丢弃它。
             record_audit_event(
                 session,
                 action="report.push",
@@ -587,6 +580,6 @@ def retry_failed_pushes(
                 },
             )
             session.commit()
-        except Exception:  # One bad row must not abort the sweep.
+        except Exception:  # 一条坏行绝不能中止整次清扫。
             session.rollback()
     return outcomes

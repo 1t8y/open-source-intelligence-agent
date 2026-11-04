@@ -1,28 +1,27 @@
-"""The drills' cleanups must delete only rows they can prove are their own.
+"""演练脚本的清理只能删掉它自己确证属于自己的那些行。
 
-Every smoke labels the rows it creates with a name prefix (`__t7_smoke_`,
-`__T15 report__`, `__t17_drill_` ...) and later deletes "its" rows by that prefix. The obvious
-spelling, `Column.like(f"{prefix}%")`, does not mean "begins with this prefix": `_` is a
-single-character wildcard in `LIKE`, and every one of these prefixes contains one, so the pattern
-also matches values the drill never wrote. A cleanup that can delete a stranger's row is worse
-than one that leaves its own behind, so each drill matches a **literal** prefix now
-(`startswith(..., autoescape=True)`).
+每套冒烟脚本都给自己创建的行打上名字前缀（`__t7_smoke_`、
+`__T15 report__`、`__t17_drill_` ……），随后按该前缀删掉「自己的」行。
+最直观的写法 `Column.like(f"{prefix}%")` 并不等于「以这个前缀开头」：
+`_` 在 `LIKE` 里是单字符通配符，而这些前缀里每一个都含 `_`，
+于是这个模式连演练从未写过的值也能匹配上。
+一个会删掉别人数据的清理，比留下自己的残留更糟，
+所以现在每个演练都按**字面**前缀匹配（`startswith(..., autoescape=True)`）。
 
-These tests drive the drills' own cleanup functions - not a copy of their predicates - against a
-database holding two rows: one labelled the way the drill labels its own, and one that only the
-`LIKE` pattern would have matched. The first must be removed, the second must survive. Against the
-old `like(f"{prefix}%")` spelling every case below fails, which is the point: a row left behind is
-a mess, a row deleted by mistake is a defect.
+这些用例驱动的是演练自己的清理函数 —— 不是它们谓词的副本 ——
+对着一个只放两行的数据库跑：一行按演练标记自己数据的方式命名，
+另一行只有 `LIKE` 模式才会命中。前者必须被删掉，后者必须活下来。
+换回旧的 `like(f"{prefix}%")` 写法，下面每个用例都会失败，这正是重点：
+留下自己的行只是脏，误删别人的行是缺陷。
 
-The cases cover the thirteen places a drill *deletes* by a prefix. The remaining sites that match
-a prefix are counts (`t16._repo_count`, the injection and repeat counters in `t17`), and they are
-left out on purpose: an over-broad count does not delete anything, it makes the drill's own
-assertion disagree and fail loudly, whereas an over-broad delete is silent and destroys a row that
-belongs to someone else. Both spell the match the same way, so the escaping these cases pin is the
-escaping they use.
+用例覆盖演练里十三处*按前缀删除*的位置。其余按前缀匹配的地方都是计数
+（`t16._repo_count`、`t17` 里的注入计数与重复计数），刻意没有纳入：
+计数过宽不会删掉任何东西，只会让演练自己的断言不一致并大声失败；
+而删除过宽是无声的，会毁掉一条属于别人的行。
+两者用的是同一种写法，所以这些用例钉住的转义就是它们用的转义。
 
-The scripts are importable because `pyproject.toml` puts `scripts/` on the pytest `pythonpath`;
-several of them already import each other by bare module name.
+这些脚本能被导入，是因为 `pyproject.toml` 把 `scripts/` 放进了 pytest 的
+`pythonpath`；其中好几个本来就是用裸模块名互相导入的。
 """
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ from open_source_intelligence.persistence.models.notifications import PushTarget
 from open_source_intelligence.persistence.models.reporting import Report
 
 # --------------------------------------------------------------------------------------
-# One seeding function and one reader per label column the drills clean up by
+# 演练按哪个标签列清理，就给它配一套灌数据函数与读取函数
 # --------------------------------------------------------------------------------------
 
 
@@ -116,12 +115,12 @@ def _push_targets(session: Session) -> set[str]:
 
 
 def _seed_t15_reports(workspace: Workspace, labels: Sequence[str]) -> None:
-    """Seed reports the *only* way the T15 cleanup can reach is its title predicate.
+    """用唯一能被 T15 清理触达的方式灌报告：靠它的标题谓词。
 
-    T15's title delete sits inside `if topic_ids:`, where the ids come from its own topic name, so
-    that topic has to exist or the predicate never runs. The reports are nevertheless filed under
-    a different topic: put them under the drill's topic and the `topic_id IN (...)` delete would
-    remove them anyway, and this case would pass without the title predicate being correct at all.
+    T15 按标题删除的语句嵌在 `if topic_ids:` 里，而那些 id 来自它自己的主题名，
+    所以那个主题必须存在，否则谓词根本不会执行。但这些报告仍要挂到另一个主题下：
+    挂到演练自己的主题下，`topic_id IN (...)` 那条删除一样会把它们删掉，
+    这个用例就会在标题谓词完全不正确的情况下通过。
     """
     workspace.add_topic(name=t15_mysql_smoke.TOPIC_NAME)
     carrying = workspace.add_topic(name="t15-unrelated-topic")
@@ -131,7 +130,7 @@ def _seed_t15_reports(workspace: Workspace, labels: Sequence[str]) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# The cleanups that take an actor map; an empty one is the no-actor path
+# 需要操作者映射的清理；传空映射走的是「没有操作者」那条路径
 # --------------------------------------------------------------------------------------
 
 
@@ -148,13 +147,13 @@ def _t15_cleanup(session: Session) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# The cases
+# 用例
 # --------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class Drill:
-    """One cleanup pass, the prefix it owns, and a value only `LIKE` would have matched."""
+    """一轮清理、它自己的前缀，以及一个只有 `LIKE` 才会命中的值。"""
 
     name: str
     prefix: str
@@ -164,8 +163,8 @@ class Drill:
     labels: Callable[[Session], set[str]]
 
 
-#: Every `adversary` below was checked against the drill's old pattern with `SELECT ? LIKE ?`; each
-#: one satisfies `LIKE f"{prefix}%"` while not starting with `prefix`.
+#: 下面每个 `adversary` 都拿 `SELECT ? LIKE ?` 对着演练的旧模式核过；
+#: 每一个都满足 `LIKE f"{prefix}%"`，却并不以 `prefix` 开头。
 CASES = (
     Drill(
         name="t7-repositories",
@@ -278,11 +277,12 @@ CASES = (
 def test_a_cleanup_removes_its_own_rows_and_leaves_the_rest(
     case: Drill, session_factory: sessionmaker[Session]
 ) -> None:
-    """The drill's own row is deleted; the value that only `LIKE` matched survives.
+    """证明演练删掉的是自己那行，而只有 `LIKE` 才命中的值留了下来。
 
-    Both rows carry a plausible label. The first is `{prefix}genuine`, which is how every drill
-    names what it creates and which any prefix match finds. The second is a value that satisfies
-    the old `LIKE` pattern without starting with the prefix - the row a drill has no claim on.
+    两行都带着看起来说得通的标签。第一行是 `{prefix}genuine`，
+    每套演练都用这种方式命名自己创建的数据，任何前缀匹配都能找到它。
+    第二行满足旧的 `LIKE` 模式却不以该前缀开头 ——
+    那是演练根本没有主张权利的一行。
     """
     own = f"{case.prefix}genuine"
     with session_factory() as session:

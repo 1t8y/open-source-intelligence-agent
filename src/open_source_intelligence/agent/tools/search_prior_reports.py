@@ -1,10 +1,10 @@
-"""`search_prior_reports` implementation: relevance-ranked summaries of earlier reports.
+"""`search_prior_reports` 的实现：按相关性排序的往期报告摘要。
 
-The default ranking is recency (newest first), which is what a `limit`-bounded list means. When
-the caller supplies a `query`, the reports are instead ranked by lexical relevance to that query
-(see `agent/retrieval/vector.py`), so "the prior conclusion most about this week's topic" is not
-whatever happened to be written last. The query ranking stays offline and degrades to recency
-when the query is blank or matches nothing.
+默认排序是时间新近（最新的在前），这也是一个受 `limit` 约束的列表本来该有的
+含义。当调用方给了 `query`，报告改为按与该查询的词法相关性排序（见
+`agent/retrieval/vector.py`），这样「最贴近本周主题的往期结论」就不会只是
+碰巧最后写下的那一份。查询排序全程离线，并在查询为空或匹配不到任何内容时
+退化为按时间新近排序。
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ from .outcome import ToolOutcome
 SUMMARY_CHARS = 500
 SUMMARY_SECTION_KEY = "summary"
 
-#: How many candidates to fetch before relevance-ranking, so the ranking has room to choose
-#: rather than reordering an already-truncated head. Kept a small multiple of the user limit:
-#: the summaries are short and the extra reads are cheap.
+#: 在做相关性排序之前先取回多少候选，好让排序有挑选的余地，而不是只给一个
+#: 已被截断的头部重新排序。这里取用户上限的一个小倍数：摘要本身很短，多读
+#: 几条的代价很低。
 CANDIDATE_MULTIPLE = 4
 
 
@@ -39,7 +39,7 @@ def search_prior_reports(
     ctx: ToolContext,
     payload: SearchPriorReportsInput,
 ) -> ToolOutcome:
-    """Return report-level summaries, relevance-ranked, never leaking unauthorized reports."""
+    """返回报告级摘要并按相关性排序，绝不泄露未授权的报告。"""
     if not ctx.can_access_topic(payload.topic_id):
         raise ToolExecutionError(
             TOOL_ACCESS_DENIED,
@@ -67,7 +67,7 @@ def search_prior_reports(
     reports = list(session.scalars(stmt.limit(payload.limit * CANDIDATE_MULTIPLE)).all())
     truncated = len(reports) > payload.limit
 
-    # Build summaries first (the source_refs need per-report queries), then rank.
+    # 先构造摘要（`source_refs` 需要对每份报告单独查询），然后再排序。
     summaries: list[ReportSummary] = []
     for report in reports:
         refs = session.scalars(
@@ -100,9 +100,9 @@ def search_prior_reports(
             [f"{summary.title}\n{summary.summary}" for summary in summaries],
             top_k=payload.limit,
         )
-        # Map back by position, not by text: two reports can carry the same title and the same
-        # opening paragraph, and a text-keyed lookup would then return the first one twice while
-        # dropping the other — a silently missing baseline that nothing reports as missing.
+        # 按位置而不是按文本映射回去：两份报告可能标题相同、开头段落也相同，
+        # 此时用文本做键的查找会把第一份返回两次却丢掉另一份 —— 一个消失得
+        # 悄无声息、也没人报告缺失的基线。
         ordered = [summaries[item.index] for item in ranked]
     else:
         ordered = summaries[: payload.limit]

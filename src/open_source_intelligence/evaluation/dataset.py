@@ -1,16 +1,14 @@
-"""Versioned evaluation datasets: file format, validation, and idempotent import.
+"""提供带版本的评测数据集：文件格式、校验与幂等导入。
 
-A dataset lives on disk as one JSON document and is imported into
-`eval_datasets` + `eval_cases`. Two rules make results reproducible:
+数据集在磁盘上是一份 JSON 文档，导入后落在 `eval_datasets` + `eval_cases` 两张表里。两条
+规则保证结果可复现：
 
-* `(name, version)` is the identity. Re-importing the *same* content is a no-op that reports
-  `replayed=True`; importing *different* content under an existing version raises
-  `DatasetVersionConflict` instead of overwriting. Changing a sample therefore always means
-  bumping the version, which is what keeps an old result traceable to the exact sample set
-  that produced it (`docs/evaluation.md` §2.3).
-* `input_json` carries only what a target needs to run (topic name, window, tags). The human
-  reference and the rubric are separate columns so a scorer can never confuse the answer with
-  the question.
+* `(name, version)` 就是身份。重复导入*相同*内容是一次空操作，报告 `replayed=True`；在既有
+  版本号下导入*不同*内容会抛 `DatasetVersionConflict`，而不是覆盖。因此改动一个样本永远
+  意味着升版本，也正是这一点让旧结果能追溯到产生它的那份样本集
+  （`docs/evaluation.md` §2.3）。
+* `input_json` 只携带目标运行所需的东西（主题名、窗口、标签）。人工参考答案与评分细则各占
+  独立的一列，打分器因此绝不会把答案与问题混为一谈。
 """
 
 from __future__ import annotations
@@ -43,13 +41,13 @@ MAX_DESCRIPTION_CHARS: Final[int] = 255
 MAX_CASE_KEY_CHARS: Final[int] = 64
 CASE_KEY_PREFIX: Final[str] = "case"
 
-#: Directory the CLI looks in when no explicit dataset path is given.
+#: 未显式给出数据集路径时，CLI 查找的目录。
 DEFAULT_DATASET_DIR: Final[str] = "datasets"
 
 
 @dataclass(frozen=True, slots=True)
 class DatasetCaseSpec:
-    """One validated sample, before it is turned into an `eval_cases` row."""
+    """一条校验通过的样本，尚未写入 `eval_cases` 行。"""
 
     case_key: str
     topic: str
@@ -62,7 +60,7 @@ class DatasetCaseSpec:
     enabled: bool = True
 
     def to_input_json(self) -> dict[str, Any]:
-        """Render the run context that a target reads."""
+        """渲染目标读取的运行上下文。"""
         payload: dict[str, Any] = {
             "topic": self.topic,
             "window": {
@@ -78,7 +76,7 @@ class DatasetCaseSpec:
 
 @dataclass(frozen=True, slots=True)
 class DatasetSpec:
-    """One validated dataset document."""
+    """一份校验通过的数据集文档。"""
 
     name: str
     version: str
@@ -86,13 +84,13 @@ class DatasetSpec:
     cases: tuple[DatasetCaseSpec, ...]
 
     def case_keys(self) -> tuple[str, ...]:
-        """Return every case key in file order."""
+        """按文件顺序返回全部用例键。"""
         return tuple(case.case_key for case in self.cases)
 
 
 @dataclass(frozen=True, slots=True)
 class DatasetImportResult:
-    """Outcome of one import: which dataset row was touched and whether it was new."""
+    """一次导入的结果：动到了哪一行数据集，以及它是不是新建的。"""
 
     dataset_id: int
     name: str
@@ -102,7 +100,7 @@ class DatasetImportResult:
     replayed: bool
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe summary."""
+        """返回可安全序列化为 JSON 的摘要。"""
         return {
             "dataset_id": self.dataset_id,
             "name": self.name,
@@ -114,7 +112,7 @@ class DatasetImportResult:
 
 
 def _require_text(value: Any, *, field: str, limit: int) -> str:
-    """Require a non-empty string within the column limit."""
+    """要求一个非空字符串，且不超过列长度上限。"""
     if not isinstance(value, str) or not value.strip():
         raise DatasetInvalid(f"{field} must be a non-empty string")
     text = value.strip()
@@ -124,7 +122,7 @@ def _require_text(value: Any, *, field: str, limit: int) -> str:
 
 
 def _optional_text(value: Any, *, field: str, limit: int) -> str | None:
-    """Accept an absent or blank string as unset."""
+    """把缺失或空白的字符串当作未设置。"""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -138,7 +136,7 @@ def _optional_text(value: Any, *, field: str, limit: int) -> str | None:
 
 
 def _parse_datetime(value: Any, *, field: str) -> datetime:
-    """Parse an ISO-8601 timestamp, requiring an explicit timezone."""
+    """解析 ISO-8601 时间戳，并要求显式给出时区。"""
     if not isinstance(value, str):
         raise DatasetInvalid(f"{field} must be an ISO-8601 string")
     try:
@@ -146,14 +144,13 @@ def _parse_datetime(value: Any, *, field: str) -> datetime:
     except ValueError as exc:
         raise DatasetInvalid(f"{field} is not a valid ISO-8601 timestamp: {value}") from exc
     if parsed.tzinfo is None:
-        # A naive window would silently depend on the machine's clock, which would make the
-        # same dataset produce different results on different hosts.
+        # 不带时区的窗口会静默依赖本机时钟，于是同一份数据集在不同主机上会给出不同结果。
         raise DatasetInvalid(f"{field} must include a timezone offset")
     return parsed
 
 
 def _optional_mapping(value: Any, *, field: str) -> Mapping[str, Any] | None:
-    """Accept an absent value or a JSON object, rejecting everything else."""
+    """接受缺失值或一个 JSON 对象，其余一律拒绝。"""
     if value is None:
         return None
     if not isinstance(value, Mapping):
@@ -162,7 +159,7 @@ def _optional_mapping(value: Any, *, field: str) -> Mapping[str, Any] | None:
 
 
 def _parse_tags(value: Any, *, field: str) -> tuple[str, ...]:
-    """Accept an absent list of non-empty strings."""
+    """接受缺失的标签列表，列表元素必须是非空字符串。"""
     if value is None:
         return ()
     if not isinstance(value, list):
@@ -176,7 +173,7 @@ def _parse_tags(value: Any, *, field: str) -> tuple[str, ...]:
 
 
 def _parse_case(raw: Any, *, index: int) -> DatasetCaseSpec:
-    """Validate one case entry."""
+    """校验一条用例条目。"""
     if not isinstance(raw, Mapping):
         raise DatasetInvalid(f"cases[{index}] must be a JSON object")
     case_key = _require_text(raw.get("case_key"), field=f"cases[{index}].case_key", limit=64)
@@ -209,7 +206,7 @@ def _parse_case(raw: Any, *, index: int) -> DatasetCaseSpec:
 
 
 def parse_dataset(document: Any) -> DatasetSpec:
-    """Validate one already-decoded dataset document."""
+    """校验一份已经解码的数据集文档。"""
     if not isinstance(document, Mapping):
         raise DatasetInvalid("dataset document must be a JSON object")
     schema_version = document.get("schema_version", DATASET_SCHEMA_VERSION)
@@ -240,7 +237,7 @@ def parse_dataset(document: Any) -> DatasetSpec:
 
 
 def load_dataset_file(path: str | Path) -> DatasetSpec:
-    """Read and validate one dataset JSON file."""
+    """读取并校验一个数据集 JSON 文件。"""
     resolved = Path(path)
     try:
         raw = resolved.read_text(encoding="utf-8")
@@ -254,7 +251,7 @@ def load_dataset_file(path: str | Path) -> DatasetSpec:
 
 
 def discover_dataset_files(directory: str | Path = DEFAULT_DATASET_DIR) -> list[Path]:
-    """Return the dataset files under a directory, sorted for deterministic imports."""
+    """返回目录下的数据集文件，并排序以保证导入的确定性。"""
     root = Path(directory)
     if not root.is_dir():
         return []
@@ -262,11 +259,10 @@ def discover_dataset_files(directory: str | Path = DEFAULT_DATASET_DIR) -> list[
 
 
 def _canonical(value: Any) -> Any:
-    """Normalize a JSON value so two equal payloads compare equal across drivers.
+    """归一化 JSON 值，让两份相等的载荷在不同驱动下也比较相等。
 
-    MySQL hands JSON numbers back as `Decimal` while SQLite hands them back as `float`, and
-    the replay check compares a freshly parsed document against a stored row. Normalizing
-    numbers to `float` before serializing removes that driver difference from the comparison.
+    MySQL 把 JSON 数字读回来是 `Decimal`，SQLite 读回来是 `float`，而重放检查要拿刚解析
+    出的文档去比已存的行。序列化之前把数字统一成 `float`，就把这条驱动差异从比较里抹掉了。
     """
     if isinstance(value, Decimal):
         return float(value)
@@ -284,7 +280,7 @@ def _fingerprint(
     rubric_json: Mapping[str, Any] | None,
     enabled: bool,
 ) -> str:
-    """Return a stable string that captures everything a case row stores."""
+    """返回一个稳定字符串，涵盖用例行存储的全部内容。"""
     return json.dumps(
         {
             "input": _canonical(input_json),
@@ -298,15 +294,15 @@ def _fingerprint(
 
 
 def _require_topics_for_cases(session: Session, spec: DatasetSpec) -> None:
-    """Refuse an import whose *enabled* cases name topics this deployment does not have.
+    """拒绝导入那些*启用中*的用例引用了本部署所没有的主题的数据集。
 
-    Only enabled cases are checked, and only when the version is new. A disabled case is a
-    scenario parked until its data exists, so it is allowed to name a topic nobody has yet; and a
-    replay is a content check, not a readiness check, so it must not acquire a new way to fail.
+    只检查启用中的用例，且只在新版本时检查。被禁用的用例是一个等数据就位再启用的场景，
+    因此允许它点名一个尚无人创建的主题；而重放是一次内容检查，不是就绪检查，所以它不该
+    额外多出一种失败方式。
 
-    The alternative - importing and discovering it at run time - produces a dataset whose every
-    variant fails with `EVAL_TOPIC_NOT_FOUND`, which reads like "the model is broken" rather than
-    "this file was written for a different deployment".
+    另一种做法 —— 先导入，等运行时才发现 —— 会产出一个每个变体都以
+    `EVAL_TOPIC_NOT_FOUND` 失败的数据集，读起来像「模型坏了」，而不是「这个文件是写给另一个
+    部署的」。
     """
     wanted = sorted({case.topic for case in spec.cases if case.enabled})
     if not wanted:
@@ -327,7 +323,7 @@ def import_dataset(
     *,
     created_by: int | None = None,
 ) -> DatasetImportResult:
-    """Import a dataset version, replaying an identical import and refusing a conflicting one."""
+    """导入一个数据集版本：内容相同则重放，内容冲突则拒绝。"""
     dataset = session.scalar(
         select(EvalDataset).where(
             EvalDataset.name == spec.name,
@@ -393,7 +389,7 @@ def import_dataset(
 
 
 def _build_case(dataset_id: int, case: DatasetCaseSpec) -> EvalCase:
-    """Turn one validated case into an ORM row."""
+    """把一条校验通过的用例转成 ORM 行。"""
     return EvalCase(
         dataset_id=dataset_id,
         case_key=case.case_key,
@@ -411,7 +407,7 @@ def resolve_dataset(
     name: str | None = None,
     version: str | None = None,
 ) -> EvalDataset:
-    """Load one dataset by id, or by name and version, raising when it is missing."""
+    """按 id，或按名称加版本加载一个数据集，缺失时抛错。"""
     if dataset_id is not None:
         dataset = session.get(EvalDataset, dataset_id)
         if dataset is None:
@@ -428,7 +424,7 @@ def resolve_dataset(
 
 
 def list_datasets(session: Session, *, limit: int = 50) -> Sequence[EvalDataset]:
-    """Return datasets, newest first."""
+    """返回数据集，最新的在前。"""
     if limit < 1:
         raise DatasetInvalid("limit must be at least 1")
     return session.scalars(select(EvalDataset).order_by(EvalDataset.id.desc()).limit(limit)).all()
@@ -440,7 +436,7 @@ def list_cases(
     dataset_id: int,
     enabled_only: bool = False,
 ) -> Sequence[EvalCase]:
-    """Return a dataset's cases in case-key order."""
+    """按用例键顺序返回某个数据集的用例。"""
     statement = select(EvalCase).where(EvalCase.dataset_id == dataset_id)
     if enabled_only:
         statement = statement.where(EvalCase.enabled.is_(True))

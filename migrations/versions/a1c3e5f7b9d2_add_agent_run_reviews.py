@@ -1,4 +1,7 @@
-"""add agent run reviews
+"""新增 Agent 运行复核表
+
+记录人工对一次 `agent_runs` 结论给出的判定与备注，让「机器跑完但结果不可信」的情况
+有地方落账，而不是只留在聊天记录里。
 
 Revision ID: a1c3e5f7b9d2
 Revises: e4c1a9d7b3f5
@@ -19,34 +22,33 @@ depends_on: str | Sequence[str] | None = None
 
 
 def utc_datetime() -> sa.DateTime:
-    """Return the project MySQL UTC DATETIME type."""
+    """返回项目统一的 MySQL UTC `DATETIME` 类型。"""
     return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 def uint64() -> sa.BigInteger:
-    """Return the project unsigned BIGINT type.
+    """返回项目统一的无符号 `BIGINT` 类型。
 
-    A plain `sa.BigInteger` here fails on MySQL with error 3780: the referencing column comes out
-    signed while `agent_runs.id` is unsigned. The message points at the column, not the type, so
-    the alias is the fix.
+    这里若直接写 `sa.BigInteger()`，MySQL 会报 3780：引用列变成有符号，而
+    `agent_runs.id` 是无符号。报错指向的是列而不是类型，所以修复要落在类型别名上。
     """
     return sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 def _has_table(table_name: str) -> bool:
-    """Return whether the table already exists."""
+    """返回该表是否已经存在。"""
     return table_name in sa.inspect(op.get_bind()).get_table_names()
 
 
 def _has_index(table_name: str, index_name: str) -> bool:
-    """Return whether an index already exists on a MySQL table."""
+    """返回 MySQL 表上是否已经有该索引。"""
     return index_name in {
         index["name"] for index in sa.inspect(op.get_bind()).get_indexes(table_name)
     }
 
 
 def _has_check(table_name: str, constraint_name: str) -> bool:
-    """Return whether a CHECK constraint already exists."""
+    """返回该 `CHECK` 约束是否已经存在。"""
     value = (
         op.get_bind()
         .execute(
@@ -63,7 +65,7 @@ def _has_check(table_name: str, constraint_name: str) -> bool:
 
 
 def _add_check(table_name: str, constraint_name: str, expression: str) -> None:
-    """Add a CHECK constraint once, tolerating a retry after partial MySQL DDL."""
+    """添加一次 `CHECK` 约束，并容忍 MySQL DDL 只执行一半时的重试。"""
     if _has_check(table_name, constraint_name):
         return
     op.execute(
@@ -74,7 +76,7 @@ def _add_check(table_name: str, constraint_name: str, expression: str) -> None:
 
 
 def upgrade() -> None:
-    """Create the table that records what a human concluded about a run."""
+    """创建记录人工对一次运行给出何种结论的表。"""
     if not _has_table("agent_run_reviews"):
         op.create_table(
             "agent_run_reviews",
@@ -113,6 +115,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the run-review table."""
+    """删除运行复核表。"""
     if _has_table("agent_run_reviews"):
         op.drop_table("agent_run_reviews")

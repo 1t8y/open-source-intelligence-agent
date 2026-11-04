@@ -1,1 +1,1 @@
-"""HTTP API package for the intelligence platform."""
+"""存放情报平台对外的 HTTP API 包。"""

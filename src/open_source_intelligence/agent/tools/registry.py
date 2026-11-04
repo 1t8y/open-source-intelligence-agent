@@ -1,4 +1,4 @@
-"""Whitelist registry, ACL/budget enforcement, and envelope handling for tools."""
+"""工具的白名单注册表、ACL 与预算校验，以及结果信封处理。"""
 
 from __future__ import annotations
 
@@ -55,10 +55,11 @@ ToolHandler = Callable[[Session, ToolContext, Any], ToolOutcome]
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """One registered tool: its schema, handler, and read-only classification.
+    """一个已注册的工具：它的 schema、处理器，以及是否只读的分类。
 
-    `description` is the human-readable line the model sees when the whitelist is exposed
-    as JSON schemas; it must stay consistent with `docs/agent-tool-contract.md`.
+    `description` 是白名单以 JSON schema 暴露给模型时、模型读到的那行
+    说明 —— 它写给模型看，不是给人看的；必须与
+    `docs/agent-tool-contract.md` 保持一致。
     """
 
     name: str
@@ -69,7 +70,7 @@ class ToolSpec:
 
 
 def build_default_registry() -> ToolRegistry:
-    """Build the registry holding every whitelisted tool."""
+    """构建持有全部白名单工具的注册表。"""
     return ToolRegistry(
         (
             ToolSpec(
@@ -129,12 +130,12 @@ def build_default_registry() -> ToolRegistry:
 
 
 def _elapsed_ms(started: float) -> int:
-    """Return a non-negative elapsed millisecond count."""
+    """返回非负的耗时毫秒数。"""
     return max(0, int((time.perf_counter() - started) * 1000))
 
 
 def _json_safe(value: Any) -> Any:
-    """Convert arguments to JSON-safe values, redacting and capping strings."""
+    """把参数转成可 JSON 序列化的值，并对字符串做脱敏与截断。"""
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, Mapping):
@@ -147,7 +148,7 @@ def _json_safe(value: Any) -> Any:
 
 
 def _result_summary(status: str, error_code: str | None, result_count: int, truncated: bool) -> str:
-    """Return a compact, secret-free summary for the tool call record."""
+    """返回给工具调用记录使用的紧凑摘要，不含任何敏感信息。"""
     parts = [
         f"status={status}",
         f"result_count={result_count}",
@@ -159,24 +160,24 @@ def _result_summary(status: str, error_code: str | None, result_count: int, trun
 
 
 def _validation_message(exc: ValidationError) -> str:
-    """Return a short, non-sensitive description of the first schema error."""
+    """返回第一条 schema 错误的简短、非敏感描述。"""
     first = exc.errors()[0]
     location = ".".join(str(part) for part in first.get("loc", ())) or "input"
     return f"{location}: {first.get('msg', 'invalid input')}"
 
 
 def _session_has_pending_writes(session: Session) -> bool:
-    """Detect whether a read-only handler staged any persistence change."""
+    """检测只读处理器是否暂存了任何持久化改动。"""
     return bool(session.new or session.dirty or session.deleted)
 
 
 def _validate_arguments(model: type[BaseModel], arguments: dict[str, Any]) -> BaseModel:
-    """Validate tool arguments whether they arrive as Python values or JSON-decoded ones.
+    """校验工具入参，无论它以 Python 值还是以 JSON 解码后的形式到来。
 
-    Model-generated arguments are always JSON-shaped, so timestamps arrive as strings. The
-    Python path is strict and rejects those, while Pydantic's JSON path accepts them because
-    JSON has no native datetime. In-process callers keep hitting the strict Python path, and
-    both paths still reject unknown fields and wrong types.
+    模型生成的参数总是 JSON 形状，因此时间戳会以字符串形式到达。Python 校验
+    路径是严格的，会拒绝这种字符串；而 Pydantic 的 JSON 路径会接受它，因为
+    JSON 没有原生的 datetime 类型。进程内调用方仍然走严格的 Python 路径，
+    两条路径都照旧拒绝未知字段与错误类型。
     """
     try:
         return model.model_validate(arguments)
@@ -185,18 +186,18 @@ def _validate_arguments(model: type[BaseModel], arguments: dict[str, Any]) -> Ba
 
 
 class ToolRegistry:
-    """Dispatches tool invocations through the whitelist and security gates."""
+    """让工具调用穿过白名单与各项安全闸门后派发执行。"""
 
     def __init__(self, specs: Iterable[ToolSpec]) -> None:
         self._specs: dict[str, ToolSpec] = {spec.name: spec for spec in specs}
 
     @property
     def tool_names(self) -> tuple[str, ...]:
-        """Return the registered tool names in insertion order."""
+        """按插入顺序返回已注册的工具名。"""
         return tuple(self._specs)
 
     def get(self, name: str) -> ToolSpec | None:
-        """Return a tool spec by name, or None when it is not whitelisted."""
+        """按名字取工具规格；不在白名单内时返回 `None`。"""
         return self._specs.get(name)
 
     def invoke(
@@ -206,7 +207,7 @@ class ToolRegistry:
         session: Session,
         arguments: Mapping[str, Any],
     ) -> ToolResult[Any]:
-        """Validate, authorize, execute, and record one tool invocation."""
+        """校验、授权、执行并记录一次工具调用。"""
         started = time.perf_counter()
         spec = self._specs.get(name)
         if spec is None:
@@ -274,7 +275,7 @@ class ToolRegistry:
                 "denied" if exc.code == TOOL_ACCESS_DENIED else "failed",
                 discard_writes=spec.read_only,
             )
-        except Exception as exc:  # noqa: BLE001 - internal errors map to a stable code
+        except Exception as exc:  # noqa: BLE001 - 内部异常要映射成稳定错误码
             return self._failure(
                 session,
                 ctx,
@@ -319,13 +320,12 @@ class ToolRegistry:
         *,
         discard_writes: bool = False,
     ) -> ToolResult[Any]:
-        """Build a failed envelope and persist the recorded invocation.
+        """构造失败信封，并把这次调用记录下来。
 
-        `discard_writes` is set for read-only tools: detecting the write is not enough
-        because `_record()` commits the session, which would flush whatever the handler
-        staged. Rolling back first keeps the "read-only tools never write" invariant true
-        instead of merely observable, and it also covers a handler that raises after
-        staging a write.
+        只读工具会置上 `discard_writes`：光检测到写入还不够，因为 `_record()`
+        会提交会话，那样就会把处理器暂存的写入冲刷落库。先回滚，才能让
+        「只读工具绝不写入」这条不变量真正成立，而不只是可被观察到；它也覆盖
+        了「处理器暂存了写入、随后又抛异常」的情况。
         """
         if discard_writes:
             session.rollback()
@@ -363,7 +363,7 @@ class ToolRegistry:
         result_count: int,
         truncated: bool,
     ) -> None:
-        """Persist one tool_calls row so every invocation is auditable."""
+        """持久化一行 `tool_calls`，让每次调用都可审计。"""
         record = ToolCall(
             agent_run_id=ctx.agent_run_id,
             tool_name=name,
@@ -375,7 +375,8 @@ class ToolRegistry:
         )
         session.add(record)
         session.commit()
-        # The owning step is written after the calls return, so the id is claimed later by
-        # `StepRecorder.link_tool_calls`. Leaving it null meant the run page could never show a
-        # call under its step and dumped every call into "未挂到步骤上的工具调用" instead.
+        # 所属步骤在调用返回之后才写入，因此这个 id 稍后由
+        # `StepRecorder.link_tool_calls` 认领。若留空，运行页始终无法把调用
+        # 显示在它所属的步骤下，只能把所有调用都丢进
+        # 「未挂到步骤上的工具调用」里。
         ctx.recorded_call_ids.append(record.id)

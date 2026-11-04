@@ -1,1 +1,1 @@
-"""Versioned HTTP route modules."""
+"""收纳带版本前缀的 HTTP 路由模块。"""

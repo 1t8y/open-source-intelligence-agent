@@ -1,4 +1,4 @@
-"""Expose the tool whitelist to the model as JSON schemas."""
+"""把工具白名单以 JSON Schema 的形式暴露给模型。"""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from open_source_intelligence.agent.tools.registry import ToolRegistry
 
 
 def build_tool_schemas(registry: ToolRegistry) -> tuple[ToolSchema, ...]:
-    """Return one JSON-schema description per whitelisted tool.
+    """为每个白名单工具返回一份 JSON Schema 描述。
 
-    The schema comes from the same Pydantic model the registry validates against, so the
-    model is offered exactly the contract that will later be enforced.
+    Schema 取自注册表实际校验所用的那个 Pydantic 模型，因此模型拿到的正是
+    之后会被强制执行的那份契约。
     """
     schemas: list[ToolSchema] = []
     for name in registry.tool_names:

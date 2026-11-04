@@ -1,26 +1,25 @@
-"""Turn an empty deployment into a published demo report in one idempotent pass.
+"""用一次幂等执行，把空部署变成一份已发布的演示报告。
 
-`scripts/seed_demo.py` stops at the candidate layer — accounts, source, topic, ranked
-repositories, snapshots, README cache, push targets, and the two boundary shapes the evaluation
-dataset keeps disabled. That is the data; this script drives the *pipeline* on top of it so the
-console opens onto a real, published report rather than an empty ledger.
+`scripts/seed_demo.py` 只做到候选层为止 —— 账号、数据源、主题、排名后的仓库、
+快照、README 缓存、推送目标，以及评估数据集特意留作停用的两种边界形态。
+那是数据；本脚本在数据之上驱动*流水线*，好让控制台一打开就看到一份真实、
+已发布的报告，而不是空账本。
 
-The pass runs the deterministic half with the offline model (`AGENT_PROVIDER=offline`), so it
-needs no network and no credential and produces the same report every time. It does **not** run
-`run_daily_pipeline` (collect → snapshot → rank → contents): the seed already wrote those rows by
-hand, and re-collecting would need a reachable source. What it runs is everything downstream of
-ranking, which is exactly what a demo has to prove:
+这一趟用离线模型（`AGENT_PROVIDER=offline`）跑确定性的那一半，因此既不需要
+网络也不需要凭据，每次产出的报告都一模一样。它**不**跑 `run_daily_pipeline`
+（collect → snapshot → rank → contents）：种子已经手工写好了那些行，重新采集
+还得有可达的数据源。它跑的是排名之后的全部环节，而这正是演示必须证明的东西：
 
     research (offline Agent) → generate → verify → approve → publish → auto-push
 
-Because `AUTO_WITH_DELAY` reports queue behind a withdrawal window, the script records the human
-`approve` and then releases it — the same documented path an operator walks, so the demo shows a
-report that reached `published` honestly rather than by a bypass.
+由于 `AUTO_WITH_DELAY` 报告要排在撤回窗口之后，脚本先记下人工 `approve`，
+再把它放行 —— 这正是文档里操作员走的那条路，所以演示展示的是一份老老实实
+走到 `published` 的报告，而不是靠绕过检查得来的。
 
-It is idempotent in the same sense as the seeder: every stage reuses the row a prior run created,
-so re-running advances nothing and mints no duplicate. If the topic already has a `published`
-report, the pass reports it and returns without creating a new agent run or report. Run inside
-the api container after the seeder:
+它的幂等含义与种子脚本相同：每个阶段都复用上一轮建好的行，因此重跑不会推进
+任何状态，也不会凭空多出一份。如果该主题已经有 `published` 报告，这一趟就
+报告它并直接返回，不再新建 agent 运行或报告。在种子脚本之后、于 api 容器内
+运行：
 
     docker compose --env-file .env -f infra/docker-compose.yml exec -T api \
       python /app/scripts/init_demo.py
@@ -35,8 +34,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-# `scripts/` is invoked as a file inside the container (`python /app/scripts/init_demo.py`),
-# where `scripts` is not an installed package; make the sibling seeder importable by name.
+# `scripts/` 在容器内是以文件方式执行的（`python /app/scripts/init_demo.py`），此时
+# `scripts` 并不是已安装的包；把同级的种子脚本按名字变成可导入的。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import seed_demo as seed  # noqa: E402
@@ -62,7 +61,7 @@ _USER_PASSWORD = os.environ.get("SEED_USER_PASSWORD", "dev-user-password-change-
 
 
 def _offline_settings():
-    """Return the deployed settings pinned to the offline model for the deterministic run."""
+    """返回部署配置的副本，把模型钉成离线那档，好让本次运行可复现。"""
     base = get_settings()
     return base.model_copy(
         update={"agent_provider": "offline", "agent_model": "offline-deterministic-v1"}
@@ -70,11 +69,11 @@ def _offline_settings():
 
 
 def _has_published_report(session, topic_id: int) -> Report | None:
-    """Return the topic's most recent `published` report, or `None`.
+    """返回该主题最近一份 `published` 报告；没有就返回 `None`。
 
-    This is the idempotency gate: a topic that already reached `published` has nothing left to
-    demonstrate, and driving the research → publish loop again would mint a new agent run and
-    report for the same window.
+    这是幂等闸门：已经走到 `published` 的主题没什么可再演示的了，再把
+    research → publish 这一圈走一遍，只会为同一个窗口凭空多出一次 agent 运行
+    和一份报告。
     """
     return session.scalar(
         select(Report)
@@ -85,11 +84,11 @@ def _has_published_report(session, topic_id: int) -> Report | None:
 
 
 def main() -> int:
-    """Seed, then drive the research → publish loop to one published report.
+    """先播种，再把 research → publish 这一圈推到产出一份已发布报告。
 
-    Idempotent: if the topic already has a `published` report, the pass reports it and returns
-    without minting a new agent run, draft, or report. Re-running against a healthy deployment
-    advances nothing — the same guarantee the seeder gives.
+    幂等：如果该主题已有 `published` 报告，这一趟就报告它并直接返回，不再新建
+    agent 运行、草稿或报告。对一个健康部署重跑不会推进任何状态 —— 与种子脚本
+    给出的是同一个保证。
     """
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
@@ -97,7 +96,7 @@ def main() -> int:
     offline = _offline_settings()
     try:
         with factory() as session:
-            # --- seed ---------------------------------------------------------
+            # --- 播种 ---------------------------------------------------------
             seed._ensure_accounts(  # noqa: SLF001
                 session,
                 admin_password=_ADMIN_PASSWORD,
@@ -110,7 +109,7 @@ def main() -> int:
             seed._ensure_repositories(session, source, topic)  # noqa: SLF001
             seed._ensure_push_targets(session)  # noqa: SLF001
 
-            # --- idempotency gate -------------------------------------------
+            # --- 幂等闸门 -----------------------------------------------------
             published = _has_published_report(session, topic.id)
             if published is not None:
                 print(
@@ -119,14 +118,14 @@ def main() -> int:
                 )
                 return 0
 
-            # --- research (offline) ------------------------------------------
+            # --- 研究（离线） -------------------------------------------------
             result = run_research_agent(session, topic_id=topic.id, settings=offline)
             print(f"research: agent_run={result.agent_run_id} status={result.status}")
             if result.agent_run_id is None:
                 print(f"research produced no run: {result.to_dict()}")
                 return 1
 
-            # --- generate ----------------------------------------------------
+            # --- 生成 --------------------------------------------------------
             report = session.scalar(
                 select(Report).where(Report.agent_run_id == result.agent_run_id)
             )
@@ -139,7 +138,7 @@ def main() -> int:
                 f"status={report.status}"
             )
 
-            # --- verify → approve → publish → release ------------------------
+            # --- 校验 → 审批 → 发布 → 放行 -----------------------------------
             if report.status in {"draft", "pending_review", "scheduled"}:
                 publish_or_request_review(session, report_id=report.id, settings=offline)
                 session.expire_all()
@@ -168,9 +167,8 @@ def main() -> int:
                 print(f"queue: status={report.status}")
 
             if report.status == "scheduled":
-                # `AUTO_WITH_DELAY` parks the report behind a withdrawal window. The demo has
-                # to show the terminal state, so release it with a clock advanced past the
-                # window — the same `now` injection the publishing tests use.
+                # `AUTO_WITH_DELAY` 会把报告停在撤回窗口之后。演示必须展示终态，所以用
+                # 一只越过窗口的时钟放行 —— 与发布测试用的是同一种 `now` 注入。
                 released = publish_due_reports(
                     session,
                     now=utc_now() + timedelta(hours=2),

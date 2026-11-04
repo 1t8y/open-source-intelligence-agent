@@ -1,10 +1,9 @@
-"""Verify a report artifact before it is allowed to publish.
+"""在允许发布之前验证报告产物。
 
-The Verifier inspects the **persisted report**, not the Agent draft. Between composition and
-publication a report can be edited or have its sources pruned, so the four `A-004` checks
-(structure, citations, numbers, sensitive content) are re-run against exactly what would go
-out. Every run of the current version leaves a `report_verifications` row, which is the
-queryable evidence behind `INV-5`.
+验证器检查的是**已持久化的报告**，不是 Agent 的草稿。从编排到发布之间，报告可能被编辑，
+引用也可能被裁掉，所以四项 `A-004` 检查（结构、引用、数字、敏感内容）都针对真正要发
+出去的那份内容重跑。针对当前版本的每一轮验证都会留下一行 `report_verifications`，它是
+`INV-5` 背后可查询的证据。
 """
 
 from __future__ import annotations
@@ -32,21 +31,21 @@ from .citations import resolve_citation
 from .composition import SECTION_TITLES
 from .errors import ReportGenerationError, ReportNotFoundError
 
-#: Mirrors `CitationRef.source_type`; a stored row is a plain string, so it must be narrowed.
+#: 与 `CitationRef.source_type` 对齐；库里存的是普通字符串，所以必须收窄类型。
 SourceType = Literal["metric", "readme", "prior_report"]
 
 VERDICT_PASSED = "passed"
 VERDICT_FAILED = "failed"
 
-#: Structure reasons.
+#: 结构类理由。
 REASON_STRUCTURE_MISSING_SECTIONS = "STRUCTURE_MISSING_SECTIONS"
-#: Citation reasons.
+#: 引用类理由。
 REASON_CITATION_MISSING = "CITATION_MISSING"
 REASON_CITATION_UNRESOLVED = "CITATION_UNRESOLVED"
 REASON_LOW_CITATION_COVERAGE = "LOW_CITATION_COVERAGE"
-#: Number reasons.
+#: 数字类理由。
 REASON_NUMBER_WITHOUT_METRIC = "NUMBER_WITHOUT_METRIC"
-#: Sensitivity reasons.
+#: 敏感性类理由。
 REASON_SENSITIVE_CONTENT = "SENSITIVE_CONTENT"
 REASON_SENSITIVITY_VISIBILITY_MISMATCH = "SENSITIVITY_VISIBILITY_MISMATCH"
 
@@ -56,7 +55,7 @@ MAX_DETAIL_SAMPLES = 5
 
 @dataclass(frozen=True, slots=True)
 class VerificationOutcome:
-    """Result of one Verifier pass over a report version."""
+    """验证器对某个报告版本做一轮检查的结果。"""
 
     report_id: int
     version: int
@@ -73,11 +72,11 @@ class VerificationOutcome:
 
     @property
     def passed(self) -> bool:
-        """Return whether the report may proceed to a publish decision."""
+        """返回该报告是否可以进入发布决策。"""
         return self.verdict == VERDICT_PASSED
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全转 JSON 的载荷。"""
         return {
             "report_id": self.report_id,
             "version": self.version,
@@ -95,7 +94,7 @@ class VerificationOutcome:
 
 
 def split_section_bodies(markdown: str) -> dict[str, str]:
-    """Map every level-2 heading in the rendered report to its body text."""
+    """把渲染后报告里每个二级标题映射到它的正文。"""
     bodies: dict[str, str] = {}
     current: str | None = None
     buffer: list[str] = []
@@ -113,11 +112,10 @@ def split_section_bodies(markdown: str) -> dict[str, str]:
 
 
 def count_sensitive_markers(content: str) -> int:
-    """Count credential-shaped spans the shared redaction rules would remove.
+    """数出共享脱敏规则会移除的、形似凭据的片段。
 
-    Reusing `redact_text` keeps one definition of "sensitive" for logs and reports: if the
-    redactor rewrites the text, the report carries something that must not be published
-    unattended.
+    复用 `redact_text`，让日志和报告共用同一份「敏感」定义：只要脱敏器改写了文本，就
+    说明报告里带着不该无人值守发布的东西。
     """
     redacted = redact_text(content)
     if redacted == content:
@@ -126,7 +124,7 @@ def count_sensitive_markers(content: str) -> int:
 
 
 def _check_structure(report: Report, bodies: dict[str, str]) -> tuple[bool, list[str]]:
-    """Every template section must survive into the rendered artifact."""
+    """检查模板的每个章节是否都保留到了渲染后的产物里。"""
     missing = [
         SECTION_TITLES[key] for key in REPORT_SECTION_KEYS if SECTION_TITLES[key] not in bodies
     ]
@@ -140,7 +138,7 @@ def _check_citations(
     session: Session,
     report: Report,
 ) -> tuple[bool, float, list[str], list[str]]:
-    """Return citation health plus the per-section coverage ratio for the current version."""
+    """返回当前版本的引用健康状况，以及逐章节的覆盖率。"""
     rows = session.scalars(
         select(ReportSource).where(
             ReportSource.report_id == report.id,
@@ -173,7 +171,7 @@ def _check_citations(
 
 
 def _check_numbers(bodies: dict[str, str], metric_sections: set[str]) -> tuple[bool, list[str]]:
-    """A section that states a number must cite at least one metric snapshot."""
+    """检查写了数字的章节是否至少引用了一个指标快照。"""
     offenders: list[str] = []
     for key in REPORT_SECTION_KEYS:
         title = SECTION_TITLES[key]
@@ -184,7 +182,7 @@ def _check_numbers(bodies: dict[str, str], metric_sections: set[str]) -> tuple[b
 
 
 def _check_sensitivity(report: Report, content: str) -> tuple[bool, int, bool]:
-    """Detect credential-shaped content and an inconsistent sensitivity/visibility pair."""
+    """检测形似凭据的内容，以及自相矛盾的敏感级别 / 可见性组合。"""
     markers = count_sensitive_markers(content)
     mismatch = report.sensitivity == "CONFIDENTIAL" and report.visibility == "INTERNAL"
     return markers == 0 and not mismatch, markers, mismatch
@@ -197,10 +195,10 @@ def verify_report(
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> VerificationOutcome:
-    """Run the four `A-004` checks and persist the verdict for the current version.
+    """跑完四项 `A-004` 检查，并为当前版本持久化结论。
 
-    Re-running is idempotent for a version: the existing row is refreshed instead of being
-    duplicated, so the table always holds one verdict per report version.
+    对同一个版本重跑是幂等的：刷新已有的行而不是重复插入，所以表里每个报告版本永远
+    只有一条结论。
     """
     resolved_settings = settings or get_settings()
     moment = now or utc_now()

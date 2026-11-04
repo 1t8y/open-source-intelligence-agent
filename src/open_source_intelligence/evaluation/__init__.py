@@ -1,8 +1,7 @@
-"""Offline evaluation: datasets, target variants, deterministic scorers, and the runner.
+"""提供离线评测的数据集、目标变体、确定性打分器与运行器。
 
-The public surface is deliberately small. Callers import a dataset version, run one or more
-target variants over it, and read back a unified comparison; nothing outside this package needs
-to know how a variant is executed or how a metric is computed.
+对外接口刻意做得很小。调用方导入一个数据集版本，在其上运行一个或多个目标变体，再读回
+一份统一的对比结果；本包之外的任何代码都不需要知道变体是怎么执行的、指标是怎么算出来的。
 """
 
 from .dataset import (

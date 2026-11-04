@@ -1,25 +1,23 @@
-"""Run the T18 documentation-sync smoke against a real database.
+"""针对真实数据库跑 T18 的文档同步冒烟。
 
-T18's acceptance is "架构、API、数据模型和评测文档与代码一致", and it earned that name by
-turning up four API resource groups the contract had declared and the code had never
-implemented. Closing that gap was half of the task. This script is the evidence for the other
-half, which is that the two groups it kept (`FR-D-05` names 报告、仓库、Agent、评测和审计 API)
-actually work now:
+T18 的验收标准是「架构、API、数据模型和评测文档与代码一致」，而它之所以配得上这个
+名字，是因为它翻出了契约声明过、代码却从未实现的四组 API 资源。补上那道缺口是任务
+的一半；本脚本是另一半的证据 —— 它保留下来的两组（`FR-D-05` 点名的报告、仓库、
+Agent、评测和审计 API）现在确实能用：
 
-1. **The repository catalog** - the list and the trend series answer over real rows, the rank
-   fields say "never ranked" instead of zero when no topic is named, a disabled topic is refused
-   to a viewer and served to an administrator, and the trend window is closed on both ends.
-2. **The audit trail** - a non-administrator is refused, the refusal is itself in the ledger, the
-   trail comes back newest-first, and `metadata_json` does not leave the process.
-3. **The boundary fix** - a timestamp without a timezone offset is a `422` at the edge rather than
-   a `500` from inside the query builder. That defect was latent in `GET /reports` since T12 and
-   was only found because T18 read the documents against the code.
-4. **The drift checker** - the ten documentation comparisons run in-process, so one command
-   produces both the runtime evidence and the documentary verdict.
+1. **仓库目录** —— 列表与趋势序列在真实行上作答；不点名主题时，排名字段说的是
+   「从未排名」而不是零；停用的主题对只读角色拒绝、对管理员放行；趋势窗口两端都
+   闭合。
+2. **审计轨迹** —— 非管理员被拒，这次拒绝本身也进了账本，轨迹按从新到旧返回，
+   `metadata_json` 不出进程。
+3. **边界修复** —— 不带时区偏移的时间戳，在边界上是 `422`，而不是从查询构造器内部
+   冒出来的 `500`。这个缺陷从 T12 起就潜伏在 `GET /reports` 里，只是因为 T18 拿
+   文档对着代码读，才被发现。
+4. **漂移检查器** —— 十项文档比较在进程内跑，于是同一条命令既产出运行时证据，也
+   产出文档层面的结论。
 
-Nothing here re-implements the code under test. The API is the real ASGI application in process,
-the rows are written by the real security service, and the catalog is read through the shipped
-`pipeline.queries` layer.
+这里没有任何一处重新实现被测代码。API 是进程内真正的 ASGI 应用，行由真正的安全
+服务写入，目录经已发布的 `pipeline.queries` 层读取。
 """
 
 from __future__ import annotations
@@ -57,20 +55,19 @@ from open_source_intelligence.security.passwords import hash_password
 from open_source_intelligence.security.service import create_user
 
 # --------------------------------------------------------------------------------------
-# Drill-owned names, dates, and sentinels
+# 演练自己持有的名字、日期与哨兵值
 # --------------------------------------------------------------------------------------
 
-#: Every row this drill creates carries one of these prefixes, so the cleanup pass can find its
-#: own work by name instead of by an id watermark. Name-based cleanup is what makes the drill
-#: re-runnable: a leftover row from an interrupted run is removed by the next one rather than
-#: being counted.
+#: 本演练创建的每一行都带这些前缀之一，清理那一趟才能按名字找到自己的活，而不是按
+#: 某个 id 水位线。按名字清理正是演练能反复跑的原因：上一轮中断留下的行会被下一轮
+#: 删掉，而不是被算进总数。
 NAME_PREFIX = "__t18_drill__"
 ACTOR_PREFIX = "__t18_"
-#: The `X-Request-ID` every drill request carries. The middleware copies an incoming header into
-#: `request.state.request_id`, and `audit_logs.request_id` is written from it, so this is what
-#: makes the drill's *anonymous* audit rows - a 401 writes a row with `actor_id` NULL, which no
-#: actor-based purge can ever reach - identifiable and removable. Without it every run of this
-#: script left one `auth.token` failure in an append-only ledger permanently.
+#: 演练每个请求都带的 `X-Request-ID`。中间件把请求头抄进
+#: `request.state.request_id`，`audit_logs.request_id` 又由它写入，因此正是它让演练的
+#: *匿名*审计行变得可识别、可删除 —— 一次 401 会写下一行 `actor_id` 为 NULL 的记录，
+#: 任何按 actor 的清理都够不着。没有它，本脚本每跑一次，就会在只追加的账本里永久
+#: 留下一行 `auth.token` 失败。
 REQUEST_ID_PREFIX = "__t18_drill__"
 SOURCE_NAME = "__t18_drill_source__"
 HF_SOURCE_NAME = "__t18_drill_hf_source__"
@@ -78,9 +75,8 @@ OPEN_TOPIC_NAME = "__T18 Open Drill Topic__"
 CLOSED_TOPIC_NAME = "__T18 Closed Drill Topic__"
 SMOKE_PASSWORD = "t18-smoke-password-not-for-production"
 
-#: A sentinel planted in `audit_logs.metadata_json`. If this string ever appears in a response,
-#: the free-form column has been wired to the egress path without anyone deciding what may
-#: travel in it.
+#: 埋在 `audit_logs.metadata_json` 里的哨兵值。只要这个字符串出现在任何响应里，就说明
+#: 那个自由格式的列被接到了出口路径上，而没有人决定过它能带什么出去。
 METADATA_SENTINEL = "__T18_METADATA_SENTINEL__"
 IPV6_ADDRESS = "2001:db8::1"
 IPV6_ACTION = "__t18_drill_ipv6__"
@@ -89,9 +85,9 @@ METADATA_ACTION = "__t18_drill_metadata__"
 
 ROLES = {"admin": "ADMIN", "viewer": "VIEWER"}
 
-#: Stars are deliberately not in alphabetical order of the repository names: `alpha` / `beta` /
-#: `gamma` sorts one way and 100 / 160 / 130 the other, so an assertion about the returned order
-#: cannot pass by accident when the `ORDER BY` is dropped.
+#: star 数刻意不按仓库名的字母序排列：`alpha` / `beta` / `gamma` 是一个排法，
+#: 100 / 160 / 130 是另一个，这样一旦 `ORDER BY` 被弄丢，关于返回顺序的断言也不会
+#: 碰巧通过。
 CATALOG = (
     {"slug": "alpha", "stars": 100, "forks": 4, "language": "Go"},
     {"slug": "beta", "stars": 160, "forks": 9, "language": "Python"},
@@ -99,9 +95,8 @@ CATALOG = (
 )
 STARS_DESCENDING = ("__t18_drill__/beta", "__t18_drill__/gamma", "__t18_drill__/alpha")
 
-#: The three snapshots, oldest first. The first day's deltas are `None` because there is no
-#: earlier observation to subtract from - the shipped snapshot stage writes `None` there, and a
-#: zero would be an assertion that the counters did not move.
+#: 三个快照，从旧到新。第一天的增量是 `None`，因为没有更早的观察可以相减 —— 已发布的
+#: 快照阶段在那里就写 `None`，而写零等于断言计数没有动过。
 SNAPSHOT_SHAPE = ((100, None), (130, 30), (160, 30))
 
 DEFAULT_WINDOW_DAYS = 30
@@ -114,25 +109,24 @@ MAX_WINDOW_DAYS = 366
 
 
 def purge_drill_rows(session: Session) -> None:
-    """Delete every row this drill owns, oldest dependency first.
+    """按依赖从旧到新的顺序，删掉本演练拥有的每一行。
 
-    Deleting by name rather than by id watermark means the pass is sound even when the database
-    was left dirty by an interrupted run, and that running the smoke twice in a row is the same
-    as running it once.
+    按名字而不是按 id 水位线删除，意味着即使上一次运行被中断、把库弄脏了，这一趟
+    也站得住脚；也意味着连跑两次冒烟与只跑一次等价。
 
-    The names are matched as **literal prefixes** (`startswith(..., autoescape=True)`) rather than
-    as `LIKE` patterns. A prefix like `__t18_drill__` contains four underscores, and `_` is a
-    single-character wildcard in `LIKE`, so the pattern `__t18_drill__%` does not mean "begins
-    with `__t18_drill__`" - it means "begins with any two characters, then `t18`, then any one,
-    then `drill`, then any two" - and therefore also matches values this drill never wrote. The
-    actor prefix is the sharp one, because it is what the purge matches accounts on: `__t18_%`
-    matches the username `abt18c_smith`. Escaped, the prefix means the prefix. This drill is not
-    special in this respect: every smoke labels its rows with a prefix containing `_`.
+    名字是按**字面前缀**匹配的（`startswith(..., autoescape=True)`），而不是当作
+    `LIKE` 模式。像 `__t18_drill__` 这样的前缀里有四个下划线，而 `_` 在 `LIKE` 里是
+    单字符通配符，于是模式 `__t18_drill__%` 并不表示「以 `__t18_drill__` 开头」——
+    它表示「以任意两个字符开头，然后是 `t18`，然后是任意一个字符，然后是 `drill`，
+    然后是任意两个字符」—— 因此也会匹配本演练从未写过的值。actor 前缀是最要命的
+    那个，因为清理正是按它匹配账号：`__t18_%` 能匹配用户名 `abt18c_smith`。转义
+    之后，前缀才真的是前缀。本演练在这一点上并不特殊：每个冒烟都用含 `_` 的前缀
+    给行打标。
 
-    The ids are read into Python first instead of being passed as subqueries. MySQL refuses
-    `DELETE FROM t WHERE id IN (SELECT ... FROM t)` outright (`1093 You can't specify target
-    table for update in FROM clause`), so a correlated delete that looks portable is not: the
-    subquery has to be evaluated before the delete is issued, which is what materializing does.
+    先把 id 读进 Python，而不是作为子查询传下去。MySQL 直接拒绝
+    `DELETE FROM t WHERE id IN (SELECT ... FROM t)`（`1093 You can't specify
+    target table for update in FROM clause`），所以一个看起来可移植的关联删除其实
+    并不可移植：子查询必须在删除发出之前求值，而实体化做的正是这件事。
     """
     drill_user_ids = [
         int(value)
@@ -155,9 +149,9 @@ def purge_drill_rows(session: Session) -> None:
         )
     ]
 
-    # Both halves of the audit plan are needed. The actor filter reaches every row an account of
-    # the drill caused; the request-id filter is the only thing that reaches the refusals written
-    # for a caller that never authenticated, whose `actor_id` is NULL by definition.
+    # 审计清理的两半都不能少。按 actor 过滤能碰到演练账号直接造成的每一行；按请求 id
+    # 过滤则是唯一能碰到「写给一个从未通过认证的调用方」的那些拒绝记录的途径 ——
+    # 它们的 `actor_id` 按定义就是 NULL。
     session.execute(delete(AuditLog).where(AuditLog.actor_id.in_(drill_user_ids)))
     session.execute(
         delete(AuditLog).where(AuditLog.request_id.startswith(REQUEST_ID_PREFIX, autoescape=True))
@@ -178,12 +172,11 @@ def purge_drill_rows(session: Session) -> None:
 
 
 def count_drill_rows(session: Session) -> dict[str, int]:
-    """Count the rows the drill still owns, by the same literal prefixes the purge uses.
+    """按清理所用的同一批字面前缀，数一数演练还占着多少行。
 
-    This is how the promise "leave the database as it was found" becomes a measurement instead of
-    a comment: the smoke reports what it left behind, and the verification script asserts the
-    count is zero. Counting by prefix rather than by "rows newer than X" keeps the measurement
-    honest on a database another process is also writing to.
+    「把数据库还原成原样」这句承诺，就是这样从一句注释变成一次测量的：冒烟报告它留下
+    了什么，验证脚本则断言那个计数为零。按前缀数，而不是按「比 X 更新的行」来数，
+    才能在另一个进程也在写这份库时保持诚实。
     """
     drill_user_ids = [
         int(value)
@@ -209,8 +202,8 @@ def count_drill_rows(session: Session) -> dict[str, int]:
             )
             or 0
         ),
-        # Row count, not a flag: the residue this guards against is exactly the row that no
-        # actor-based purge could see, so it has to be counted by its own attribute.
+        # 数的是行数，不是一个标记：这里要防的残留恰恰是任何按 actor 的清理都看不到的
+        # 那一行，所以只能按它自己的属性去数。
         "audit_rows": int(
             session.scalar(
                 select(func.count())
@@ -223,7 +216,7 @@ def count_drill_rows(session: Session) -> dict[str, int]:
 
 
 def seed_actors(session: Session) -> dict[str, int]:
-    """Create the drill's two accounts and return their ids by role name."""
+    """建出演练的两个账号，并按角色名返回它们的 id。"""
     for code, name in (("ADMIN", "Administrator"), ("VIEWER", "Viewer")):
         if session.scalar(select(Role.id).where(Role.code == code)) is None:
             session.add(Role(code=code, name=name))
@@ -245,12 +238,11 @@ def seed_actors(session: Session) -> dict[str, int]:
 
 
 def _ensure_source(session: Session, *, name: str, source_type: str, base_url: str) -> DataSource:
-    """Return the source for one provider, creating it only if the deployment has none.
+    """返回某个数据提供方的数据源；只有部署里一个都没有时才创建。
 
-    `data_sources.source_type` is unique, so a deployment has at most one GitHub source and the
-    drill has to borrow it rather than add a second. Borrowing is also the more honest thing to
-    do: the `provider` column the catalog exposes comes from this row, so reusing the row the
-    application itself created is what makes the assertion about real configuration.
+    `data_sources.source_type` 是唯一的，所以一个部署最多只有一个 GitHub 数据源，演练
+    只能借用它，不能再加一个。借用本来也是更诚实的做法：目录暴露的 `provider` 列就
+    来自这一行，复用应用自己创建的那一行，关于真实配置的断言才成立。
     """
     existing = session.scalar(
         select(DataSource).where(
@@ -272,10 +264,10 @@ def _ensure_source(session: Session, *, name: str, source_type: str, base_url: s
 
 
 def seed_catalog(session: Session, *, actor_id: int) -> dict[str, Any]:
-    """Create two sources, three repositories, two topics, and three days of snapshots.
+    """建出两个数据源、三个仓库、两个主题，以及三天的快照。
 
-    Two sources because the `provider` column has to come from the joined source row rather than
-    from a constant, and one repository sits on the second source so the join is exercised.
+    要两个数据源，是因为 `provider` 列必须来自连接到的数据源行，而不是一个常量；把
+    其中一个仓库放在第二个数据源上，那次连接才真的被走到。
     """
     github = _ensure_source(
         session,
@@ -293,9 +285,8 @@ def seed_catalog(session: Session, *, actor_id: int) -> dict[str, Any]:
     now = utc_now()
     repository_ids: dict[str, int] = {}
     for index, spec in enumerate(CATALOG):
-        # One row on the second source, one row with no language, one row with a description that
-        # only the `q` filter can reach - each one exists so a filter assertion has a row that
-        # must be excluded as well as a row that must be found.
+        # 一行挂在第二个数据源上，一行没有语言，一行的描述只有 `q` 过滤器够得着 ——
+        # 每一行都是为了让某条过滤断言既有必须被排除的行，也有必须被找到的行。
         source = huggingface if spec["slug"] == "gamma" else github
         repository = Repository(
             source_id=source.id,
@@ -356,8 +347,8 @@ def seed_catalog(session: Session, *, actor_id: int) -> dict[str, Any]:
     session.add_all([open_topic, closed_topic])
     session.flush()
 
-    # Rank 1 goes to the *lowest* star count, so a slice ordered by rank cannot be mistaken for a
-    # slice ordered by stars.
+    # 1 号排名给的是 star *最少*的那个，这样一段按 rank 排序的切片，就不会被误认成
+    # 一段按 star 排序的切片。
     for slug, (score, rank) in (
         ("alpha", (Decimal("0.900000"), 1)),
         ("beta", (Decimal("0.500000"), 2)),
@@ -383,7 +374,7 @@ def seed_catalog(session: Session, *, actor_id: int) -> dict[str, Any]:
 
 
 def seed_audit_rows(session: Session, *, actor_id: int) -> None:
-    """Stage the three audit rows the endpoint's own fields are read from."""
+    """把端点自己那几个字段要读的三条审计行铺好。"""
     record_audit_event(
         session,
         action=IPV6_ACTION,
@@ -411,12 +402,12 @@ def seed_audit_rows(session: Session, *, actor_id: int) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Helpers
+# 辅助函数
 # --------------------------------------------------------------------------------------
 
 
 def _api_login(client: TestClient, suffix: str) -> dict[str, str]:
-    """Return the bearer header for one drill account."""
+    """返回某个演练账号的 Bearer 请求头。"""
     response = client.post(
         "/api/v1/auth/login",
         json={"username": f"{ACTOR_PREFIX}{suffix}__", "password": SMOKE_PASSWORD},
@@ -433,12 +424,12 @@ def _get(
     headers: dict[str, str] | None = None,
     params: dict[str, Any] | None = None,
 ) -> Any:
-    """Issue one catalog or audit request and return the response."""
+    """发一次目录或审计请求，并返回响应。"""
     return client.get(path, headers=headers, params=params)
 
 
 def _body(response: Any) -> dict[str, Any]:
-    """Return a successful response's JSON body, or raise with the status and body if not."""
+    """返回成功响应的 JSON 体；不是成功响应，就带上状态码与正文抛错。"""
     if response.status_code != 200:
         raise RuntimeError(f"expected 200, got {response.status_code}: {response.text}")
     payload: dict[str, Any] = response.json()
@@ -446,12 +437,12 @@ def _body(response: Any) -> dict[str, Any]:
 
 
 def _catalog(client: TestClient, headers: dict[str, str], **params: Any) -> dict[str, Any]:
-    """Read the drill's slice of the catalog."""
+    """读取演练在目录里的那一段。"""
     return _body(_get(client, "/api/v1/repositories", headers=headers, params=params))
 
 
 # --------------------------------------------------------------------------------------
-# Checks
+# 检查
 # --------------------------------------------------------------------------------------
 
 
@@ -461,7 +452,7 @@ def catalog_checks(
     admin: dict[str, str],
     seeded: dict[str, Any],
 ) -> dict[str, Any]:
-    """Drive the repository catalog endpoints and report what they answered."""
+    """驱动仓库目录的各个端点，并报告它们答了什么。"""
     drill = {"q": NAME_PREFIX}
 
     anonymous = _get(client, "/api/v1/repositories", params=drill)
@@ -497,8 +488,8 @@ def catalog_checks(
         "paging_overlap": len(
             {item["id"] for item in page_one["items"]} & {item["id"] for item in page_two["items"]}
         ),
-        # No `topic_id` means no ranking was ever computed for this row, which is not the same
-        # answer as "the score is zero" or "it was not selected".
+        # 不点 `topic_id` 就意味着从未为这一行算过排名，这与「分数是零」或「没被选中」
+        # 是两个不同的答案。
         "unranked_fields": [
             [item["score"], item["rank"], item["selected_for_agent"]] for item in listed["items"]
         ],
@@ -517,8 +508,8 @@ def catalog_checks(
         "page_size_cap_status": _get(
             client, "/api/v1/repositories", headers=viewer, params={"page_size": 101, **drill}
         ).status_code,
-        # The T12-through-T18 boundary defect: the query builder refuses a naive timestamp, and
-        # the caller has to be told that at the edge rather than by a 500.
+        # 从 T12 一直带到 T18 的边界缺陷：查询构造器会拒掉一个不带时区的时间戳，而
+        # 这件事必须在边界上告诉调用方，而不是由一次 500 来说。
         "naive_timestamp_status": _get(
             client,
             "/api/v1/repositories",
@@ -553,7 +544,7 @@ def snapshot_checks(
     viewer: dict[str, str],
     seeded: dict[str, Any],
 ) -> dict[str, Any]:
-    """Drive the repository trend endpoint and report what it answered."""
+    """驱动仓库趋势端点，并报告它答了什么。"""
     repository_id = seeded["repository_ids"]["alpha"]
     path = f"/api/v1/repositories/{repository_id}/snapshots"
     today: date = utc_now().date()
@@ -568,10 +559,9 @@ def snapshot_checks(
         )
     )
     defaulted = _body(_get(client, path, headers=viewer))
-    # The status is taken off the response before `_body` asserts it, so the payload reports what
-    # the endpoint answered rather than restating the 200 `_body` demands. A field that is written
-    # as a constant cannot support an assertion: "an empty window is a 200, not a 404" is only a
-    # claim about the endpoint if the 200 was observed here.
+    # 状态码要在 `_body` 断言之前从响应上取下来，这样结果报的是端点实际答了什么，而不是
+    # 把 `_body` 要求的那个 200 再复述一遍。一个写成常量的字段撑不起断言：只有在这里
+    # 真的观察到 200，「空窗口是 200 而不是 404」才算是关于端点的主张。
     empty_response = _get(
         client,
         path,
@@ -595,13 +585,12 @@ def snapshot_checks(
     return {
         "closed_window_dates": [item["snapshot_date"] for item in explicit["items"]],
         "closed_window_resolved": [explicit["start_date"], explicit["end_date"]],
-        # The window this drill *asked* for, reported alongside the one it got. The two are equal
-        # precisely because the range is closed at both ends, and that comparison is what the
-        # verification script can assert without hard-coding a date: naming the days here would
-        # make the assertion true only on the calendar day the drill was written.
+        # 本演练*请求*的窗口，与它实际拿到的窗口并排报出来。两者刚好相等，正是因为
+        # 区间两端都闭合；而正是这个比较，让验证脚本不必硬写日期也能断言：在这里点名
+        # 具体是哪几天，断言就只会在写演练的那一个日历日成立。
         "requested_window": [first.isoformat(), today.isoformat()],
-        # The first observation has nothing to subtract from, so the delta is `None` rather than
-        # `0`. The distinction is the same one the rank fields make.
+        # 第一次观察没有可减的对象，所以增量是 `None` 而不是 `0`。这个区别与排名字段
+        # 讲的是同一件事。
         "first_day_delta": explicit["items"][0]["stars_delta"],
         "second_day_delta": explicit["items"][1]["stars_delta"],
         "default_window_count": len(defaulted["items"]),
@@ -644,9 +633,9 @@ def audit_checks(
     actor_ids: dict[str, int],
     factory: sessionmaker[Session],
 ) -> dict[str, Any]:
-    """Drive the audit endpoint and report what it answered."""
+    """驱动审计端点，并报告它答了什么。"""
     refused = _get(client, "/api/v1/audit-logs", headers=viewer)
-    # Observed, not restated: see the note on `empty_window_status`.
+    # 观察得来的，不是复述：见 `empty_window_status` 那条说明。
     trail_response = _get(client, "/api/v1/audit-logs", headers=admin, params={"page_size": 100})
     admin_status = trail_response.status_code
     trail = _body(trail_response)
@@ -688,18 +677,17 @@ def audit_checks(
         "viewer_refusal_resource_type": refusal[0].resource_type if refusal else None,
         "admin_status": admin_status,
         "newest_first": returned_ids == sorted(returned_ids, reverse=True),
-        # The newest row is the *viewer's* refusal, because the refusal was the last thing that
-        # happened before the administrator read the trail. `admin_total` is the stronger claim:
-        # the administrator's own three seeded rows plus its login, which means the endpoint is
-        # reading the ledger the application writes rather than a view built for this drill.
+        # 最新的一行是*只读角色*被拒那次，因为这次拒绝正是管理员读轨迹之前最后发生的
+        # 事。`admin_total` 是更有力的主张：管理员自己那三行种子数据再加上它的登录，
+        # 意味着端点读的是应用在写的账本，而不是为本演练专门搭的一个视图。
         "newest_action": trail["items"][0]["action"],
         "newest_actor": trail["items"][0]["actor_id"],
         "admin_total": admin_trail["total"],
         "admin_newest_action": admin_trail["items"][0]["action"],
         "ipv6_rendered": ipv6["items"][0]["ip_address"] if ipv6["items"] else None,
         "missing_ip_rendered": no_ipv6["items"][0]["ip_address"] if no_ipv6["items"] else "absent",
-        # `metadata_json` is stored - that is what makes this assertion mean something - and it
-        # must not be readable through the API.
+        # `metadata_json` 是存下来的 —— 正因如此这条断言才有意义 —— 而它绝不能通过
+        # API 被读出来。
         "metadata_stored": metadata_stored is not None,
         "metadata_leaked": METADATA_SENTINEL in metadata_response.text
         or "metadata_json" in metadata_response.text,
@@ -719,10 +707,10 @@ def audit_checks(
 
 
 def topic_denial_audit(factory: sessionmaker[Session], viewer_id: int) -> dict[str, Any]:
-    """Report the audit row the refused topic slice left behind.
+    """报告被拒的那段主题切片留下的审计行。
 
-    Read from the database rather than through the API because the caller being checked is the
-    one who was refused: a refusal the refused party can read about is not the same control.
+    从数据库读而不是走 API，因为这里要核对的调用方正是被拒的那一个：一次被拒者自己
+    读得到的拒绝，算不上一道同样的控制。
     """
     with factory() as session:
         rows = session.scalars(
@@ -740,20 +728,20 @@ def topic_denial_audit(factory: sessionmaker[Session], viewer_id: int) -> dict[s
 
 
 def documentation_checks() -> dict[str, Any]:
-    """Run the ten documentation comparisons in-process.
+    """在进程内跑那十项文档比较。
 
-    Imported rather than re-implemented: the point of the checker is that it is the same
-    comparison every time, and a second copy here would be a second thing to keep in step.
+    导入而不是重写：检查器的要点就在于每次跑的都是同一个比较，在这里再来一份拷贝，
+    就多了一个要跟着改的东西。
     """
     import check_docs_drift
 
     results = [check() for check in check_docs_drift.CHECKS]
     return {
         "passed": all(result.ok for result in results),
-        # A joined string rather than a list, because the consumer is a PowerShell assertion and
-        # `@($null).Count` is 1: an empty JSON array and an absent one are indistinguishable once
-        # they have been through `ConvertFrom-Json`, so "no drift" has to be expressible as a
-        # scalar. `failures` stays for whoever reads the payload.
+        # 拼成一个字符串而不是给列表，因为消费方是一条 PowerShell 断言，而
+        # `@($null).Count` 是 1：一个空 JSON 数组和一个不存在的字段，过了
+        # `ConvertFrom-Json` 就分不出来了，所以「没有漂移」必须能表达成标量。
+        # `failures` 留给真正去读这个结果的人。
         "drifted": ", ".join(sorted(result.name for result in results if result.failures)),
         "failures": {result.name: result.failures for result in results if result.failures},
         "run": len(results),
@@ -761,12 +749,12 @@ def documentation_checks() -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------
-# Entry point
+# 入口
 # --------------------------------------------------------------------------------------
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run the T18 documentation-sync smoke")
     parser.add_argument(
         "--cleanup-only",
@@ -777,7 +765,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the smoke against the configured database and print the assertion payload."""
+    """对着配置好的数据库跑冒烟，并打印断言结果。"""
     args = _parse_args()
     settings: Settings = get_settings()
     engine = create_database_engine(settings.database_url)
@@ -793,19 +781,19 @@ def main() -> None:
     payload: dict[str, Any] = {}
     try:
         with factory() as session:
-            # Clean before seeding, so an interrupted previous run cannot inflate a `total` and
-            # make the drill pass for the wrong reason.
+            # 先清理再播种，否则上一轮被中断的运行会把某个 `total` 撑大，让演练因为
+            # 错误的原因通过。
             purge_drill_rows(session)
             actor_ids = seed_actors(session)
             seeded = seed_catalog(session, actor_id=actor_ids["admin"])
             seed_audit_rows(session, actor_id=actor_ids["admin"])
 
         with TestClient(create_app(settings)) as client:
-            # Every request carries a drill-owned correlation id. The middleware copies it into
-            # `request.state.request_id`, the audit writer stores it, and the purge deletes by it -
-            # which is the only handle on the rows a *refusal to an unauthenticated caller* writes,
-            # since those carry no actor. HTTPX merges these client-level headers into each
-            # request, so the per-call `Authorization` headers still apply.
+            # 每个请求都带一个演练自己的关联 id。中间件把它抄进
+            # `request.state.request_id`，审计写入方把它存下来，清理又按它删除 —— 这是
+            # 唯一能抓住「对一个未认证调用方的拒绝」所写下的那些行的把手，因为那些行不
+            # 带任何 actor。HTTPX 会把这些客户端级请求头并进每个请求，所以逐次调用的
+            # `Authorization` 头照旧生效。
             client.headers["X-Request-ID"] = f"{REQUEST_ID_PREFIX}{uuid4().hex[:8]}"
             admin = _api_login(client, "admin")
             viewer = _api_login(client, "viewer")
@@ -828,10 +816,9 @@ def main() -> None:
     finally:
         with factory() as session:
             purge_drill_rows(session)
-            # Measured after the purge, so the payload answers "what did this run leave behind?"
-            # rather than "what did it create?". All four counts are zero on a clean pass; the
-            # verification script asserts that, which is what turns the promise printed as
-            # "Leave the database as it was found" into something that can fail.
+            # 清理之后才测量，这样结果回答的是「这一趟留下了什么」，而不是「它创建了
+            # 什么」。干净通过时四项计数都是零；验证脚本断言的正是这一点，也正是它把
+            # 那句「把数据库还原成原样」的承诺变成了一件可以失败的事。
             payload["leftovers"] = count_drill_rows(session)
         engine.dispose()
 

@@ -1,20 +1,19 @@
-"""Risk-based publishing: verify, decide, and drive the report state machine.
+"""按风险分级执行发布：验证、决策，并驱动报告状态机。
 
-`ADR-003` splits publishing three ways: `AUTO` publishes a clean, low-sensitivity report
-immediately, `AUTO_WITH_DELAY` parks it for a withdrawal window, and `MANUAL` waits for a
-human. The point of the split is that a routine weekly report is never blocked on a person
-while genuinely abnormal reports always are, so the policy below only escalates to
-`MANUAL` when it can name a concrete reason.
+`ADR-003` 把发布拆成三种方式：`AUTO` 立即发布干净、低敏的报告，`AUTO_WITH_DELAY` 先
+搁置一段撤稿窗口，`MANUAL` 则等人。拆分的用意是：常规周报永远不会被某个人卡住，而真正
+异常的报告则一定卡在人的环节上；因此下面的策略只有在能说出具体理由时，才升级到
+`MANUAL`。
 
-The state machine is the one declared in `INTERFACES.md` §8:
+状态机就是 `INTERFACES.md` §8 声明的那一台：
 
 ```text
 draft -> pending_review -> approved -> scheduled -> published
 ```
 
-with `failed` as the terminal exception branch and `changes_requested` as the return branch.
-`publish_due_reports` is the single driver that promotes `approved` reports and releases
-`scheduled` ones once their withdrawal window has elapsed.
+其中 `failed` 是终止性的异常分支，`changes_requested` 是回退分支。`publish_due_reports`
+是唯一的驱动器：它把 `approved` 报告推上发布路径，并在撤稿窗口过去之后放行 `scheduled`
+报告。
 """
 
 from __future__ import annotations
@@ -82,13 +81,13 @@ REVIEW_APPROVE: Final[str] = "approve"
 REVIEW_REJECT: Final[str] = "reject"
 REVIEW_REQUEST_CHANGES: Final[str] = "request_changes"
 
-#: Upper bound on reports released by one `publish_due_reports` pass.
+#: `publish_due_reports` 单趟放行报告数量的上界。
 PUBLISH_BATCH_LIMIT: Final[int] = 100
 
 
 @dataclass(frozen=True, slots=True)
 class PublishDecision:
-    """The policy verdict for one report, shaped like the API `publish_decision` object."""
+    """对一份报告的策略裁决，形态与 API 的 `publish_decision` 对象一致。"""
 
     report_id: int
     mode: str
@@ -98,7 +97,7 @@ class PublishDecision:
     publish_at: datetime | None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全转 JSON 的载荷。"""
         return {
             "report_id": self.report_id,
             "mode": self.mode,
@@ -111,7 +110,7 @@ class PublishDecision:
 
 @dataclass(frozen=True, slots=True)
 class PublishOutcome:
-    """Result of applying the publish policy to one report."""
+    """把发布策略套用到一份报告后的结果。"""
 
     report_id: int
     status: str
@@ -123,7 +122,7 @@ class PublishOutcome:
     verification: VerificationOutcome
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全转 JSON 的载荷。"""
         return {
             "report_id": self.report_id,
             "status": self.status,
@@ -138,7 +137,7 @@ class PublishOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ReviewOutcome:
-    """Result of recording one human review decision."""
+    """记录一次人工评审决定的结果。"""
 
     report_id: int
     review_id: int
@@ -146,7 +145,7 @@ class ReviewOutcome:
     status: str
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload."""
+        """返回可安全转 JSON 的载荷。"""
         return {
             "report_id": self.report_id,
             "review_id": self.review_id,
@@ -156,17 +155,17 @@ class ReviewOutcome:
 
 
 def _run_closed_at(now: datetime | None, moment: datetime) -> datetime | None:
-    """Echo a pinned clock into the run's close time, or `None` to use the wall clock.
+    """把被钉住的时钟回传成运行的结束时间；`None` 表示改用挂钟时间。
 
-    Each publishing run is started at the caller's `moment`, and `pipeline_runs` enforces
-    `finished_at >= started_at`. Closing it from the wall clock while `moment` was pinned
-    would make the record inconsistent, so a pinned `now` is carried through instead.
+    每次发布运行都以调用方的 `moment` 作为开始时间，而 `pipeline_runs` 要求
+    `finished_at >= started_at`。`moment` 已被钉住却用挂钟时间收尾，记录就会自相矛盾，
+    所以这里把被钉住的 `now` 一路带下去。
     """
     return moment if now is not None else None
 
 
 def _config_fingerprint(session: Session, agent_run: AgentRun) -> tuple[str, str, str]:
-    """Return the model, prompt version, and tool policy a run was executed with."""
+    """返回一次运行执行时所用的模型、Prompt 版本与工具策略。"""
     config = session.get(AgentConfig, agent_run.agent_config_id)
     if config is None:
         return ("", "", "")
@@ -178,7 +177,7 @@ def _config_fingerprint(session: Session, agent_run: AgentRun) -> tuple[str, str
 
 
 def _latest_published_report(session: Session, *, topic_id: int, exclude_id: int) -> Report | None:
-    """Return the most recently published sibling report, if the topic has one."""
+    """返回同一主题下最近发布过的另一份报告；若没有则返回 `None`。"""
     return session.scalars(
         select(Report)
         .where(
@@ -197,13 +196,12 @@ def _baseline_reasons(
     *,
     skip_first_run: bool = False,
 ) -> list[str]:
-    """Collect reasons that come from the run and the topic history, not the artifact.
+    """收集来自运行与主题历史、而非来自产物本身的理由。
 
-    `skip_first_run` is set by `AUTO_WITH_DELAY`: that mode is the unattended auto-publish
-    path, and it already carries a verification gate plus a withdrawal window, so holding the
-    topic's first report back for a human would stall every new topic that is meant to run on
-    its own. `MANUAL` and `AUTO` keep the first-run review, because a human is already in
-    their loop.
+    `skip_first_run` 由 `AUTO_WITH_DELAY` 置位：该模式是无人值守的自动发布路径，本身
+    就带一道验证关卡加一个撤稿窗口，若再把主题的首份报告压着等人，每个本该独立运行的
+    新主题都会被拖住。`MANUAL` 与 `AUTO` 保留首轮评审，因为人的环节本来就在它们的
+    链路里。
     """
     reasons: list[str] = []
     agent_run = session.get(AgentRun, report.agent_run_id)
@@ -235,10 +233,9 @@ def evaluate_publish_policy(
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> PublishDecision:
-    """Decide whether a report publishes immediately, after a delay, or after review.
+    """判定一份报告是立即发布、延迟发布，还是等评审。
 
-    The configured `publish_mode` sets the ceiling; concrete findings can only make the
-    decision stricter, never looser.
+    配置的 `publish_mode` 只设定上限；具体发现只能让决定更严，绝不会更松。
     """
     resolved_settings = settings or get_settings()
     moment = now or utc_now()
@@ -269,7 +266,7 @@ def evaluate_publish_policy(
         )
     )
     if report.publish_mode == PUBLISH_MODE_AUTO and report.visibility != INTERNAL_VISIBILITY:
-        # `AUTO` is reserved for internal reports; anything narrower goes through review.
+        # `AUTO` 只留给内部报告；更窄的可见性一律走评审。
         reasons.append(REASON_NOT_INTERNAL_VISIBILITY)
 
     unique_reasons = tuple(dict.fromkeys(reasons))
@@ -300,7 +297,7 @@ def evaluate_publish_policy(
 
 
 def schedule_report(session: Session, *, report_id: int, now: datetime | None = None) -> Report:
-    """Move an approved report onto the publishing queue."""
+    """把一份已批准的报告放进发布队列。"""
     moment = now or utc_now()
     report = session.get(Report, report_id)
     if report is None:
@@ -319,15 +316,14 @@ def withdraw_report(
     comment: str | None = None,
     now: datetime | None = None,
 ) -> Report:
-    """Pull a published report back into the editing queue.
+    """把一份已发布的报告拉回编辑队列。
 
-    `published -> draft` is the only edge out of `published` (see `state.py`), and withdrawal is
-    what it exists for: the report stops being public, loses the publish window it was holding,
-    and has to clear verification and the policy again before it can go back out. The version it
-    was published as stays in the history — withdrawing is not a delete.
+    `published -> draft` 是 `published` 唯一的出边（见 `state.py`），撤稿正是它存在的
+    理由：报告不再公开，丢掉它原本占着的发布窗口，并且必须重新通过验证和策略才能再发
+    出去。它当初以哪个版本发布，仍然留在历史里 —— 撤稿不是删除。
 
-    Share links need no cleanup here: the share gate is `sensitivity=PUBLIC` **and**
-    `status=published`, so a withdrawn report's links stop resolving the moment the status moves.
+    这里不需要清理分享链接：分享闸门是 `sensitivity=PUBLIC` **且**
+    `status=published`，所以状态一动，已撤稿报告的链接就立刻解析不到。
     """
     moment = now or utc_now()
     report = session.get(Report, report_id)
@@ -365,11 +361,10 @@ def publish_report(
     report_id: int,
     now: datetime | None = None,
 ) -> Report:
-    """Publish a scheduled report, asserting the `INV-5` preconditions first.
+    """发布一份已排期的报告，先断言 `INV-5` 的前置条件。
 
-    The delay window is enforced here rather than in the caller so no code path can release
-    a report early. A `MANUAL` report must additionally carry an `approve` review for the
-    version being published.
+    撤稿窗口在这里校验而不是在调用方，任何代码路径都无法提前放行一份报告。`MANUAL`
+    报告还必须带有一次针对当前发布版本的 `approve` 评审。
     """
     moment = now or utc_now()
     report = session.get(Report, report_id)
@@ -437,10 +432,9 @@ def publish_report(
         },
         finished_at=_run_closed_at(now, moment),
     )
-    # A release is the event a subscriber cares about, and every publishing path funnels through
-    # here, so the auto-push is wired once. It never raises: an unusable target or a refused
-    # transport is recorded on the push row and picked up by the retry sweep, because a failed
-    # notification must not be able to undo a release that already happened.
+    # 发布才是订阅者关心的事件，而所有发布路径都汇聚到这里，所以自动推送只接一次。
+    # 它从不抛异常：目标不可用或传输被拒会记在推送行上，由重试清扫接手 —— 一次通知
+    # 失败不能把已经发生的发布撤回去。
     push_after_publish(session, report_id=report.id, now=now)
     return report
 
@@ -452,16 +446,13 @@ def publish_or_request_review(
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> PublishOutcome:
-    """Verify a report, apply the publish policy, and record the decision.
+    """验证报告、套用发布策略，并记下决定。
 
-    The `publish` run written here tracks the *decision*, not the eventual release: it
-    succeeds whenever the policy was applied cleanly, even when the outcome is
-    `pending_review`, because asking for a human is a normal result rather than an error.
+    这里写入的 `publish` 运行跟踪的是*决定*，不是最终的发布：只要策略被干净地套用就算
+    成功，即使结果是 `pending_review` —— 请求人工介入是正常结果，不是错误。
 
-    A report already past the decision is not silently advanced, with one deliberate
-    exception: an `approved` report is queued for immediate release, because a human
-    approval is explicit consent and skipping the withdrawal window is the documented
-    consequence.
+    已经越过决策点的报告不会被悄悄推进，只有一个刻意保留的例外：`approved` 报告会被
+    直接排进立即放行，因为人工批准就是明确同意，跳过撤稿窗口是文档写明的后果。
     """
     resolved_settings = settings or get_settings()
     moment = now or utc_now()
@@ -495,17 +486,17 @@ def publish_or_request_review(
     )
 
     if report.status == "pending_review":
-        # Only a human reviewer clears this state; re-evaluating must not advance it.
+        # 只有人工评审才能清掉这个状态；重新评估不得推进它。
         pass
     elif report.status == "published":
-        # Already out; there is nothing left to decide.
+        # 已经发出去了，没有可决定的东西。
         pass
     elif report.status == "scheduled":
-        # Already queued; the release driver owns `publish_at`.
+        # 已经排好队；`publish_at` 归放行驱动器管。
         pass
     elif report.status == "approved":
-        # An approval is explicit consent, so queue the report immediately and skip the
-        # withdrawal window — the same move `publish_due_reports` makes for approved reports.
+        # 批准就是明确同意，所以立即入队并跳过撤稿窗口 —— 与 `publish_due_reports`
+        # 处理 approved 报告时做的动作一致。
         transition_report(report, "scheduled")
         report.publish_at = moment
     elif decision.requires_review:
@@ -554,10 +545,10 @@ def record_review(
     edited_version_id: int | None = None,
     now: datetime | None = None,
 ) -> ReviewOutcome:
-    """Record one human decision on a report awaiting review.
+    """记录一次针对待评审报告的人工决定。
 
-    `approve` clears the report for publishing, `request_changes` sends it back for a
-    rewrite, and `reject` terminates it as `failed` so it can never be published.
+    `approve` 放行发布，`request_changes` 打回重写，`reject` 以 `failed` 终结它，使其
+    永远无法发布。
     """
     moment = now or utc_now()
     if decision not in {REVIEW_APPROVE, REVIEW_REJECT, REVIEW_REQUEST_CHANGES}:
@@ -575,11 +566,10 @@ def record_review(
         REVIEW_REQUEST_CHANGES: "changes_requested",
     }[decision]
     if edited_version_id is not None:
-        # The column is a foreign key, but a foreign key only proves the row exists: it would
-        # happily record a review against a version of a *different* report, and an unknown id
-        # would surface as a database error instead of a rejected request. Resolving the pair
-        # here covers both, and doing it before the transition keeps a refused review from
-        # leaving the status half-moved.
+        # 这一列是外键，但外键只证明该行存在：它照样会记下一次针对*另一份*报告某个版本
+        # 的评审，而一个不存在的 id 会表现为数据库错误，而不是被拒绝的请求。在这里把
+        # 这一对解析清楚可以同时覆盖两种情况，并且在迁移之前做，被拒绝的评审就不会留下
+        # 一个迁到一半的状态。
         owned = session.scalar(
             select(ReportVersion.id).where(
                 ReportVersion.id == edited_version_id,
@@ -631,10 +621,10 @@ def _fail_publish(
     *,
     finished_at: datetime | None = None,
 ) -> None:
-    """Record a blocked release and stop the report from being retried on every sweep.
+    """记录一次被拦下的发布，并让这份报告不再在每轮清扫中重试。
 
-    Leaving a policy-blocked report in `scheduled` would make it retry forever and stay
-    invisible; `failed` is terminal, so it surfaces as work that needs a human.
+    把被策略拦下的报告留在 `scheduled`，会让它无限重试且始终不可见；`failed` 是终态，
+    于是它会凸显为一件需要人处理的工作。
     """
     pipeline_run = start_pipeline_run(
         session,
@@ -674,18 +664,16 @@ def publish_due_reports(
     limit: int = PUBLISH_BATCH_LIMIT,
     access_filter: ColumnElement[bool] | None = None,
 ) -> list[dict[str, Any]]:
-    """Release everything that is due, promoting human-approved reports on the way.
+    """放行所有到期的报告，顺带把人工批准的报告推到发布路径上。
 
-    An approval is explicit consent, so an `approved` report skips the withdrawal window
-    and is queued for immediate release; `scheduled` reports are released only once
-    `publish_at` has elapsed. One blocked report never stops the rest of the sweep: it is
-    marked `failed` with its stable error code and the sweep continues, mirroring how a
-    single failing topic cannot abort the daily pipeline.
+    批准就是明确同意，所以 `approved` 报告跳过撤稿窗口、直接排队等待立即放行；
+    `scheduled` 报告则只有等到 `publish_at` 过去之后才放行。一份被拦下的报告绝不会
+    中断整轮清扫：它会被标成 `failed` 并带上稳定的错误码，清扫继续 —— 与「单个主题
+    失败不会拖垮每日流水线」是同一个道理。
 
-    `access_filter` scopes the sweep to the reports the triggering user may read. The manual
-    endpoint passes it, because "release everything due" is authority over reports the caller can
-    see, not over the whole database; the scheduled beat task passes `None`, since it acts for
-    the system rather than for one person.
+    `access_filter` 把清扫限制在触发者有权阅读的报告范围内。手动接口会传它，因为
+    「放行所有到期项」是对调用方看得见的那些报告的权限，而不是对整个数据库的权限；
+    定时 beat 任务传 `None`，因为它代表系统行事，而不是代表某一个人。
     """
     moment = now or utc_now()
     if limit < 1:

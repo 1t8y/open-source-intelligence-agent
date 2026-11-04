@@ -1,3 +1,3 @@
-"""Open-source intelligence research agent platform."""
+"""开源技术情报研究 Agent 与企业自动周报平台。"""
 
 __version__ = "0.1.0"

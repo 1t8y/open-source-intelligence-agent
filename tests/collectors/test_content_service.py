@@ -1,10 +1,9 @@
-"""Tests for the single write path into `repository_contents`.
+"""守护写入 `repository_contents` 的唯一写路径。
 
-The cache has two readers - the `get_repository_content` tool and `reports/citations.py` - and one
-writer. These tests pin the properties those readers depend on: the stored body is already
-cleaned, its digest describes exactly that body, `fetched_at` tracks confirmation rather than
-change (the contents stage's idempotence window is built on it), and a source URL that a report
-citation could not carry is refused at the door.
+这份缓存有两个读者 —— `get_repository_content` 工具与 `reports/citations.py` ——
+却只有一个写者。下面这些用例钉住读者所依赖的性质：入库的正文已经清洗过、
+摘要描述的正是这段正文、`fetched_at` 记录的是「确认」而非「变化」（`contents`
+阶段的幂等窗口就建在它上面），以及报告引用无法承载的来源 URL 会在入口被拒。
 """
 
 from datetime import UTC, datetime, timedelta
@@ -34,7 +33,7 @@ SOURCE_URL = "https://github.com/example/repo/blob/main/README.md"
 
 @pytest.fixture()
 def session() -> Session:
-    """Provide a shared in-memory database with one repository in it."""
+    """提供一个已含一个仓库的共享内存数据库。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -75,14 +74,14 @@ def session() -> Session:
 
 
 def repository(session: Session) -> Repository:
-    """Return the one seeded repository."""
+    """取出唯一那个已播种的仓库。"""
     loaded = session.scalar(select(Repository))
     assert loaded is not None
     return loaded
 
 
 def fetched(text: str, *, at: datetime = NOW, url: str = SOURCE_URL) -> FetchedContent:
-    """Build one fetched README record."""
+    """构造一条拉取到的 README 记录。"""
     return FetchedContent(
         provider="github",
         full_name="example/repo",
@@ -94,14 +93,14 @@ def fetched(text: str, *, at: datetime = NOW, url: str = SOURCE_URL) -> FetchedC
 
 
 def stored(session: Session) -> RepositoryContent:
-    """Return the one cached content row."""
+    """取出唯一那条缓存正文行。"""
     record = session.scalar(select(RepositoryContent))
     assert record is not None
     return record
 
 
 def test_the_first_write_stores_cleaned_text_and_its_digest(session: Session) -> None:
-    """What lands in the table is the cleaned document, and the digest describes that."""
+    """落表的应当是清洗后的文档，摘要描述的也必须是这段文本。"""
     raw = "<script>alert(1)</script># Title\n\n\n\nBody\x00 text"
 
     assert upsert_repository_content(session, repository=repository(session), fetched=fetched(raw))
@@ -116,11 +115,10 @@ def test_the_first_write_stores_cleaned_text_and_its_digest(session: Session) ->
 
 
 def test_the_stored_body_is_already_what_a_second_clean_would_produce(session: Session) -> None:
-    """Reading cleans again; cleaning twice must not change the text.
+    """读者会再清洗一遍，因此清洗两次不能改变文本。
 
-    If it did, the digest stored beside the body would describe a string no reader ever sees,
-    and "has this README changed" would answer itself with a different value depending on who
-    asked.
+    若会改变，与正文一起存下的摘要描述的将是一个任何读者都见不到的字符串，而
+    「这份 README 变了吗」的答案会随提问者不同而不同。
     """
     raw = "  # Title   \n\n\n<p>Body</p>\x07  "
 
@@ -131,7 +129,7 @@ def test_the_stored_body_is_already_what_a_second_clean_would_produce(session: S
 
 
 def test_an_unchanged_readme_is_not_rewritten_but_is_marked_as_confirmed(session: Session) -> None:
-    """A stable README costs one row update for `fetched_at` and nothing else."""
+    """README 未变时，唯一该发生的写入是更新 `fetched_at`，正文与摘要不动。"""
     upsert_repository_content(session, repository=repository(session), fetched=fetched("# Same"))
     first = stored(session)
     first_hash = first.content_hash
@@ -150,7 +148,7 @@ def test_an_unchanged_readme_is_not_rewritten_but_is_marked_as_confirmed(session
 
 
 def test_changed_text_replaces_the_body_and_the_digest(session: Session) -> None:
-    """A rewritten README is stored as the new document, not appended to the old one."""
+    """重写过的 README 以新文档覆盖存储，而不是追加到旧文档之后。"""
     upsert_repository_content(session, repository=repository(session), fetched=fetched("# First"))
     before = stored(session).content_hash
 
@@ -168,7 +166,7 @@ def test_changed_text_replaces_the_body_and_the_digest(session: Session) -> None
 
 
 def test_a_readme_longer_than_the_bound_is_capped_before_it_is_stored(session: Session) -> None:
-    """The bound protects the table, and the digest describes the truncated body."""
+    """上限保护的是表体积，摘要则必须描述截断之后的那段正文。"""
     long_body = "x" * (MAX_CACHED_CONTENT_CHARS + 500)
 
     upsert_repository_content(session, repository=repository(session), fetched=fetched(long_body))
@@ -179,7 +177,7 @@ def test_a_readme_longer_than_the_bound_is_capped_before_it_is_stored(session: S
 
 
 def test_a_source_url_a_citation_could_not_carry_is_refused(session: Session) -> None:
-    """`reports/citations.py` accepts only https, so the cache must not hold anything else."""
+    """`reports/citations.py` 只接受 https，缓存里就不能存别的协议。"""
     with pytest.raises(ValueError, match="https"):
         upsert_repository_content(
             session,

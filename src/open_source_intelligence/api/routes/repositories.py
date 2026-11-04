@@ -1,15 +1,14 @@
-"""Repository catalog endpoints: the shared repository list and one repository's trend.
+"""仓库目录端点：共享的仓库列表与单个仓库的走势。
 
-`docs/api-contract.md` §4 fixes what these two routes answer. Two properties are worth stating
-in code because they are easy to get wrong later:
+`docs/api-contract.md` §4 固定了这两条路由要回答什么。有两条性质值得写进代码，因为它们之后很
+容易被改坏：
 
-* **The catalog is public.** `docs/security-and-privacy.md` §2 classifies public repository
-  metadata as public, so there is no per-row access predicate here and every authenticated role
-  reads the same list. The only thing that needs adjudicating is which topic the list may be
-  sliced by, and that decision comes from `security.authorization.authorize_topic_read`.
-* **The window is a closed date range.** `pipeline/queries.list_snapshots` delegates to
-  `get_snapshot_series`, so this route does not have its own opinion about where the range
-  starts and stops.
+* **目录是公开的。** `docs/security-and-privacy.md` §2 把公开仓库元数据归为
+  公开数据，因此这里没有逐行的访问谓词，每个已认证角色读到的都是同一份
+  列表。唯一需要裁定的是这份列表可以按哪个主题切片，而那个决定来自
+  `security.authorization.authorize_topic_read`。
+* **窗口是闭区间的日期范围。** `pipeline/queries.list_snapshots` 委托给
+  `get_snapshot_series`，因此这条路由对范围从哪儿开始、到哪儿结束不持自己的意见。
 """
 
 from __future__ import annotations
@@ -46,19 +45,17 @@ DbSession = Annotated[Session, Depends(get_db_session)]
 
 UnprocessableEntity = status.HTTP_422_UNPROCESSABLE_CONTENT
 
-#: How far back the trend route looks when the caller names no window. Thirty days covers the
-#: weekly report's seven-day window several times over without letting a default turn into an
-#: unbounded scan of a table that grows one row per repository per day.
+#: 调用方不指定窗口时，走势路由往回看多远。三十天足够覆盖周报的七日窗口好几
+#: 遍，又不至于让一个默认值变成对一张「每仓每天长一行」的表的无界扫描。
 DEFAULT_SNAPSHOT_WINDOW_DAYS = 30
 
-#: The longest window the trend route will serve. The bound is checked rather than clamped: a
-#: clamped answer is silently about a different period than the one that was asked for, and
-#: both numbers look plausible, so the mistake is invisible.
+#: 走势路由愿意提供的最长窗口。这里做的是校验而不是截断：截断后的答案会悄悄
+#: 变成另一段时间，而两个数字看起来都合理，于是错误没人察觉。
 MAX_SNAPSHOT_WINDOW_DAYS = 366
 
 
 class RepositorySummaryResponse(BaseModel):
-    """One catalog row: the repository plus its provider and, when sliced by topic, its rank."""
+    """目录里的一行：仓库及其来源，按主题切片时还带排名。"""
 
     id: int
     source_id: int
@@ -79,7 +76,7 @@ class RepositorySummaryResponse(BaseModel):
 
 
 class RepositoryListResponse(BaseModel):
-    """One page of the repository catalog."""
+    """一页仓库目录。"""
 
     items: list[RepositorySummaryResponse]
     page: int
@@ -88,7 +85,7 @@ class RepositoryListResponse(BaseModel):
 
 
 class SnapshotResponse(BaseModel):
-    """One day of a repository's trend."""
+    """仓库走势中的一天。"""
 
     snapshot_date: str
     stars: int
@@ -99,7 +96,7 @@ class SnapshotResponse(BaseModel):
 
 
 class SnapshotSeriesResponse(BaseModel):
-    """A repository's snapshot series over the resolved closed window."""
+    """一个仓库在解析出的闭区间窗口内的快照序列。"""
 
     repository_id: int
     provider: str
@@ -111,11 +108,10 @@ class SnapshotSeriesResponse(BaseModel):
 
 
 def _summary(entry: RepositoryCatalogEntry) -> RepositorySummaryResponse:
-    """Serialize one catalog entry.
+    """序列化一条目录条目。
 
-    `score` leaves as text for the same reason `estimated_cost` does in the Agent ledger: it is
-    a `NUMERIC(12,6)` value, and rendering it as a JSON float would let the value that comes back
-    differ from the value that was stored.
+    `score` 以文本形式输出，理由和 Agent 台账里的 `estimated_cost` 一样：它是
+    `NUMERIC(12,6)`，渲染成 JSON 浮点数会让读回来的值与存进去的值不一致。
     """
     repository = entry.repository
     return RepositorySummaryResponse(
@@ -152,10 +148,10 @@ def list_repository_catalog(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> RepositoryListResponse:
-    """Return one page of the repository catalog.
+    """返回一页仓库目录。
 
-    `topic_id` is the only filter that carries an authorization decision: it narrows the list to
-    one topic's candidates, and a topic the caller may not see is refused before the query runs.
+    `topic_id` 是唯一一个携带授权决定的筛选条件：它把列表收窄到某个主题
+    的候选集，而调用方无权查看的主题会在查询执行之前就被拒绝。
     """
     if topic_id is not None:
         authorize_topic_read(session, request, user, topic_id=topic_id)
@@ -188,11 +184,10 @@ def get_repository_snapshots(
     end: Annotated[date | None, Query()] = None,
     granularity: Annotated[Literal["day"], Query()] = "day",
 ) -> SnapshotSeriesResponse:
-    """Return a repository's snapshot series over a closed date window.
+    """返回一个仓库在闭区间日期窗口内的快照序列。
 
-    An empty window is a `200` with an empty list, not a `404`: the repository exists and the
-    honest answer is "it has no snapshots in this range". A repository that does not exist is the
-    `404`.
+    空窗口是 `200` 加一个空列表，而不是 `404`：仓库确实存在，诚实的答案是
+    「它在这个区间里没有快照」。仓库不存在才是 `404`。
     """
     resolved_end = end or now.date()
     resolved_start = start or resolved_end - timedelta(days=DEFAULT_SNAPSHOT_WINDOW_DAYS)

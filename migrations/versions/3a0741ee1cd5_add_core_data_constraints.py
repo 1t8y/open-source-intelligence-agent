@@ -1,4 +1,8 @@
-"""add core data constraints
+"""为核心表添加数据约束
+
+给核心表补上显式命名的取值范围约束：枚举列只接受限定值，计数列不得为负，时间列必须
+后向有序。MySQL 对未命名的 `CHECK` 生成的名字不稳定，显式命名后，后续迁移才能按名字
+删除并重建同一条约束。
 
 Revision ID: 3a0741ee1cd5
 Revises: 45a1c2996181
@@ -64,7 +68,7 @@ CHECKS = (
 
 
 def upgrade() -> None:
-    """Apply explicit MySQL CHECK constraints with stable names."""
+    """以稳定名称应用显式的 MySQL `CHECK` 约束。"""
     for table_name, constraint_name, expression in CHECKS:
         op.execute(
             sa.text(
@@ -75,6 +79,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop constraints in reverse order."""
+    """按相反顺序删除这些约束。"""
     for table_name, constraint_name, _ in reversed(CHECKS):
         op.execute(sa.text(f"ALTER TABLE `{table_name}` DROP CHECK `{constraint_name}`"))

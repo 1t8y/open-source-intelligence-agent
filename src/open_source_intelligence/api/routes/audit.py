@@ -1,7 +1,7 @@
-"""Audit log endpoint: the read-only view over the append-only trail.
+"""审计日志端点：在只追加的轨迹之上提供只读视图。
 
-`docs/api-contract.md` §8 fixes the shape. The endpoint is read-only in the strongest available
-sense — there is no update or delete route to protect, so no misconfiguration can open one.
+`docs/api-contract.md` §8 固定了响应形状。这个端点是现有意义上最强的只读 —— 没有更新或删除
+路由需要保护，因此任何配置失误都开不出一扇写的门。
 """
 
 from __future__ import annotations
@@ -30,19 +30,17 @@ router = APIRouter(prefix="/api/v1/audit-logs", tags=["audit"])
 AuditUser = Annotated[User, Depends(require_roles(*AUDIT_READ_ROLES))]
 DbSession = Annotated[Session, Depends(get_db_session)]
 
-#: The three outcomes `audit_logs.result` permits. The list is derived from the annotation
-#: rather than repeated next to it, so the route's validation, its OpenAPI enum and the
-#: documented set cannot drift apart.
+#: `audit_logs.result` 允许的三种结果。列表从注解派生，而不是在注解旁边再抄一份，这样路由的
+#: 校验、它生成的 OpenAPI 枚举与文档里写的集合不会各自漂移。
 AuditResult = Literal["success", "denied", "failed"]
 RESULT_OPTIONS: Final[tuple[str, ...]] = get_args(AuditResult)
 
 
 class AuditLogResponse(BaseModel):
-    """One audit event.
+    """一条审计事件。
 
-    `metadata_json` is absent on purpose: it is a free-form field whose allowed keys were never
-    defined, and an egress path should not ship an undefined contract. Add it once the keys are
-    enumerated and can be redacted deliberately.
+    `metadata_json` 是故意不出现在响应里的：它是一个自由格式字段，允许的键从未定义过，而对外
+    出口不该携带一份没有定义的契约。等键被枚举清楚、可以有针对性地脱敏之后再加。
     """
 
     id: int
@@ -57,7 +55,7 @@ class AuditLogResponse(BaseModel):
 
 
 class AuditLogListResponse(BaseModel):
-    """One page of audit events, newest first."""
+    """一页审计事件，最新的在前。"""
 
     items: list[AuditLogResponse]
     page: int
@@ -66,7 +64,7 @@ class AuditLogListResponse(BaseModel):
 
 
 def _event(event: AuditLog) -> AuditLogResponse:
-    """Serialize one audit row, unpacking the stored client address."""
+    """序列化一行审计记录，并把存储的客户端地址还原成可读形式。"""
     return AuditLogResponse(
         id=event.id,
         actor_id=event.actor_id,
@@ -97,12 +95,11 @@ def read_audit_logs(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> AuditLogListResponse:
-    """Return one page of audit events.
+    """返回一页审计事件。
 
-    `result` is a closed set (`success` / `denied` / `failed`, the values the table's CHECK
-    constraint permits). An unknown value is a `422` rather than an empty page, because "there
-    are no rows" and "you asked for a result type that cannot exist" are different findings to
-    whoever is reading the trail.
+    `result` 是一个封闭集合（`success` / `denied` / `failed`，即表上 CHECK
+    约束允许的取值）。未知取值回 `422` 而不是空页，因为「没有这样的行」和
+    「你要的结果类型根本不存在」对读这份轨迹的人是两件不同的事。
     """
     page_result = list_audit_logs(
         session,

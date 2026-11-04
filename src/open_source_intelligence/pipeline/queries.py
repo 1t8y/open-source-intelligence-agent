@@ -1,25 +1,21 @@
-"""Read-side queries behind the repository catalog API.
+"""提供仓库目录 API 背后的读侧查询。
 
-`reports/queries.py` and `observability/queries.py` set the precedent this module follows: the
-API and web layers call these functions and never issue SQL themselves (`INTERFACES.md` §4).
+`reports/queries.py` 与 `observability/queries.py` 立下了本模块遵循的先例：API 层与 Web 层
+调用这些函数，自己从不写 SQL（`INTERFACES.md` §4）。
 
-Two decisions are load-bearing here:
+这里有两个承重的决策：
 
-* **The catalog is a join, not a table.** `provider` is `data_sources.source_type` rather than a
-  column on `repositories`, and the topic ranking (`score` / `rank` / `selected_for_agent`) lives
-  on `topic_repositories`. The endpoint returns them together so a caller does not have to
-  assemble the catalog from three responses.
-* **The ranking is present or absent, never invented.** Those three fields are the product of one
-  topic's ranking pass; without a `topic_id` there is no meaningful value for them, so they come
-  back as `None` rather than as `0` or `False`.
+* **目录是一次 join，而不是一张表。** `provider` 取自 `data_sources.source_type`，而不是
+  `repositories` 上的某一列；主题排名（`score` / `rank` / `selected_for_agent`）则住在
+  `topic_repositories` 上。端点把它们一起返回，调用方就不必从三个响应里拼装目录。
+* **排名要么存在，要么缺席，绝不臆造。** 这三个字段是某个主题一次排序的产物；没有
+  `topic_id` 时它们没有有意义的值，因此返回 `None`，而不是 `0` 或 `False`。
 
-A third rule is small but user-visible: `q` is documented as a substring search, so the caller's
-`%` and `_` are escaped before they reach `LIKE`. Left unescaped, `q=_` matches every row. The
-escaping itself lives in `core/text.py:literal_like`, because the topic list applies the same rule
-to `name` and `description` — one definition, two callers.
+第三条规则虽小，却用户可见：`q` 按文档是子串搜索，所以调用方的 `%` 与 `_` 在进入 `LIKE`
+之前会先被转义。不转义时，`q=_` 会匹配每一行。转义本身住在 `core/text.py:literal_like`，
+因为主题列表对 `name` 与 `description` 施加同一条规则 —— 一份定义，两个调用方。
 
-Nothing in this module writes a row, and it needs no migration: every column it reads already
-existed.
+本模块不写任何行，也不需要迁移：它读取的每一列原本就已存在。
 """
 
 from __future__ import annotations
@@ -42,8 +38,8 @@ from open_source_intelligence.persistence.models.intelligence import (
 
 from .snapshots import get_snapshot_series
 
-# The documented list contract limits `page_size` to 1-100; the same bound is applied here so
-# every list endpoint in the platform refuses an unbounded page the same way.
+# 有文档的列表契约把 `page_size` 限定在 1-100；这里施加同一上限，让平台上的每个列表端点
+# 都以同样的方式拒绝无界分页。
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
@@ -51,18 +47,16 @@ SORT_STARS: Final[str] = "stars"
 SORT_FORKS: Final[str] = "forks"
 SORT_LAST_SEEN: Final[str] = "last_seen"
 
-#: The `sort` values `docs/api-contract.md` §4 documents. Anything else is a 422, not a
-#: silent fallback to the default: a caller that asked for an ordering they did not get has no
-#: way to notice, and paginating under an ordering you did not ask for can skip rows entirely.
-#: The 422 is raised at the route, which declares `sort` as a `Literal` over exactly these values;
-#: the default below is what a *direct* caller of `list_repositories` gets, and is deliberately
-#: not the enforcement point.
+#: `docs/api-contract.md` §4 记载的 `sort` 取值。其它任何值都是 422，而不是悄悄退回默认：
+#: 请求了某个排序却没得到它的调用方无从察觉，而在自己没要的排序下翻页，还可能整行整行地
+#: 漏掉数据。422 在路由层抛出 —— 那里把 `sort` 声明为恰好覆盖这些取值的 `Literal`；下面的
+#: 默认值是 *直接* 调用 `list_repositories` 的调用方所得到的，刻意不作为强制点。
 SORT_OPTIONS: Final[tuple[str, ...]] = (SORT_STARS, SORT_FORKS, SORT_LAST_SEEN)
 
 
 @dataclass(frozen=True, slots=True)
 class RepositoryCatalogEntry:
-    """One repository joined with its provider and, when filtered by topic, its ranking."""
+    """一个仓库，连同它的 provider，以及（在按主题筛选时）它的排名。"""
 
     repository: Repository
     provider: str
@@ -73,7 +67,7 @@ class RepositoryCatalogEntry:
 
 @dataclass(frozen=True, slots=True)
 class RepositoryPage:
-    """One page of the catalog plus the total matching the filters."""
+    """目录中的一页，外加匹配筛选条件的总数。"""
 
     items: tuple[RepositoryCatalogEntry, ...]
     page: int
@@ -82,7 +76,7 @@ class RepositoryPage:
 
 
 def clamp_page_size(page_size: int) -> int:
-    """Keep a requested page size inside the documented 1-100 range."""
+    """把请求的页大小限制在有文档的 1-100 范围内。"""
     return max(1, min(page_size, MAX_PAGE_SIZE))
 
 
@@ -94,10 +88,10 @@ def _catalog_conditions(
     first_seen_after: datetime | None,
     query: str | None,
 ) -> list[ColumnElement[bool]]:
-    """Build the filter list shared by the page query and its count query.
+    """构造分页查询与其计数查询共用的筛选条件列表。
 
-    Sharing the list is the point: a count that used a different predicate than the page would
-    report a `total` the caller can never page through.
+    共用这份列表正是重点：计数若用了与分页不同的谓词，报出的 `total` 就会是调用方怎么
+    翻都翻不完的数。
     """
     conditions: list[ColumnElement[bool]] = []
     if topic_id is not None:
@@ -122,11 +116,10 @@ def _catalog_conditions(
 
 
 def _order_by(sort: str) -> tuple[Any, ...]:
-    """Return the ordering for a documented `sort` value.
+    """返回某个有文档的 `sort` 取值对应的排序。
 
-    `id` is always the tiebreaker: two repositories with the same star count are common (a
-    freshly collected batch often starts at zero), and without a total order the database may
-    return them in different orders across pages, duplicating one and dropping another.
+    `id` 永远是次级排序键：star 数相同的两个仓库很常见（刚采集的一批往往从零开始），
+    没有全序时，数据库在跨页时可能以不同顺序返回它们，于是重复一个、漏掉另一个。
     """
     if sort == SORT_FORKS:
         return (Repository.forks.desc(), Repository.id.desc())
@@ -147,12 +140,11 @@ def list_repositories(
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> RepositoryPage:
-    """Return one page of the repository catalog.
+    """返回仓库目录的一页。
 
-    The catalog holds public metadata (`docs/security-and-privacy.md` §2), so there is no
-    per-row access predicate here. `topic_id` is different: it narrows to one topic's candidate
-    list, and whether that topic is visible to the caller is decided by
-    `security/authorization.py:authorize_topic_read` *before* this function is called.
+    目录只放公开元数据（`docs/security-and-privacy.md` §2），因此这里没有逐行的访问谓词。
+    `topic_id` 则不同：它把结果收窄到某个主题的候选列表，而该主题对调用方是否可见，是在
+    调用本函数 *之前* 由 `security/authorization.py:authorize_topic_read` 决定的。
     """
     resolved_page = max(1, page)
     resolved_size = clamp_page_size(page_size)
@@ -226,7 +218,7 @@ def list_repositories(
 
 
 def get_repository(session: Session, *, repository_id: int) -> Repository | None:
-    """Return one repository row, or `None` when it does not exist."""
+    """返回一条仓库记录；不存在时返回 `None`。"""
     return session.get(Repository, repository_id)
 
 
@@ -237,12 +229,11 @@ def list_snapshots(
     start_date: date,
     end_date: date,
 ) -> tuple[RepoSnapshot, ...]:
-    """Return the snapshot series for one repository over a closed date window.
+    """返回某个仓库在一个闭区间日期窗口内的快照序列。
 
-    The window is inclusive at both ends, matching
-    `pipeline/snapshots.py:get_snapshot_series`, which is called through here rather than
-    reimplemented: `snapshot_date` is a natural day, and a half-open range would silently drop
-    the day the caller named as the end.
+    窗口两端都包含，与 `pipeline/snapshots.py:get_snapshot_series` 一致 —— 这里是通过调用
+    它而不是重新实现：`snapshot_date` 是自然日，半开区间会悄悄丢掉调用方指定为结束的那
+    一天。
     """
     return tuple(
         get_snapshot_series(

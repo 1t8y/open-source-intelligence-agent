@@ -1,9 +1,8 @@
-"""Read-side queries backing the report API and the admin UI.
+"""支撑报告 API 与管理后台的读侧查询。
 
-The web and API layers are not allowed to build SQL themselves (`INTERFACES.md` §4), so
-listing, filtering, and pagination live here. The list query takes an access predicate from
-the authorization service and applies it in the database, which is what
-`docs/api-contract.md` §6 requires: permission filtering must not happen after fetching.
+Web 层与 API 层不允许自己拼 SQL（`INTERFACES.md` §4），所以列表、筛选和分页都放在
+这里。列表查询从授权服务拿到一个访问谓词，并把它下推到数据库执行，这正是
+`docs/api-contract.md` §6 的要求：权限过滤不能发生在取数之后。
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ MAX_PAGE_SIZE = 100
 
 @dataclass(frozen=True, slots=True)
 class ReportPage:
-    """One page of reports plus the total matching the filters."""
+    """一页报告，以及符合筛选条件的总数。"""
 
     items: tuple[Report, ...]
     page: int
@@ -39,7 +38,7 @@ class ReportPage:
 
 @dataclass(frozen=True, slots=True)
 class ReportDetail:
-    """Everything the detail view needs about one report, without extra round trips."""
+    """详情视图关于一份报告所需的一切，且不需要额外往返查询。"""
 
     report: Report
     versions: tuple[ReportVersion, ...]
@@ -49,7 +48,7 @@ class ReportDetail:
 
 
 def clamp_page_size(page_size: int) -> int:
-    """Keep a requested page size inside the documented 1-100 range."""
+    """把请求的分页大小限制在文档约定的 1–100 区间内。"""
     return max(1, min(page_size, MAX_PAGE_SIZE))
 
 
@@ -65,11 +64,10 @@ def list_reports(
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> ReportPage:
-    """Return one page of reports the caller may read.
+    """返回调用方有权阅读的一页报告。
 
-    The access predicate is part of the `WHERE` clause rather than a post-filter, so a
-    caller can never observe a count or a page position that includes reports they may not
-    read.
+    访问谓词是 `WHERE` 子句的一部分，而不是取数之后的过滤，因此调用方永远观察不到
+    把自己无权阅读的报告算进去的总数或页位置。
     """
     resolved_page = max(1, page)
     resolved_size = clamp_page_size(page_size)
@@ -102,7 +100,7 @@ def list_reports(
 
 
 def get_report_detail(session: Session, *, report_id: int) -> ReportDetail | None:
-    """Return the report with its version history, citations, verdict, and reviews."""
+    """返回报告及其版本历史、引用、验证结论与评审记录。"""
     report = session.get(Report, report_id)
     if report is None:
         return None
@@ -140,7 +138,7 @@ def get_report_detail(session: Session, *, report_id: int) -> ReportDetail | Non
 
 
 def serialize_report(report: Report, *, topic_name: str | None = None) -> dict[str, Any]:
-    """Render one report row for the API list response."""
+    """把一行报告渲染成 API 列表响应用的字典。"""
     payload: dict[str, Any] = {
         "id": report.id,
         "agent_run_id": report.agent_run_id,

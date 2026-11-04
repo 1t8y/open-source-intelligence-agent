@@ -1,20 +1,19 @@
-"""Direct tests for the central report-authorization decision.
+"""直接守护报告授权这一处中心化判定。
 
-`docs/security-and-privacy.md` §3.1.1 requires the decision to live in one place, and the
-HTTP tests in `tests/api/test_reports.py` prove the endpoints honour it. These tests pin the
-decision *itself*, because two things can break without any endpoint failing:
+`docs/security-and-privacy.md` §3.1.1 要求判定只存在一个地方，
+`tests/api/test_reports.py` 里的 HTTP 用例证明各端点遵守了它。
+这里的用例钉住的是判定*本身*，因为有两处会在任何端点都不报错的情况下坏掉：
 
-* `can_read_report` and `readable_reports_filter` are two expressions of one rule — a Python
-  predicate and a SQL predicate. If they drift, the detail page and the list query disagree,
-  and the disagreement only shows up as a miscount somebody has to notice.
-* The role gate and the visibility gate are layered on purpose: `require_roles` answers "may
-  this account read reports at all", `can_read_report` answers "may it read *this* one".
-  Collapsing the two would silently widen `VIEWER`, so the split is asserted here rather than
-  left implicit.
+* `can_read_report` 与 `readable_reports_filter` 是同一条规则的两种表达 ——
+  一个 Python 谓词、一个 SQL 谓词。两者一旦漂移，详情页与列表查询就会
+  各说各话，而这种分歧只会表现为一个需要有人注意到的计数偏差。
+* 角色闸门与可见性闸门是刻意分层的：`require_roles` 回答
+  「这个账号能不能读报告」，`can_read_report` 回答「能不能读*这一份*」。
+  把两者合并会悄悄放宽 `VIEWER`，所以这里把拆分断言出来，而不是留在暗处。
 
-The topic rule repeats the shape with fewer moving parts - an `ADMIN` bypass plus an `enabled`
-flag - and gets the same treatment at the end of the file, for the same reason: it has one Python
-expression and one SQL expression, and the pair is what the topic list's `total` depends on.
+主题规则用更少的活动部件重复了同一形状 —— 一个 `ADMIN` 直通
+加一个 `enabled` 标志 —— 文件末尾对它做了同样的处理，理由也一样：
+它有一个 Python 表达式和一个 SQL 表达式，而主题列表的 `total` 正依赖这一对。
 """
 
 from __future__ import annotations
@@ -52,8 +51,8 @@ TITLES = {
     "private_orphan": "__private_orphan__",
 }
 
-#: Every (role, data scope) pair the deployment can produce. `VIEWER` never gets `team`, but the
-#: combination is included: the visibility rule must not depend on a role it never consults.
+#: 部署可能产生的每一种（角色, 数据范围）组合。`VIEWER` 永远拿不到 `team`，
+#: 但这里仍然包含该组合：可见性规则不能依赖一个它从不查询的角色。
 PRINCIPALS = (
     (ROLE_ADMIN, "personal"),
     (ROLE_ADMIN, "team"),
@@ -65,7 +64,7 @@ PRINCIPALS = (
 
 
 def _request(path: str = "/api/v1/reports/1") -> Request:
-    """Build a minimal ASGI request, enough for audit correlation and client IP."""
+    """构造一个最小的 ASGI 请求，够审计关联与客户端 IP 使用即可。"""
     return Request(
         {
             "type": "http",
@@ -79,10 +78,10 @@ def _request(path: str = "/api/v1/reports/1") -> Request:
 
 
 def _detached(actor: Actor, data_scope: str) -> User:
-    """Return an unattached user row for the predicate tests.
+    """给谓词用例返回一个未附着到会话的用户行。
 
-    Detached on purpose: `can_read_report` and `readable_reports_filter` read attributes, so
-    handing them a transient row exercises the rule without mutating the seeded actor's scope.
+    刻意做成游离对象：`can_read_report` 与 `readable_reports_filter` 只读属性，
+    把一个临时行交给它们，既覆盖了规则，又不会改动种子操作者的数据范围。
     """
     return User(
         id=actor.user_id,
@@ -94,7 +93,7 @@ def _detached(actor: Actor, data_scope: str) -> User:
 
 
 def _stored(session: Session, actor: Actor) -> User:
-    """Reload one actor's user row, with the role links the audit path needs."""
+    """重新读出一个操作者的用户行，带上审计路径需要的角色关联。"""
     user = session.get(User, actor.user_id)
     assert user is not None
     return user
@@ -102,13 +101,13 @@ def _stored(session: Session, actor: Actor) -> User:
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """The principal under test: an editor who may read TEAM reports."""
+    """被测的主体：一个可以读 TEAM 报告的编辑者。"""
     return create_actor(session, username="authz-editor", role=ROLE_EDITOR, data_scope="team")
 
 
 @pytest.fixture()
 def outsider(session: Session) -> Actor:
-    """A second editor, personal scope, who owns one of the PRIVATE reports."""
+    """第二个编辑者，个人范围，拥有其中一份 PRIVATE 报告。"""
     return create_actor(session, username="authz-outsider", role=ROLE_EDITOR)
 
 
@@ -119,7 +118,7 @@ def reports(
     editor: Actor,
     outsider: Actor,
 ) -> dict[str, Report]:
-    """Seed five reports covering every visibility/owner combination that matters."""
+    """灌入五份报告，覆盖所有要紧的可见性 / 归属组合。"""
     topic = workspace.add_topic(name="authz")
     agent_run = workspace.add_agent_run(topic.id)
 
@@ -147,10 +146,10 @@ def reports(
 
 
 def _expected(role: str, data_scope: str) -> set[str]:
-    """Spell out the visible set independently of the implementation under test.
+    """独立于被测实现，把可见集合写出来。
 
-    `private_own` is unconditional on the role: ownership is checked against the row, not
-    against what the account may do, so even a `VIEWER` reads the PRIVATE report it owns.
+    `private_own` 与角色无关：归属是拿行本身核对的，而不是看账号有什么权限，
+    所以哪怕是 `VIEWER`，也能读到属于自己的那份 PRIVATE 报告。
     """
     if role == ROLE_ADMIN:
         return set(TITLES)
@@ -167,7 +166,7 @@ def test_can_read_report_follows_visibility_and_ownership(
     role: str,
     data_scope: str,
 ) -> None:
-    """One principal reads exactly the reports its visibility scope allows."""
+    """证明一个主体读到的，恰好是它可见范围内那几份报告。"""
     user = _detached(editor, data_scope)
     seen = {name for name, report in reports.items() if can_read_report(user, report, {role})}
     assert seen == _expected(role, data_scope)
@@ -181,10 +180,9 @@ def test_readable_reports_filter_agrees_with_can_read_report(
     role: str,
     data_scope: str,
 ) -> None:
-    """The SQL predicate and the Python predicate select the same rows.
+    """证明 SQL 谓词与 Python 谓词选中的是同一批行。
 
-    Set equality alone would pass if both were wrong in the same way, so the expected set is
-    asserted alongside it.
+    只比集合相等的话，两边以同一种方式错也会通过，所以这里同时断言了预期集合。
     """
     user = _detached(editor, data_scope)
     roles = {role}
@@ -207,11 +205,10 @@ def test_admin_bypass_keeps_the_ownerless_private_row_readable(
     reports: dict[str, Report],
     editor: Actor,
 ) -> None:
-    """`ADMIN` short-circuits before visibility, so a PRIVATE row with no owner stays readable.
+    """证明 `ADMIN` 在可见性之前短路，因此没有归属的 PRIVATE 行依然可读。
 
-    That is the deliberate reading of "private" for a row whose owner was never set: without
-    the admin bypass the row would be unreadable by everyone, which is a lockout rather than a
-    protection.
+    对一行从未设置过归属的数据来说，这就是对「私有」的刻意解读：
+    少了管理员直通，这一行会对所有人都不可读，那是把门焊死，而不是保护。
     """
     orphan = reports["private_orphan"]
     assert can_read_report(_detached(editor, "personal"), orphan, {ROLE_ADMIN}) is True
@@ -222,11 +219,12 @@ def test_visibility_gate_never_consults_the_role(
     reports: dict[str, Report],
     editor: Actor,
 ) -> None:
-    """`can_read_report` answers *which* report, never *whether an account may read at all*.
+    """证明 `can_read_report` 只回答「读*哪一份*」，
+    从不回答「这个账号能不能读」。
 
-    The second question is `require_roles(*REPORT_READ_ROLES)`, which runs first. A `VIEWER`
-    therefore passes `can_read_report` for an `INTERNAL` report: what stops an unprivileged
-    caller is the role dependency, not this predicate.
+    第二个问题由先运行的 `require_roles(*REPORT_READ_ROLES)` 负责。
+    因此 `VIEWER` 对一份 `INTERNAL` 报告也能通过 `can_read_report`：
+    拦下无权限调用方的是角色依赖，不是这个谓词。
     """
     user = _detached(editor, "personal")
     assert can_read_report(user, reports["internal"], {ROLE_VIEWER}) is True
@@ -239,7 +237,7 @@ def test_require_report_read_records_the_denied_resource(
     reports: dict[str, Report],
     editor: Actor,
 ) -> None:
-    """A denial is audited against the report that was addressed, not just the actor."""
+    """证明拒绝是记在被访问的那份报告上，而不只是记在操作者身上。"""
     report = reports["private_other"]
     with pytest.raises(HTTPException) as raised:
         require_report_read(session, _request(), _stored(session, editor), report)
@@ -260,7 +258,7 @@ def test_require_report_read_is_silent_when_it_allows(
     reports: dict[str, Report],
     editor: Actor,
 ) -> None:
-    """An allowed read writes no audit row: the trail records refusals, not traffic."""
+    """证明一次允许的读取不写审计行：轨迹记的是拒绝，不是流量。"""
     require_report_read(session, _request(), _stored(session, editor), reports["team"])
     assert session.scalar(select(AuditLog).where(AuditLog.action == "report.read")) is None
 
@@ -270,7 +268,7 @@ def test_authorize_report_read_denial_carries_no_report_metadata(
     reports: dict[str, Report],
     editor: Actor,
 ) -> None:
-    """The 403 says nothing about a report the caller may not see."""
+    """证明 403 不会透露调用方看都不能看的那份报告的任何信息。"""
     report = reports["private_other"]
     with pytest.raises(HTTPException) as raised:
         authorize_report_read(
@@ -288,7 +286,7 @@ def test_authorize_report_read_maps_a_miss_to_404_without_auditing(
     session: Session,
     editor: Actor,
 ) -> None:
-    """A miss is a 404 and audits nothing: the resource never existed, so nothing was denied."""
+    """证明查不到时是 404 且不写审计：资源从未存在，也就没有拒绝可言。"""
     with pytest.raises(HTTPException) as raised:
         authorize_report_read(
             session,
@@ -305,7 +303,7 @@ def test_authorize_report_read_returns_the_row_when_allowed(
     reports: dict[str, Report],
     editor: Actor,
 ) -> None:
-    """A permitted read hands back the row itself."""
+    """证明获得许可的读取直接把那一行交回来。"""
     expected = reports["private_own"]
     returned = authorize_report_read(
         session,
@@ -317,16 +315,16 @@ def test_authorize_report_read_returns_the_row_when_allowed(
 
 
 # --------------------------------------------------------------------------------------
-# The topic rule: the same pair, on a resource with one flag instead of a scope
+# 主题规则：同样的成对表达，作用在只有一个标志、没有范围概念的资源上
 # --------------------------------------------------------------------------------------
 
-#: Roles only. `can_read_topic` never consults `data_scope`, which is the point of the rule below.
+#: 只看角色。`can_read_topic` 从不查询 `data_scope`，这正是下面那条规则的要点。
 TOPIC_PRINCIPALS = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER)
 
 
 @pytest.fixture()
 def topics(session: Session, workspace: Workspace) -> dict[str, Topic]:
-    """One enabled topic and one disabled one: the whole of the topic visibility rule."""
+    """一个启用主题和一个停用主题：主题可见性规则的全部内容。"""
     enabled = workspace.add_topic(name="authz-topic-enabled", enabled=True)
     disabled = workspace.add_topic(name="authz-topic-disabled", enabled=False)
     session.commit()
@@ -340,13 +338,12 @@ def test_readable_topics_filter_agrees_with_can_read_topic(
     editor: Actor,
     role: str,
 ) -> None:
-    """The SQL predicate and the Python predicate select the same rows.
+    """证明 SQL 谓词与 Python 谓词选中的是同一批行。
 
-    The topic list's `total` is computed with the predicate, and the single read uses the function.
-    If they disagreed, a caller could be told there are two topics and then be refused one of them
-    - or, worse in the other direction, be told there is one while the detail read lets it see two.
-    Set equality alone would pass if both were wrong the same way, so the expected set is asserted
-    alongside it.
+    主题列表的 `total` 用谓词算出来，单条读取走函数。两者一旦不一致，
+    调用方可能先被告知有两个主题，接着又被拒掉其中一个 ——
+    反过来更糟：被告知只有一个，而详情读取却让它看到两个。
+    只比集合相等的话，两边以同一种方式错也会通过，所以这里同时断言了预期集合。
     """
     user = _detached(editor, "personal")
     roles = {role}
@@ -368,11 +365,10 @@ def test_the_topic_rule_never_consults_the_data_scope(
     topics: dict[str, Topic],
     editor: Actor,
 ) -> None:
-    """A disabled topic is unpublished configuration, not somebody else's private data.
+    """证明停用主题是未发布的配置，而不是别人的私有数据。
 
-    The gate is a role check rather than an ownership check, so widening an account's scope changes
-    nothing here. Asserting it stops a later edit from "fixing" the topic rule by making it look
-    like the report one.
+    这里的闸门是角色检查而非归属检查，所以放宽账号的数据范围不会改变任何结果。
+    把这一点断言出来，后来的人就不能靠「让它长得像报告那条规则」来*修*主题规则。
     """
     for scope in ("personal", "team"):
         user = _detached(editor, scope)
@@ -386,7 +382,7 @@ def test_authorize_topic_read_records_the_topic_it_refused(
     topics: dict[str, Topic],
     editor: Actor,
 ) -> None:
-    """An invisible topic is a `403` whose body is silent and whose audit row is not."""
+    """证明看不见的主题返回的是 `403`：响应体不说，审计行却说。"""
     with pytest.raises(HTTPException) as raised:
         authorize_topic_read(
             session,
@@ -411,10 +407,10 @@ def test_authorize_topic_read_keeps_the_catalog_action_by_default(
     topics: dict[str, Topic],
     editor: Actor,
 ) -> None:
-    """The repository catalog filters by topic and still records `repository.read`.
+    """证明仓库目录按主题过滤时，记下的仍然是 `repository.read`。
 
-    `action` defaults to the older caller's name on purpose: a surface that inherits a name
-    describing a different request produces a trail that cannot be read back.
+    `action` 默认沿用更早那个调用方的名字是刻意的：
+    一个沿用别人请求名的界面，产出的轨迹是读不回来的。
     """
     with pytest.raises(HTTPException):
         authorize_topic_read(
@@ -432,7 +428,7 @@ def test_authorize_topic_read_maps_a_miss_to_404_without_auditing(
     session: Session,
     editor: Actor,
 ) -> None:
-    """A topic that never existed was not refused, so nothing is recorded."""
+    """证明从未存在过的主题不算被拒绝，因此什么都不记。"""
     with pytest.raises(HTTPException) as raised:
         authorize_topic_read(
             session,
@@ -450,7 +446,7 @@ def test_authorize_topic_read_returns_the_row_when_allowed(
     topics: dict[str, Topic],
     editor: Actor,
 ) -> None:
-    """A permitted read hands back the row itself, which is what the route serialises."""
+    """证明获得许可的读取直接把那一行交回来，路由正是拿它做序列化。"""
     returned = authorize_topic_read(
         session,
         _request("/api/v1/topics/1"),

@@ -1,19 +1,16 @@
-"""Deterministic scorers for report quality, traceability, and cost.
+"""为报告质量、可追溯性与成本提供确定性打分器。
 
-Every metric here is computed from the database and the drafted text alone - no model is
-asked to grade anything. That is a deliberate constraint (`ARCHITECTURE.md` §4: deterministic
-work belongs to Python and SQL): a scorer that needs a model cannot be re-run identically, so
-it cannot gate a release. LLM-as-a-judge remains a documented extension
-(`docs/evaluation.md` §4.2) but is not part of this runner.
+这里每个指标都只用数据库与草稿文本算出来 —— 不请任何模型来判分。这是一条刻意的约束
+（`ARCHITECTURE.md` §4：确定性的活儿归 Python 和 SQL）：需要模型的打分器无法被一模一样地
+重跑，因此不能用来把关发布。LLM-as-a-judge 仍是一项有文档记录的扩展
+（`docs/evaluation.md` §4.2），但不属于本运行器。
 
-The three metrics that gate a release are promoted to their own columns
-(`citation_coverage`, `factual_consistency`, `task_completion`). Rates that have no threshold
-yet (`source_accuracy`, `tool_success_rate`, injection blocking) ride along in `details`, so
-adding one never requires a migration.
+三个把关发布的指标提升为自己的列（`citation_coverage`、`factual_consistency`、
+`task_completion`）。尚无阈值的比率（`source_accuracy`、`tool_success_rate`、注入拦截）
+随 `details` 一起走，所以新增一个比率永远不需要迁移。
 
-Each metric returns `None` when the case does not exercise it, and `None` is excluded from the
-aggregate rather than being counted as zero. Counting "not applicable" as failure is how an
-ablation ends up looking worse than it is.
+每个指标在用例没有行使它时返回 `None`，而 `None` 会被排除在聚合之外，不会当成 0 计入。
+把「不适用」当作失败来算，正是一个消融实验看起来比实际更差的原因。
 """
 
 from __future__ import annotations
@@ -35,22 +32,21 @@ from open_source_intelligence.reports.errors import ReportGenerationError
 
 from .targets import SectionDraft, VariantOutput
 
-#: Rate quantization. Four places matches the `Numeric(5, 4)` result columns exactly, so a
-#: value that survives scoring is the value that lands in the row.
+#: 比率量化。四位小数与 `Numeric(5, 4)` 结果列完全对齐，通过打分的值即落进行里的值。
 RATE_PLACES: Final[Decimal] = Decimal("0.0001")
 
-#: A section that contains a digit is a section that makes a numeric claim.
+#: 含数字的章节，就是作出了数值断言的章节。
 _NUMBER_PATTERN: Final[re.Pattern[str]] = re.compile(r"\d")
 
-#: Tag that marks a case as a prompt-injection probe.
+#: 把一个用例标记为提示注入探针的标签。
 INJECTION_TAG: Final[str] = "prompt-injection"
 
-#: Snapshot fields a reference fact may assert.
+#: 参考事实可以断言的快照字段。
 FACT_FIELDS: Final[tuple[str, ...]] = ("stars", "forks", "open_issues")
 
 
 def _rate(numerator: int, denominator: int) -> Decimal | None:
-    """Return a quantized ratio, or None when the denominator is zero."""
+    """返回量化后的比率，分母为零时返回 None。"""
     if denominator <= 0:
         return None
     ratio = Decimal(numerator) / Decimal(denominator)
@@ -59,7 +55,7 @@ def _rate(numerator: int, denominator: int) -> Decimal | None:
 
 @dataclass(frozen=True, slots=True)
 class ScoredCase:
-    """One case's measurements inside one target run."""
+    """一个用例在某次目标运行中的各项测量值。"""
 
     case_key: str
     citation_coverage: Decimal | None
@@ -74,7 +70,7 @@ class ScoredCase:
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload for `eval_results.details_json`."""
+        """返回可安全序列化为 JSON 的载荷，写入 `eval_results.details_json`。"""
         return {
             "case_key": self.case_key,
             "status": self.status,
@@ -91,12 +87,12 @@ class ScoredCase:
 
 
 def _text(value: Decimal | None) -> str | None:
-    """Render a rate as a plain string, or None when it was not applicable."""
+    """把比率渲染成普通字符串，不适用时返回 None。"""
     return None if value is None else str(value)
 
 
 def _resolves(session: Session, citation: CitationRef) -> bool:
-    """Return whether one citation points at a real, traceable source row."""
+    """判断一条引用是否指向真实、可追溯的来源行。"""
     try:
         resolve_citation(session, citation)
     except ReportGenerationError:
@@ -108,7 +104,7 @@ def _citation_source_refs(
     session: Session,
     sections: tuple[SectionDraft, ...],
 ) -> dict[int, set[str]]:
-    """Map each cited repository id to the set of source types cited for it."""
+    """把每个被引用的仓库 id 映射到为它引用的来源类型集合。"""
     by_repo: dict[int, set[str]] = {}
     for section in sections:
         for citation in section.citations:
@@ -120,12 +116,11 @@ def _citation_source_refs(
 
 
 def _repo_id_from_ref(session: Session, source_ref: str | None) -> int | None:
-    """Return the repository a reference names, in either of the two forms it can take.
+    """返回引用所指的仓库，它可能是两种形式中的任意一种。
 
-    A reference carries either the drafting-time numeric id (`repo_snapshots:12:2026-10-19`) or
-    the stable `owner/name` full name that a generated report records. Both have to be
-    understood here: a scorer that only decoded the numeric form would score a report that used
-    the durable anchor as if it had cited nothing, which punishes exactly the better behaviour.
+    引用携带的要么是起草时的数字 id（`repo_snapshots:12:2026-10-19`），要么是生成报告所
+    记录的稳定 `owner/name` 全名。两种形式都必须在这里被理解：只认数字形式的打分器，会把
+    一份使用了持久锚点的报告当作什么都没引用，恰恰惩罚了更好的那个行为。
     """
     if not source_ref:
         return None
@@ -145,12 +140,11 @@ def _repo_id_from_ref(session: Session, source_ref: str | None) -> int | None:
 
 
 def score_citation_coverage(session: Session, sections: tuple[SectionDraft, ...]) -> Decimal | None:
-    """Return the share of numeric-claim sections backed by a resolvable metric source.
+    """返回有可解析指标来源支撑的数值断言章节占比。
 
-    A "numeric claim" is a section whose text contains a digit, which is the same rule
-    `reports.composition` uses to demand a metric citation before a report may be promoted.
-    When no section makes a numeric claim the metric is vacuous, so it is reported as None
-    rather than as a perfect score.
+    「数值断言」指正文含数字的章节，`reports.composition` 用的也是同一条规则：报告要放行，
+    必须先有指标引用。当没有任何章节作出数值断言时，这个指标是空洞的，因此报 None 而不是
+    报满分。
     """
     sections_with_numbers = [
         section for section in sections if _NUMBER_PATTERN.search(section.content_markdown)
@@ -168,7 +162,7 @@ def score_citation_coverage(session: Session, sections: tuple[SectionDraft, ...]
 
 
 def score_source_accuracy(session: Session, sections: tuple[SectionDraft, ...]) -> Decimal | None:
-    """Return the share of claimed citations that resolve to a real source row."""
+    """返回所声称的引用中，能解析到真实来源行的占比。"""
     citations = [citation for section in sections for citation in section.citations]
     if not citations:
         return None
@@ -181,7 +175,7 @@ def score_task_completion(
     *,
     required_sections: tuple[str, ...] = REPORT_SECTION_KEYS,
 ) -> Decimal | None:
-    """Return the share of required sections that are present and non-empty."""
+    """返回必需章节中已存在且不为空的占比。"""
     if not required_sections:
         return None
     present = {section.section_key for section in sections if section.content_markdown.strip()}
@@ -189,7 +183,7 @@ def score_task_completion(
 
 
 def _reference_facts(case: EvalCase) -> list[dict[str, Any]]:
-    """Return the reference facts a case asserts, ignoring malformed entries."""
+    """返回用例所断言的参考事实，忽略格式错误的条目。"""
     reference = case.reference_json
     if not isinstance(reference, dict):
         return []
@@ -200,11 +194,11 @@ def _reference_facts(case: EvalCase) -> list[dict[str, Any]]:
 
 
 def _fact_repo_id(session: Session, fact: dict[str, Any]) -> int | None:
-    """Resolve the repository a fact is about, by id or by full name.
+    """按 id 或全名解析一条事实所讲的仓库。
 
-    A dataset file cannot hardcode repository ids, because ids are assigned when a database is
-    seeded and differ between environments. `repo` (the `owner/name` full name) is therefore the
-    portable form, and `repo_id` is accepted for cases built in code or in tests.
+    数据集文件不能写死仓库 id，因为 id 是在数据库灌数据时分配的，各环境并不相同。因此
+    `repo`（`owner/name` 全名）才是可移植的形式，而 `repo_id` 是为在代码或测试里构造的
+    用例保留的。
     """
     repo_id = fact.get("repo_id")
     if isinstance(repo_id, int) and not isinstance(repo_id, bool) and repo_id > 0:
@@ -216,7 +210,7 @@ def _fact_repo_id(session: Session, fact: dict[str, Any]) -> int | None:
 
 
 def _case_window(case: EvalCase) -> tuple[date, date] | None:
-    """Return the snapshot window a case describes, or None when it does not describe one."""
+    """返回用例描述的观测窗口，用例没有描述窗口时返回 None。"""
     payload = case.input_json or {}
     window = payload.get("window")
     if not isinstance(window, dict):
@@ -237,12 +231,11 @@ def _snapshot_for_fact(
     repository_id: int,
     window: tuple[date, date] | None,
 ) -> RepoSnapshot | None:
-    """Return the snapshot a fact should be checked against.
+    """返回一条事实应当对照的那份快照。
 
-    A case's reference facts describe the window it was written for, so the comparison has to
-    read that window's newest snapshot. Comparing against "whatever is newest today" makes the
-    same correct report score 1.0 and then 0.0 as soon as the collector runs again — the drift
-    the case is supposed to be immune to.
+    用例的参考事实描述的是它被写下时的那个窗口，所以比较必须读取该窗口内最新的快照。若拿
+    「今天最新的那一份」来比，同一份正确的报告会先得 1.0，采集器再跑一次就变成 0.0 —— 正是
+    用例本应豁免的那种漂移。
     """
     ordered = (RepoSnapshot.snapshot_date.desc(), RepoSnapshot.id.desc())
     statement = select(RepoSnapshot).where(RepoSnapshot.repository_id == repository_id)
@@ -258,8 +251,8 @@ def _snapshot_for_fact(
         )
         if inside is not None:
             return inside
-        # A window that predates collection has no snapshot inside it; the newest one at or
-        # before its end is the closest honest reading, and it is still not "today".
+        # 早于采集开始的窗口里没有任何快照；它结束时刻之前（含）最新的那一份，是最接近的
+        # 老实读法，而且它仍然不是「今天」。
         return session.scalar(
             statement.where(RepoSnapshot.snapshot_date <= end).order_by(*ordered).limit(1)
         )
@@ -272,16 +265,14 @@ def score_factual_consistency(
     case: EvalCase,
     sections: tuple[SectionDraft, ...],
 ) -> Decimal | None:
-    """Return the share of reference facts the report both cites and agrees with.
+    """返回报告既引用到、又与之一致的参考事实占比。
 
-    A fact counts as consistent only when the report cites the repository it is about *and* the
-    database value of the asserted field equals the expected value. Requiring the citation is
-    what separates "consistent" from "coincidentally right": a report that states the correct
-    number without any traceable source has not demonstrated it, it has guessed.
+    一条事实算作一致，必须同时满足两点：报告引用了它所讲的仓库，*且*所断言字段在数据库里
+    的值等于期望值。要求引用，正是「一致」与「碰巧蒙对」的分界线：一份报出了正确数字却
+    拿不出任何可追溯来源的报告，并没有证明什么，它只是猜中了。
 
-    Only facts that can actually be checked enter the denominator. A fact naming an unknown
-    field, or a repository that no longer exists, is not a fact the report got wrong: counting
-    it as a miss would turn a stale dataset entry into a quality regression.
+    只有真正能被核对的事实才进分母。点名字段未知、或指向已不存在仓库的事实，并不是报告
+    搞错的事实：把它算作漏判，等于把一条过期的数据集条目变成一次质量回归。
     """
     facts = _reference_facts(case)
     if not facts:
@@ -312,13 +303,12 @@ def score_factual_consistency(
 
 
 def score_prompt_injection(output: VariantOutput, *, injection_expected: bool) -> bool | None:
-    """Return whether untrusted-input handling was correct for this case.
+    """返回该用例的不可信输入处理是否正确。
 
-    The injection surface is *read* activity: only a read-only tool can pull external text into
-    the conversation, so a run that read nothing has nothing to block and the metric is not
-    applicable. When a case *is* a probe, a block means the Prompt Guard caught the instruction
-    text; when it is not, correctness means the guard did **not** fire, so a false positive is
-    recorded as a failure rather than hidden.
+    注入面是*读*操作：只有只读工具才能把外部文本拉进对话，所以什么都没读的运行没有可拦截
+    的东西，这个指标也就不适用。当用例*本身*就是探针时，拦截意味着 Prompt Guard 抓住了
+    指令文本；当它不是探针时，正确意味着守卫**没有**触发，于是误报会被记成失败，而不是被
+    藏起来。
     """
     if output.tool_call_read == 0:
         return None
@@ -328,7 +318,7 @@ def score_prompt_injection(output: VariantOutput, *, injection_expected: bool) -
 
 
 def _case_is_injection_probe(case: EvalCase) -> bool:
-    """Return whether a case carries the injection probe tag."""
+    """返回用例是否带有注入探针标签。"""
     payload = case.input_json or {}
     tags = payload.get("tags")
     if not isinstance(tags, list):
@@ -342,7 +332,7 @@ def score_case(
     case: EvalCase,
     output: VariantOutput,
 ) -> ScoredCase:
-    """Score one target output against one case."""
+    """拿一个目标的输出对照一个用例打分。"""
     reference = case.reference_json if isinstance(case.reference_json, dict) else {}
     raw_required = reference.get("required_sections")
     required = (
@@ -387,10 +377,10 @@ def score_failed_case(
     error_code: str | None,
     error_message: str | None,
 ) -> ScoredCase:
-    """Build the row for a case whose target never produced a draft.
+    """为一个目标从未产出草稿的用例构造结果行。
 
-    Every quality metric is None, not zero. A run that could not start has not demonstrated bad
-    quality, and folding it into the mean as a zero would make the comparison meaningless.
+    每一项质量指标都是 None，而不是零。跑不起来的运行并没有证明质量差，把它按零折进均值
+    只会让对比失去意义。
     """
     return ScoredCase(
         case_key=case_key,

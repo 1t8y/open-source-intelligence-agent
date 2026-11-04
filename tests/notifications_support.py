@@ -1,7 +1,7 @@
-"""Push-channel stubs and report seeding shared by the notification, API, and web tests.
+"""通知、API 与 Web 测试共用的推送渠道替身与报告种子数据。
 
-Like `reports_support.py` this sits at the top of `tests/` so every test directory can import
-it as a plain top-level module.
+和 `reports_support.py` 一样，这个文件放在 `tests/` 顶层，
+各测试目录才能把它当作普通的顶层模块直接导入。
 """
 
 from __future__ import annotations
@@ -15,17 +15,17 @@ from support import Workspace
 from open_source_intelligence.notifications.channels import DeliveryReceipt, OutboundMessage
 from open_source_intelligence.persistence.models.reporting import Report
 
-#: The two statuses a report may be pushed from, spelled out so tests read like the rule.
+#: 报告允许被推送的两种状态，单独列出来，让测试读起来就像规则本身。
 APPROVED = "approved"
 PUBLISHED = "published"
 
 
 @dataclass(slots=True)
 class StubChannel:
-    """Deterministic channel that records what it was asked to send.
+    """记录每一次发送请求的确定性渠道替身。
 
-    `fail_times` makes the first N attempts fail, which is how the retry tests build a transport
-    that starts broken and then recovers without touching the network.
+    `fail_times` 会让前 N 次尝试失败，重试测试正是靠它造出一个
+    「先坏后自愈」的传输层，全程不碰网络。
     """
 
     channel_name: str = "email"
@@ -36,11 +36,11 @@ class StubChannel:
 
     @property
     def channel(self) -> str:
-        """Return the channel this stub stands in for."""
+        """返回这个替身所代理的渠道名。"""
         return self.channel_name
 
     def send(self, *, destination: str, message: OutboundMessage) -> DeliveryReceipt:
-        """Record the attempt and fail the first `fail_times` of them."""
+        """记录本次尝试，并让前 `fail_times` 次尝试失败。"""
         self.attempts += 1
         self.sent.append((destination, message))
         if self.attempts <= self.fail_times:
@@ -56,11 +56,11 @@ def seed_pushable_report(
     visibility: str = "INTERNAL",
     sensitivity: str = "INTERNAL",
 ) -> Report:
-    """Generate a report and arrange it into one of the statuses a push is allowed from.
+    """生成一份报告，并把它摆到允许推送的某个状态上。
 
-    The status is assigned directly because these tests are about the *push* guards, not about
-    the publishing state machine: the pushable statuses are reached through the publish workflow
-    elsewhere, and re-running it here would only make the tests slower and less focused.
+    状态直接赋值，是因为这些用例考察的是*推送*侧的守卫，而不是发布
+    状态机：可推送状态在别处由发布流程走到，这里再跑一遍流程只会让
+    测试更慢、焦点更散。
     """
     case = build_report(session, workspace, publish_mode="MANUAL")
     report = case.reload(session)

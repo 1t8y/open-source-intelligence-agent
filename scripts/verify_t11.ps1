@@ -6,11 +6,11 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $projectRoot
 
-# The smoke prints its payload as UTF-8 with `ensure_ascii=False`, because a report title is
-# Chinese ('<topic> 开源技术情报周报（<date>）'). A native command's stdout is decoded using the
-# console code page rather than UTF-8, so without this the title arrives as mangled bytes and
-# `ConvertFrom-Json` fails part-way through the string. Both sides are pinned rather than one:
-# `PYTHONIOENCODING` decides what the child *writes*, the console encoding what PowerShell *reads*.
+# smoke 脚本以 `ensure_ascii=False` 按 UTF-8 打印其载荷，因为报告标题是中文
+# （'<topic> 开源技术情报周报（<date>）'）。原生命令的 stdout 会按控制台代码页而非 UTF-8
+# 解码，若不这样做，标题就会以乱码字节的形式到达，`ConvertFrom-Json` 会在字符串中间解析
+# 失败。两端都要固定而不是只固定一端：`PYTHONIOENCODING` 决定子进程*写入*什么，
+# 控制台编码决定 PowerShell *读取*什么。
 $previousOutputEncoding = [Console]::OutputEncoding
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = 'utf-8'
@@ -76,7 +76,7 @@ if ($smoke.agent_status -ne 'completed') {
     throw "T11 Agent draft did not complete: $smokeOutput"
 }
 
-# Criterion 1: a fabricated citation is caught by the Verifier.
+# 判据 1：捏造的引用会被 Verifier 拦下。
 if ($smoke.verification.failed_verdict -ne 'failed') {
     throw "T11 Verifier accepted a fabricated citation: $smokeOutput"
 }
@@ -87,7 +87,7 @@ if ($smoke.verification.passed_verdict -ne 'passed') {
     throw "T11 Verifier rejected the restored report: $smokeOutput"
 }
 
-# Criterion 2: a clean `AUTO_WITH_DELAY` report waits out its withdrawal window.
+# 判据 2：一份干净的 `AUTO_WITH_DELAY` 报告会等完它的撤回窗口。
 if ($smoke.delayed.decision_status -ne 'scheduled' -or $smoke.delayed.decision_requires_review -ne $false) {
     throw "T11 clean report was not queued for delayed release: $smokeOutput"
 }
@@ -104,7 +104,7 @@ if ($smoke.delayed.late_released_status -ne 'published' -or $smoke.delayed.final
     throw "T11 did not release the report once the window elapsed: $smokeOutput"
 }
 
-# Criterion 3: `MANUAL` cannot publish without an approval record.
+# 判据 3：`MANUAL` 没有审批记录就不能发布。
 if ($smoke.manual.review_request_status -ne 'pending_review' -or $smoke.manual.review_request_requires_review -ne $true) {
     throw "T11 did not park the MANUAL report for review: $smokeOutput"
 }

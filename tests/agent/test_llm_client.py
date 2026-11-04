@@ -1,4 +1,4 @@
-"""Tests for the model provider adapters."""
+"""守护模型供应商适配器的用例。"""
 
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ def test_offline_plan_is_deterministic() -> None:
 
 
 def test_offline_reads_run_context_from_user_messages_only() -> None:
-    """Placeholder blocks in the system prompt must never be mistaken for run context."""
+    """证明系统 Prompt 里的占位块绝不会被当成运行上下文。"""
     system = (
         '<research_window>{"start": "...", "end": "..."}</research_window>'
         "<candidate_repos>[9]</candidate_repos>"
@@ -127,7 +127,7 @@ def test_offline_write_turn_covers_every_section() -> None:
 
 
 def _observed_trail() -> list[ChatMessage]:
-    """Rebuild the recorded tool trail of a first research run with no prior reports."""
+    """重建一次「首轮研究、没有历史报告」运行所记录的工具体迹。"""
     calls = (
         ModelToolCall(call_id="profile-1", name="get_repository_profile", arguments={"repo_id": 1}),
         ModelToolCall(call_id="metrics-1", name="query_repo_metrics", arguments={"repo_id": 1}),
@@ -158,7 +158,7 @@ def _observed_trail() -> list[ChatMessage]:
 
 
 def test_offline_draft_never_saves_a_section_without_citations() -> None:
-    """Without prior reports every section must still cite the observations behind it."""
+    """证明即使没有历史报告，每个章节也仍须引用支撑它的那些观测。"""
     turn = OfflineModelClient().complete(_observed_trail(), ())
     sections: Any = json.loads(turn.text)["sections"]
     by_key = {section["section_key"]: section for section in sections}
@@ -388,11 +388,10 @@ def test_openai_client_leaves_cost_at_zero_without_prices() -> None:
 
 
 def test_a_truncated_response_still_reports_what_it_cost() -> None:
-    """A cut-off answer is unusable, but it was billed, so its usage has to come back with it.
+    """证明被截断的回答虽然不可用，但它已经计费，用量必须随之返回。
 
-    Dropping the usage block when `finish_reason == "length"` made the tokens vanish from
-    `agent_runs` and the budget walk backwards: a run could truncate repeatedly and never spend
-    any of its allowance.
+    `finish_reason == "length"` 时丢掉 usage 块，会让 token 从 `agent_runs` 里凭空
+    消失、让预算往回走：一次运行可以反复截断，却一点额度都没花掉。
     """
 
     def handler(request: httpx.Request) -> httpx.Response:

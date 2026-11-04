@@ -1,4 +1,4 @@
-"""Tests for `save_report_section`: draft creation, idempotency, and versioning."""
+"""守护 `save_report_section` 的用例：草稿创建、幂等与版本。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def _section_count(session) -> int:
 
 
 def test_first_save_creates_draft_and_version_one(workspace: Workspace) -> None:
-    """Saving a section creates the run's draft and returns version 1."""
+    """证明保存章节会为这次运行创建草稿并返回版本 1。"""
     topic, run = _seed(workspace)
     registry = build_default_registry()
 
@@ -52,7 +52,7 @@ def test_first_save_creates_draft_and_version_one(workspace: Workspace) -> None:
 
 
 def test_identical_content_is_idempotent(workspace: Workspace) -> None:
-    """Re-saving the same digest returns the existing version without a new row."""
+    """证明同样的摘要再存一次返回已有版本，不新增行。"""
     topic, run = _seed(workspace)
     registry = build_default_registry()
     ctx = workspace.context(topic.id, agent_run_id=run.id)
@@ -71,7 +71,7 @@ def test_identical_content_is_idempotent(workspace: Workspace) -> None:
 
 
 def test_changed_content_bumps_the_version(workspace: Workspace) -> None:
-    """New content for the same section creates the next version."""
+    """证明同一章节的新内容会生成下一个版本。"""
     topic, run = _seed(workspace)
     registry = build_default_registry()
     ctx = workspace.context(topic.id, agent_run_id=run.id)
@@ -96,7 +96,7 @@ def test_changed_content_bumps_the_version(workspace: Workspace) -> None:
 
 
 def test_distinct_sections_share_one_draft(workspace: Workspace) -> None:
-    """Different section keys live in the same per-run draft."""
+    """证明不同的章节键共用同一份「每次运行一份」的草稿。"""
     topic, run = _seed(workspace)
     registry = build_default_registry()
     ctx = workspace.context(topic.id, agent_run_id=run.id)
@@ -122,7 +122,7 @@ def test_distinct_sections_share_one_draft(workspace: Workspace) -> None:
 
 
 def test_unknown_section_key_is_rejected(workspace: Workspace) -> None:
-    """Only template sections may be written."""
+    """证明只允许写入模板章节。"""
     topic, run = _seed(workspace)
     registry = build_default_registry()
 

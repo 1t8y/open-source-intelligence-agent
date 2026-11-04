@@ -1,13 +1,13 @@
-"""Tests for the risk-based publish policy and the report state machine.
+"""守护基于风险的发布策略与报告状态机。
 
-The state machine declared in `INTERFACES.md` §8 is the contract under test:
+`INTERFACES.md` §8 声明的状态机就是被测的契约：
 
 ```text
 draft -> pending_review -> approved -> scheduled -> published
 ```
 
-with `failed` terminal and `changes_requested` as the return branch. Policy must only ever
-tighten the configured `publish_mode`, never loosen it.
+其中 `failed` 为终态，`changes_requested` 是回退分支。策略只能收紧配置好的
+`publish_mode`，绝不能放松它。
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ def _force_scheduled(
     publish_at=None,
     verify: bool = True,
 ) -> Report:
-    """Park a report in `scheduled` with (optionally) a passing verification."""
+    """把报告摆到 `scheduled`，并（可选地）先跑一次通过的校验。"""
     if verify:
         verify_report(session, report_id=case.report_id, now=NOW)
     report = case.reload(session)
@@ -106,7 +106,7 @@ def _prepare_case(
     prior_publication: bool = True,
     repo_count: int = 2,
 ) -> SeededReport:
-    """Build a report and, by default, give its topic an earlier published report."""
+    """建一份报告，并默认给它的主题补一份更早的已发布报告。"""
     case = build_report(session, workspace, publish_mode=publish_mode, repo_count=repo_count)
     if prior_publication:
         seed_published_sibling(session, case)
@@ -114,7 +114,7 @@ def _prepare_case(
 
 
 # --------------------------------------------------------------------------------------
-# Policy evaluation
+# 策略评估
 # --------------------------------------------------------------------------------------
 
 
@@ -122,7 +122,7 @@ def test_auto_with_delay_schedules_a_clean_report_after_the_window(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A routine internal report is queued, not blocked, once the topic is not a first run."""
+    """主题不是首轮时，常规的内部报告应当入队，而不是被挡住。"""
     seed_published_sibling(session, report_case)
 
     decision = evaluate_publish_policy(session, report_id=report_case.report_id, now=NOW)
@@ -138,7 +138,7 @@ def test_delay_minutes_come_from_settings(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Operators control the withdrawal window through configuration."""
+    """撤回窗口由运维通过配置控制。"""
     seed_published_sibling(session, report_case)
 
     decision = evaluate_publish_policy(
@@ -155,7 +155,7 @@ def test_first_run_asks_for_review_on_manual(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A MANUAL report's first run has no baseline, so a human must sign off."""
+    """`MANUAL` 报告的首轮没有基线，必须由人签字。"""
     case = _prepare_case(session, workspace, publish_mode=MANUAL, prior_publication=False)
 
     decision = evaluate_publish_policy(session, report_id=case.report_id, now=NOW)
@@ -170,11 +170,11 @@ def test_auto_with_delay_skips_first_run_review(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """The unattended auto-publish path does not hold a topic's first report back.
+    """无人值守的自动发布路径，不会把主题的第一份报告卡住。
 
-    `AUTO_WITH_DELAY` already carries a verification gate and a withdrawal window, so requiring
-    a human sign-off on the first report would stall every new auto-published topic. The first
-    run must schedule instead of blocking, and must not carry `FIRST_RUN`.
+    `AUTO_WITH_DELAY` 本身已经带着校验闸门与撤回窗口，若首份报告还要人签字，
+    每一个新接入自动发布的主题都会被拖住。首轮必须入队而不是阻塞，也不该带
+    `FIRST_RUN` 这个理由。
     """
     decision = evaluate_publish_policy(session, report_id=report_case.report_id, now=NOW)
 
@@ -188,7 +188,7 @@ def test_low_citation_coverage_escalates_to_review(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A report whose citations were pruned cannot auto-publish even on a known topic."""
+    """引用被删过的报告，即便在熟主题上也不能自动发布。"""
     seed_published_sibling(session, report_case)
     for source in _sources(session, report_case.report_id, APPENDIX_KEY):
         session.delete(source)
@@ -207,7 +207,7 @@ def test_sensitive_artifact_escalates_to_review(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Credential-shaped text survives into the policy as a concrete block reason."""
+    """像凭据的文本会一路传到策略里，变成具体的拦截理由。"""
     seed_published_sibling(session, report_case)
     report = report_case.reload(session)
     report.content_markdown += '\napi_key = "sk-abcdefghijklmnopqrst"\n'
@@ -223,7 +223,7 @@ def test_confidential_sensitivity_escalates_to_review(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A confidential report is never released unattended."""
+    """机密报告永远不会在无人值守的情况下放出去。"""
     seed_published_sibling(session, report_case)
     report = report_case.reload(session)
     report.sensitivity = "CONFIDENTIAL"
@@ -240,7 +240,7 @@ def test_manual_mode_always_requires_review(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`MANUAL` is a ceiling, so even a spotless report still waits for a person."""
+    """`MANUAL` 是天花板：再干净的报告也得等人点头。"""
     case = _prepare_case(session, workspace, publish_mode=MANUAL)
 
     decision = evaluate_publish_policy(session, report_id=case.report_id, now=NOW)
@@ -255,7 +255,7 @@ def test_auto_requires_internal_visibility(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`AUTO` is reserved for internal reports; a narrower scope goes through review."""
+    """`AUTO` 只留给内部报告；范围收窄就得走复核。"""
     case = _prepare_case(session, workspace, publish_mode=AUTO)
 
     decision = evaluate_publish_policy(session, report_id=case.report_id, now=NOW)
@@ -275,7 +275,7 @@ def test_auto_publishes_immediately_when_clean_and_internal(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`AUTO` has no withdrawal window: `publish_at` equals the decision moment."""
+    """`AUTO` 没有撤回窗口：`publish_at` 就是判定时刻。"""
     case = _prepare_case(session, workspace, publish_mode=AUTO)
     report = case.reload(session)
     report.visibility = "INTERNAL"
@@ -290,13 +290,13 @@ def test_auto_publishes_immediately_when_clean_and_internal(
 
 
 def test_evaluating_an_unknown_report_is_a_caller_error(session: Session) -> None:
-    """Policy evaluation never silently succeeds on a missing report."""
+    """策略评估面对不存在的报告，绝不悄悄成功。"""
     with pytest.raises(ReportGenerationError, match="does not exist"):
         evaluate_publish_policy(session, report_id=987654, now=NOW)
 
 
 # --------------------------------------------------------------------------------------
-# Human review
+# 人工复核
 # --------------------------------------------------------------------------------------
 
 
@@ -312,7 +312,7 @@ def test_record_review_approve_clears_for_publishing(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """`approve` is explicit consent: the report becomes eligible for the queue."""
+    """`approve` 是明确的同意：报告由此获得入队资格。"""
     _park_for_review(session, report_case)
 
     outcome = record_review(
@@ -337,7 +337,7 @@ def test_record_review_request_changes_sends_it_back(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """`request_changes` returns the report to the rewrite path, not the queue."""
+    """`request_changes` 把报告送回改写路径，而不是入队。"""
     _park_for_review(session, report_case)
 
     outcome = record_review(
@@ -357,7 +357,7 @@ def test_record_review_reject_terminates_as_failed(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """`reject` is terminal, so the report can never be published afterwards."""
+    """`reject` 是终态，此后这份报告永不可能发布。"""
     _park_for_review(session, report_case)
 
     outcome = record_review(
@@ -376,7 +376,7 @@ def test_record_review_requires_pending_state(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A decision may only be recorded while the report actually awaits review."""
+    """只有在报告确实等着复核时，才能记录决定。"""
     report = report_case.reload(session)
     report.status = "scheduled"
     session.commit()
@@ -394,7 +394,7 @@ def test_record_review_rejects_an_unknown_decision(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Only the three declared decisions are accepted."""
+    """只接受声明过的三种决定。"""
     _park_for_review(session, report_case)
 
     with pytest.raises(ReportGenerationError, match="unsupported review decision"):
@@ -406,11 +406,10 @@ def test_record_review_rejects_a_foreign_edited_version(
     workspace: Workspace,
     report_case: SeededReport,
 ) -> None:
-    """`edited_version_id` must name a version of *this* report.
+    """`edited_version_id` 必须指向*这份*报告的版本。
 
-    A foreign key only proves the row exists, so a version belonging to another report used
-    to be recorded silently. The check also runs before the transition, so a refused review
-    leaves the report where it was.
+    外键只能证明那一行存在，所以属于另一份报告的版本此前会被悄悄记下。这项检查
+    也排在状态迁移之前，被拒绝的复核就不会挪动报告。
     """
     _park_for_review(session, report_case)
     other = build_report(session, workspace, publish_mode=AUTO_WITH_DELAY)
@@ -435,7 +434,7 @@ def test_record_review_rejects_an_unknown_edited_version(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """An unknown id is a rejected request, not a database-level failure."""
+    """未知 id 是一次被拒的请求，而不是数据库层面的失败。"""
     _park_for_review(session, report_case)
 
     with pytest.raises(ReportGenerationError, match="no version row"):
@@ -449,7 +448,7 @@ def test_record_review_rejects_an_unknown_edited_version(
 
 
 # --------------------------------------------------------------------------------------
-# Release preconditions (`INV-5`)
+# 发布前置条件（`INV-5`）
 # --------------------------------------------------------------------------------------
 
 
@@ -457,7 +456,7 @@ def test_publish_report_requires_a_passing_verification(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Publishing without a verdict is exactly what `INV-5` forbids."""
+    """没有判定就发布，正是 `INV-5` 所禁止的。"""
     _force_scheduled(session, report_case, verify=False)
 
     with pytest.raises(PublishPolicyBlocked, match="no passing verification"):
@@ -470,7 +469,7 @@ def test_publish_report_requires_a_failed_verification_to_block(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A recorded *failed* verdict is just as blocking as a missing one."""
+    """已记录的*失败*判定，与根本没有判定一样会挡路。"""
     report = report_case.reload(session)
     report.content_markdown = report.content_markdown.replace("## 本周摘要", "## 摘要", 1)
     session.commit()
@@ -484,7 +483,7 @@ def test_manual_publish_requires_an_approval(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`MANUAL` reports carry an extra gate: the version must have been approved."""
+    """`MANUAL` 报告多一道闸门：这个版本必须被批准过。"""
     case = _prepare_case(session, workspace, publish_mode=MANUAL)
     _force_scheduled(session, case, verify=True)
 
@@ -510,7 +509,7 @@ def test_publish_report_refuses_before_the_window_elapses(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """The withdrawal window is enforced inside the release, not by the caller."""
+    """撤回窗口在发布动作内部强制，而不是靠调用方自觉。"""
     _force_scheduled(session, report_case, publish_at=NOW + timedelta(hours=1))
 
     with pytest.raises(ReportStateError, match="withdrawal window has not elapsed"):
@@ -521,7 +520,7 @@ def test_publish_report_requires_scheduled_state(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Only a queued report can be released."""
+    """只有已入队的报告才能被放出去。"""
     with pytest.raises(ReportStateError, match="only a scheduled report"):
         publish_report(session, report_id=report_case.report_id, now=NOW)
 
@@ -530,7 +529,7 @@ def test_publish_report_records_a_run_and_audit(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A successful release leaves a `publish` pipeline run and an audit event."""
+    """一次成功的发布要留下一条 `publish` 流水线运行与一条审计事件。"""
     _force_scheduled(session, report_case)
 
     published = publish_report(session, report_id=report_case.report_id, now=NOW)
@@ -542,7 +541,7 @@ def test_publish_report_records_a_run_and_audit(
     assert runs[0].status == "succeeded"
     assert runs[0].metrics_json is not None
     assert runs[0].metrics_json["stage"] == "publish"
-    # The pinned clock must close the run too, or `finished_at >= started_at` breaks.
+    # 钉住的时钟也必须用于收尾，否则 `finished_at >= started_at` 会不成立。
     assert runs[0].started_at == NOW
     assert runs[0].finished_at == NOW
     audits = session.scalars(select(AuditLog).where(AuditLog.action == "report.publish")).all()
@@ -553,10 +552,10 @@ def test_withdraw_report_returns_a_published_report_to_draft(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Withdrawal is the only edge out of `published`, and it clears the publish window.
+    """撤回是离开 `published` 的唯一一条边，它同时清掉发布窗口。
 
-    Until this existed, a published report could not be corrected at all: editing needs a draft
-    and rolling back needs a second version, so a single-version published report was stuck.
+    在它出现之前，已发布的报告根本没法修正：改写需要草稿态，回滚需要第二个版本，
+    于是只有单个版本的已发布报告就被卡死了。
     """
     _force_scheduled(session, report_case)
     publish_report(session, report_id=report_case.report_id, now=NOW)
@@ -573,7 +572,7 @@ def test_withdraw_report_returns_a_published_report_to_draft(
     assert withdrawn.status == "draft"
     assert withdrawn.publish_at is None
     assert withdrawn.published_at is None
-    # Withdrawing is not a delete and not a revision: the published version stays as it was.
+    # 撤回既不是删除也不是修订：已发布的版本原样保留。
     assert withdrawn.current_version == published_version
     events = session.scalars(select(AuditLog).where(AuditLog.action == "report.withdraw")).all()
     assert [event.result for event in events] == ["success"]
@@ -585,7 +584,7 @@ def test_withdraw_report_refuses_a_report_that_was_never_published(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A draft has nothing to withdraw; the state machine refuses the edge, not the caller."""
+    """草稿没有什么可撤回的；拒绝这条边的是状态机，不是调用方。"""
     assert report_case.reload(session).status == "draft"
 
     with pytest.raises(ReportStateError, match="only a published report"):
@@ -595,7 +594,7 @@ def test_withdraw_report_refuses_a_report_that_was_never_published(
 
 
 # --------------------------------------------------------------------------------------
-# Applying the policy
+# 应用策略
 # --------------------------------------------------------------------------------------
 
 
@@ -603,7 +602,7 @@ def test_publish_or_request_review_queues_a_clean_delayed_report(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """The end-to-end path verifies, decides, persists the verdict, and queues the report."""
+    """端到端路径要校验、判定、把判定落库，再把报告入队。"""
     seed_published_sibling(session, report_case)
 
     outcome = publish_or_request_review(session, report_id=report_case.report_id, now=NOW)
@@ -625,7 +624,7 @@ def test_publish_or_request_review_parks_a_manual_report(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Asking for a human is a normal result, so the decision run still succeeds."""
+    """转人工是正常结果，所以这次判定运行仍然算成功。"""
     case = _prepare_case(session, workspace, publish_mode=MANUAL)
 
     outcome = publish_or_request_review(session, report_id=case.report_id, now=NOW)
@@ -644,7 +643,7 @@ def test_publish_or_request_review_does_not_move_a_parked_report(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Re-evaluating a report already awaiting review must not advance it."""
+    """重新评估一份已在等复核的报告，不能把它往前推。"""
     report = report_case.reload(session)
     report.status = "pending_review"
     session.commit()
@@ -659,7 +658,7 @@ def test_publish_or_request_review_refuses_terminal_states(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A failed or returned report must be regenerated before it can be published again."""
+    """失败或被退回的报告，必须重新生成后才能再次发布。"""
     report = report_case.reload(session)
     report.status = "failed"
     session.commit()
@@ -669,7 +668,7 @@ def test_publish_or_request_review_refuses_terminal_states(
 
 
 # --------------------------------------------------------------------------------------
-# The publishing sweep
+# 发布清扫
 # --------------------------------------------------------------------------------------
 
 
@@ -677,7 +676,7 @@ def test_publish_due_reports_leaves_early_reports_alone(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """A report still inside its window is not released by the sweep."""
+    """仍在窗口内的报告，清扫不会把它放出去。"""
     _force_scheduled(session, report_case, publish_at=NOW + timedelta(minutes=30))
 
     released = publish_due_reports(session, now=NOW)
@@ -690,7 +689,7 @@ def test_publish_due_reports_releases_due_reports(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Once the window has elapsed the sweep publishes the report."""
+    """窗口一过，清扫就会把报告发布出去。"""
     _force_scheduled(session, report_case, publish_at=NOW - timedelta(minutes=1))
 
     released = publish_due_reports(session, now=NOW)
@@ -706,7 +705,7 @@ def test_publish_due_reports_promotes_approved_reports(
     session: Session,
     report_case: SeededReport,
 ) -> None:
-    """Explicit approval bypasses the withdrawal window inside a single sweep."""
+    """明确的批准会让撤回窗口在同一次清扫里被绕过。"""
     verify_report(session, report_id=report_case.report_id, now=NOW)
     report = report_case.reload(session)
     report.status = "approved"
@@ -725,7 +724,7 @@ def test_publish_due_reports_marks_blocked_reports_and_continues(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """One unobtainable verdict must not abort the release of the other reports."""
+    """一份拿不到判定，不该中止其它报告的发布。"""
     good = build_report(session, workspace, publish_mode=AUTO_WITH_DELAY)
     blocked = build_report(session, workspace, publish_mode=AUTO_WITH_DELAY)
     _force_scheduled(session, good, verify=True)
@@ -751,6 +750,6 @@ def test_publish_due_reports_marks_blocked_reports_and_continues(
 def test_publish_due_reports_rejects_a_non_positive_limit(
     session: Session,
 ) -> None:
-    """A sweep over nothing is a programming error, not a silent no-op."""
+    """清扫范围为零是编程错误，不是悄悄什么都不做。"""
     with pytest.raises(ValueError, match="limit must be at least 1"):
         publish_due_reports(session, now=NOW, limit=0)

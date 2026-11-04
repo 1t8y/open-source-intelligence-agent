@@ -1,11 +1,9 @@
-"""Read-side queries behind the observability overview.
+"""提供可观测性总览背后的读侧查询。
 
-`reports/queries.py` set the precedent this module follows: the API and web layers call these
-functions and never issue SQL themselves, and a window predicate is part of the `WHERE` clause
-rather than a post-filter applied afterwards.
+本模块沿用 `reports/queries.py` 立下的先例：API 与 Web 层调用这些函数，自己从不发 SQL；
+窗口条件写进 `WHERE` 子句里，而不是事后再做一次过滤。
 
-Nothing in this module writes a row. The overview is a pure read of what the pipeline, the
-Agent, the report and the evaluation layers already recorded.
+本模块不写任何一行。总览是对 pipeline、Agent、报告与评测各层已经记录的内容的纯读取。
 """
 
 from __future__ import annotations
@@ -55,15 +53,15 @@ from .metrics import (
     summarize_latency,
 )
 
-# The documented list contract limits `page_size` to 1-100; the same bound is applied here so
-# every list endpoint in the platform refuses an unbounded page the same way.
+# 文档化的列表契约把 `page_size` 限制在 1-100；这里施加同一个界，让平台上每个列表端点都以
+# 同一种方式拒绝无界的分页。
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
 
 @dataclass(frozen=True, slots=True)
 class AgentRunPage:
-    """One page of Agent runs plus the total matching the filters."""
+    """一页 Agent 运行，加上符合筛选条件的总数。"""
 
     items: tuple[AgentRun, ...]
     page: int
@@ -73,7 +71,7 @@ class AgentRunPage:
 
 @dataclass(frozen=True, slots=True)
 class StepTrace:
-    """One Agent step with the tool calls that hang off it."""
+    """一个 Agent 步骤，以及挂在它下面的工具调用。"""
 
     step: AgentStep
     tool_calls: tuple[ToolCall, ...]
@@ -81,7 +79,7 @@ class StepTrace:
 
 @dataclass(frozen=True, slots=True)
 class AgentRunTrace:
-    """A run's full trajectory, plus the report it produced when it produced one."""
+    """一次运行的完整轨迹，以及它在产出过报告时的那份报告。"""
 
     run: AgentRun
     topic_name: str | None
@@ -91,12 +89,12 @@ class AgentRunTrace:
 
 
 def clamp_page_size(page_size: int) -> int:
-    """Keep a requested page size inside the documented 1-100 range."""
+    """把请求的分页大小限制在文档规定的 1-100 区间内。"""
     return max(1, min(page_size, MAX_PAGE_SIZE))
 
 
 def resolve_window(*, now: datetime, window_days: int) -> Window:
-    """Clamp a requested window and turn it into the span every metric is computed over."""
+    """夹取请求的窗口，并把它变成所有指标所依据的时间跨度。"""
     days = max(MIN_WINDOW_DAYS, min(window_days, MAX_WINDOW_DAYS))
     return Window(days=days, start=now - timedelta(days=days), end=now)
 
@@ -108,7 +106,7 @@ def collect_metrics(
     window_days: int,
     settings: Settings | None = None,
 ) -> MetricsOverview:
-    """Aggregate every dashboard section for one window in a single read."""
+    """在一次读取里聚合某个窗口下的每个仪表盘小节。"""
     window = resolve_window(now=now, window_days=window_days)
     return MetricsOverview(
         window=window,
@@ -129,12 +127,11 @@ def list_agent_runs(
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> AgentRunPage:
-    """Return one page of Agent runs, newest first.
+    """返回一页 Agent 运行，最新的在前。
 
-    `review` narrows by whether a human has already written a conclusion on the run: `"open"` for
-    the ones nobody has read, `"done"` for the ones somebody has. It is a filter on this query
-    rather than a post-filter on the page so `total` counts what the reader is actually looking
-    at — a page of ten where eight are filtered out would otherwise still claim 50.
+    `review` 按「是否已有人写下结论」收窄范围：`"open"` 指还没人读过的，`"done"` 指已经有人
+    读过的。它是这条查询上的筛选条件，而不是对已取回的这一页做后置过滤，因此 `total` 统计的
+    就是读者真正看到的东西 —— 否则一页十条里有八条被过滤掉，它仍然会声称有 50 条。
     """
     resolved_page = max(1, page)
     resolved_size = clamp_page_size(page_size)
@@ -165,16 +162,15 @@ def list_agent_runs(
 
 
 def get_agent_run(session: Session, *, run_id: int) -> AgentRun | None:
-    """Return one Agent run, or `None` when it does not exist."""
+    """返回一次 Agent 运行，不存在时返回 `None`。"""
     return session.get(AgentRun, run_id)
 
 
 def get_agent_run_trace(session: Session, *, run_id: int) -> AgentRunTrace | None:
-    """Return a run's ordered steps, the tool calls under each step, and its report.
+    """返回一次运行按序排列的步骤、每个步骤下的工具调用，以及它的报告。
 
-    Tool calls whose `agent_step_id` is null are returned separately rather than dropped. The
-    foreign key degrades to null when a step row is removed, and silently losing the call is
-    exactly the evidence an operator needs when they are tracing a failure back to a tool.
+    `agent_step_id` 为 null 的工具调用会单独返回，而不是被丢掉。步骤行被删除时外键会退化成
+    null，而一次调用被悄悄吞掉，恰恰是运维把失败追溯回某个工具时最需要的那份证据。
     """
     run = session.get(AgentRun, run_id)
     if run is None:
@@ -211,7 +207,7 @@ def get_agent_run_trace(session: Session, *, run_id: int) -> AgentRunTrace | Non
 
 
 def _durations_ms(pairs: list[tuple[datetime | None, datetime | None]]) -> list[int]:
-    """Turn (start, finish) pairs into whole milliseconds, skipping unfinished rows."""
+    """把（开始，结束）时间对转成整毫秒，跳过尚未完成的行。"""
     return [
         int((finished - started).total_seconds() * 1000)
         for started, finished in pairs
@@ -220,11 +216,10 @@ def _durations_ms(pairs: list[tuple[datetime | None, datetime | None]]) -> list[
 
 
 def _pipeline_metrics(session: Session, window: Window) -> PipelineMetrics:
-    """Aggregate scheduled pipeline runs.
+    """聚合定时的 pipeline 运行。
 
-    Rows are attributed to a window by `started_at`, so a run that never started belongs to no
-    window. That is also why the run-type and status counts can be smaller than the number of
-    rows an operator sees in the queue itself.
+    行按 `started_at` 归属到窗口，因此从未开始的运行不属于任何窗口。这也是为什么按运行类型
+    和状态的计数，可能小于运维在队列本身里看到的行数。
     """
     rows = session.scalars(
         select(PipelineRun).where(
@@ -254,7 +249,7 @@ def _pipeline_metrics(session: Session, window: Window) -> PipelineMetrics:
 
 
 def _agent_metrics(session: Session, window: Window) -> AgentMetrics:
-    """Aggregate Agent runs, their token spend, and why the failing ones failed."""
+    """聚合 Agent 运行、它们的 token 开销，以及失败的那些为什么失败。"""
     rows = session.scalars(
         select(AgentRun).where(
             AgentRun.started_at >= window.start,
@@ -291,7 +286,7 @@ def _agent_metrics(session: Session, window: Window) -> AgentMetrics:
 
 
 def _tool_metrics(session: Session, window: Window) -> ToolMetrics:
-    """Aggregate whitelisted tool usage, busiest tool first."""
+    """聚合白名单工具的使用情况，最繁忙的工具在前。"""
     rows = session.scalars(
         select(ToolCall).where(
             ToolCall.created_at >= window.start,
@@ -329,7 +324,7 @@ def _tool_metrics(session: Session, window: Window) -> ToolMetrics:
 
 
 def _report_metrics(session: Session, window: Window) -> ReportMetrics:
-    """Aggregate report production and ARCHITECTURE §12's manual block rate."""
+    """聚合报告产出情况以及 ARCHITECTURE §12 的人工阻塞率。"""
     rows = session.scalars(
         select(Report).where(
             Report.generated_at >= window.start,
@@ -350,11 +345,10 @@ def _report_metrics(session: Session, window: Window) -> ReportMetrics:
 
 
 def _evaluation_metrics(session: Session, settings: Settings | None) -> EvaluationMetrics:
-    """Surface the newest evaluation sweep without re-running or re-judging anything.
+    """呈现最新一次评测批量，不重跑、也不重判任何东西。
 
-    The verdict is read from `compare_latest`, not recomputed here, so a green dashboard and a
-    green evaluation report are the same computation rather than two implementations that
-    happen to agree today.
+    结论读自 `compare_latest`，不在这里重算，因此全绿的仪表盘与全绿的评测报告是同一次计算，
+    而不是两套恰好今天还一致的实现。
     """
     latest_run = session.scalars(select(EvalRun).order_by(EvalRun.id.desc()).limit(1)).first()
     if latest_run is None:

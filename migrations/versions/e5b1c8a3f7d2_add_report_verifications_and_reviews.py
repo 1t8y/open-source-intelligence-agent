@@ -1,4 +1,7 @@
-"""add report verifications and reviews
+"""新增报告校验与人工评审表
+
+`report_verifications` 存机器校验结论，`report_reviews` 存人工裁决，二者都以
+（报告, 版本）为键。
 
 Revision ID: e5b1c8a3f7d2
 Revises: d9e4b7c1a2f3
@@ -18,29 +21,29 @@ depends_on: str | Sequence[str] | None = None
 
 
 def utc_datetime() -> sa.DateTime:
-    """Return the project MySQL UTC DATETIME type."""
+    """返回项目统一的 MySQL UTC `DATETIME` 类型。"""
     return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 def uint64() -> sa.BigInteger:
-    """Return the project unsigned BIGINT type."""
+    """返回项目统一的无符号 `BIGINT` 类型。"""
     return sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 def _has_table(table_name: str) -> bool:
-    """Return whether the migration already created one of its tables."""
+    """返回本迁移的某张表是否已经创建过。"""
     return table_name in sa.inspect(op.get_bind()).get_table_names()
 
 
 def _has_index(table_name: str, index_name: str) -> bool:
-    """Return whether an index already exists on a MySQL table."""
+    """返回 MySQL 表上是否已经有该索引。"""
     return index_name in {
         index["name"] for index in sa.inspect(op.get_bind()).get_indexes(table_name)
     }
 
 
 def _has_check(table_name: str, constraint_name: str) -> bool:
-    """Return whether a CHECK constraint already exists."""
+    """返回该 `CHECK` 约束是否已经存在。"""
     value = (
         op.get_bind()
         .execute(
@@ -57,7 +60,7 @@ def _has_check(table_name: str, constraint_name: str) -> bool:
 
 
 def _add_check(table_name: str, constraint_name: str, expression: str) -> None:
-    """Add a CHECK constraint once, tolerating a retry after partial MySQL DDL."""
+    """添加一次 `CHECK` 约束，并容忍 MySQL DDL 只执行一半时的重试。"""
     if _has_check(table_name, constraint_name):
         return
     op.execute(
@@ -68,7 +71,7 @@ def _add_check(table_name: str, constraint_name: str, expression: str) -> None:
 
 
 def upgrade() -> None:
-    """Create the Verifier verdict and human review tables."""
+    """创建 Verifier 判定表与人工评审表。"""
     if not _has_table("report_verifications"):
         op.create_table(
             "report_verifications",
@@ -165,7 +168,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the Verifier verdict and human review tables."""
+    """删除 Verifier 判定表与人工评审表。"""
     existing = set(sa.inspect(op.get_bind()).get_table_names())
     for table_name in ("report_reviews", "report_verifications"):
         if table_name in existing:

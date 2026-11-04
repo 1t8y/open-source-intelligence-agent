@@ -1,4 +1,4 @@
-"""Bootstrap standard roles and the initial administrator account."""
+"""初始化标准角色与初始管理员账号。"""
 
 import argparse
 import os
@@ -27,7 +27,7 @@ def bootstrap_admin(
     password: str,
     display_name: str,
 ) -> User:
-    """Create or promote an administrator and persist an audit event."""
+    """创建或提升一个管理员，并落一条审计事件。"""
     roles = ensure_roles(session)
     user = get_user_by_username(session, username)
     if user is None:
@@ -63,7 +63,7 @@ def bootstrap_admin(
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse bootstrap CLI arguments without accepting passwords on argv."""
+    """解析初始化 CLI 参数，且不从命令行参数接收密码。"""
     parser = argparse.ArgumentParser(description="Create standard roles and an admin user")
     parser.add_argument("--username", default="admin")
     parser.add_argument("--display-name", default="Administrator")
@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the bootstrap against the configured database."""
+    """针对已配置的数据库执行初始化。"""
     args = parse_args()
     password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD")
     if not password:

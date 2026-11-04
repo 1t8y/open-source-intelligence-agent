@@ -1,4 +1,4 @@
-"""Tests for validated application settings."""
+"""守护应用配置的校验行为。"""
 
 import pytest
 from pydantic import ValidationError
@@ -14,7 +14,7 @@ VALID_SETTINGS = {
 
 
 def test_test_settings_ignore_a_developer_dotenv(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test helpers must not inherit a developer's real provider configuration."""
+    """证明测试辅助不会继承开发者本机那套真实供应商配置。"""
     (tmp_path / ".env").write_text(
         "AGENT_PROVIDER=openai_compatible\nAGENT_API_BASE=https://example.com/v1\n",
         encoding="utf-8",
@@ -27,7 +27,7 @@ def test_test_settings_ignore_a_developer_dotenv(tmp_path, monkeypatch: pytest.M
 
 
 def test_valid_settings_load() -> None:
-    """A complete local configuration should validate."""
+    """证明一份完整的本地配置能够通过校验。"""
     settings = Settings(_env_file=None, **VALID_SETTINGS)
 
     assert settings.app_env == "local"
@@ -36,7 +36,7 @@ def test_valid_settings_load() -> None:
 
 
 def test_secret_value_is_masked_in_repr() -> None:
-    """Settings representations must not expose the application secret."""
+    """证明配置对象的字符串表示不会泄露应用密钥。"""
     settings = Settings(_env_file=None, **VALID_SETTINGS)
 
     assert "x" * 32 not in repr(settings)
@@ -44,7 +44,7 @@ def test_secret_value_is_masked_in_repr() -> None:
 
 
 def test_blank_optional_tokens_are_normalized_to_none() -> None:
-    """Blank optional source tokens must not create empty auth headers."""
+    """证明空白的可选源令牌不会变成空的认证请求头。"""
     settings = Settings(
         _env_file=None,
         **VALID_SETTINGS,
@@ -57,7 +57,7 @@ def test_blank_optional_tokens_are_normalized_to_none() -> None:
 
 
 def test_missing_required_settings_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing database, Redis, and secret configuration must fail fast."""
+    """证明缺了数据库、Redis 与密钥配置时会立刻失败。"""
     for name in ("DATABASE_URL", "REDIS_URL", "SECRET_KEY"):
         monkeypatch.delenv(name, raising=False)
 
@@ -66,7 +66,7 @@ def test_missing_required_settings_are_rejected(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_production_rejects_example_secret() -> None:
-    """Non-local environments must not use the documented example secret."""
+    """证明非本地环境不能沿用文档里的示例密钥。"""
     values = {
         **VALID_SETTINGS,
         "app_env": "production",
@@ -78,7 +78,7 @@ def test_production_rejects_example_secret() -> None:
 
 
 def test_unknown_explicit_setting_is_rejected() -> None:
-    """Configuration typos must fail instead of being silently ignored."""
+    """证明配置里的拼写错误会报错，而不是被悄悄忽略。"""
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **VALID_SETTINGS, unknown_setting=True)
 
@@ -92,7 +92,7 @@ def test_unknown_explicit_setting_is_rejected() -> None:
     ],
 )
 def test_invalid_runtime_configuration_is_rejected(field: str, value: str) -> None:
-    """Invalid timezone and service URLs must fail during settings loading."""
+    """证明非法时区与服务地址会在加载配置时就被拒绝。"""
     values = {**VALID_SETTINGS, field: value}
 
     with pytest.raises(ValidationError):

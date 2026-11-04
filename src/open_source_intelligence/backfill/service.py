@@ -1,10 +1,9 @@
-"""The backfill walk: page by page, cursor committed after each one.
+"""回填走查：一页一页地走，每页之后提交一次游标。
 
-Two properties shape everything below. The first is that a walk is *resumable*: the cursor
-is persisted per page, so an interruption costs the page in flight rather than the whole
-history. The second is that a walk is *paced*: a backfill is the one part of this system
-that asks a public API the same question fifty times in a row, so the request budget the
-data source row has carried since T4 finally gets spent.
+下面的一切都由两条性质塑造。第一，走查是*可续跑*的：游标按页持久化，所
+以一次中断只损失正在飞的那一页，而不是整段历史。第二，走查是*有节流*
+的：回填是本系统里唯一会连着向公共 API 问同一个问题五十次的部分，于是数
+据源行从 T4 起就带着的请求预算终于被花掉了。
 """
 
 from __future__ import annotations
@@ -51,20 +50,20 @@ BACKFILL_RUN_TYPE = "backfill"
 
 @dataclass(frozen=True, slots=True)
 class PageRecord:
-    """What one page of the walk produced."""
+    """走查中一页产出了什么。"""
 
     page: int
     item_count: int
     has_more: bool
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload."""
+        """返回可 JSON 序列化的载荷。"""
         return {"page": self.page, "item_count": self.item_count, "has_more": self.has_more}
 
 
 @dataclass(frozen=True, slots=True)
 class BackfillOutcome:
-    """Aggregated result of one backfill walk."""
+    """一次回填走查的汇总结果。"""
 
     job_id: int
     run_id: int
@@ -84,7 +83,7 @@ class BackfillOutcome:
     pages: tuple[PageRecord, ...]
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload for CLI, worker, and log output."""
+        """返回供 CLI、Worker 与日志输出使用的、可 JSON 序列化的载荷。"""
         return {
             "job_id": self.job_id,
             "run_id": self.run_id,
@@ -106,7 +105,7 @@ class BackfillOutcome:
 
 
 def require_paginated(collector: RepositoryCollector) -> PaginatedRepositoryCollector:
-    """Return the collector as a paging collector, or explain that it cannot page."""
+    """把采集器当作分页采集器返回，或说明它无法分页。"""
     if not isinstance(collector, PaginatedRepositoryCollector):
         raise BackfillUnsupportedCollector(
             f"collector '{collector.provider}' cannot be walked page by page"
@@ -122,29 +121,29 @@ def run_backfill(
     limiter: RateLimiter | None = None,
     now: datetime | None = None,
 ) -> BackfillOutcome:
-    """Walk a job's remaining pages, committing the cursor after each one.
+    """走查一个作业剩余的页，并在每页之后提交游标。
 
-    The cursor is committed per page rather than at the end, which is the entire point: a
-    walk killed after page 7 of 20 leaves a job whose `next_page` is 8, and the next run
-    starts there. Committing once on success would make every interruption a full replay.
+    游标按页提交而不是到最后才提交，这正是全部要点：一次在第 7 页（共
+    20 页）之后被杀掉的走查，会留下 `next_page` 为 8 的作业，下一次运行
+    就从那里开始。只在成功时提交一次，会让每次中断都变成完整重放。
 
-    A page's repositories and the cursor that points past them are committed in the same
-    transaction. Ingestion is idempotent on (source, provider_repo_id), so a replay could
-    not duplicate a row anyway - but this makes the crash window harmless rather than merely
-    survivable, and it means a cursor that moved is always a page that landed.
+    一页的仓库与指向它们之后的游标在同一个事务里提交。入库对
+    (source, provider_repo_id) 是幂等的，所以重放本来也不会重复一行 ——
+    但这让崩溃窗口变得无害，而不只是「可以扛过去」，也意味着一个前进过
+    的游标，永远对应一页真的落了地。
 
-    `limiter` defaults to one sized from the data source's own `rate_limit_per_minute`, so
-    the budget configured on the source row is the budget actually enforced. Passing one in
-    is how tests pace with an injected clock instead of real sleeps. `now` pins only the
-    boundaries - the claim and the close - while per-page heartbeats still come from the
-    wall clock, because a heartbeat that a caller froze would look like a dead walker.
+    `limiter` 默认按数据源自己的 `rate_limit_per_minute` 构造，于是源
+    行上配置的预算就是真正被执行的预算。传一个进去，是测试用注入时钟而
+    不是真实 sleep 来做节流的方式。`now` 只固定边界 —— 认领与收尾 ——
+    每页的心跳仍然来自墙上时钟，因为一个被调用方冻住的心跳，会看起来像
+    死掉的走查者。
 
-    Raises:
-        BackfillUnsupportedCollector: when the source cannot be paged.
-        BackfillJobBusy: when another walk still owns the cursor.
-        BackfillNotResumable: when the job has no pages left.
-        BackfillWalkFailed: when a page fails. The job and run rows already record the
-            failure and the page the cursor stopped on.
+    抛出：
+        BackfillUnsupportedCollector：源无法分页时。
+        BackfillJobBusy：另一个走查仍持有游标时。
+        BackfillNotResumable：作业已经没有剩余页时。
+        BackfillWalkFailed：某一页失败时。作业行与运行行已经记录了
+            失败，以及游标停在哪一页。
     """
     paginated = require_paginated(collector)
     source = ensure_data_source(session, collector)
@@ -164,9 +163,9 @@ def run_backfill(
     pages: list[PageRecord] = []
     items_this_attempt = 0
     exhausted = False
-    # Measured as a delta rather than read off the limiter directly: a limiter may outlive
-    # one walk (a resume reusing the same object is the obvious case), and an outcome that
-    # reported the running total would credit this walk with the waiting a previous one did.
+    # 以差值度量，而不是直接从限速器读取：一个限速器可能活过一次走查之后
+    # （续跑复用同一个对象就是最明显的情形），而一个报告累计总量的结果会把
+    # 上一次的等待算到这一次头上。
     paced_before = limiter.total_waited_seconds
     try:
         while job.next_page <= job.target_pages:
@@ -187,8 +186,8 @@ def run_backfill(
         finish_job(
             session, job, status=FAILED, error_code=error_code, error_message=message, now=now
         )
-        # The audit row rides along in the run's commit, so a failed walk leaves both
-        # records without a second transaction that could itself fail.
+        # 审计行随运行记录一起提交，于是一次失败的走查会留下两条记录，而不
+        # 必再开一个自己也可能失败的事务。
         record_audit_event(
             session,
             action="backfill.run",
@@ -255,7 +254,7 @@ def start_backfill(
     limiter: RateLimiter | None = None,
     now: datetime | None = None,
 ) -> BackfillOutcome:
-    """Create a job for a source and walk it in one call."""
+    """为一个源创建作业，并在一次调用里走完它。"""
     paginated = require_paginated(collector)
     job = create_job(
         session,
@@ -276,7 +275,7 @@ def resume_backfill(
     limiter: RateLimiter | None = None,
     now: datetime | None = None,
 ) -> BackfillOutcome:
-    """Resume a job from the cursor it stopped at."""
+    """从作业停下的游标处续跑。"""
     return run_backfill(
         session,
         job=require_job(session, job_id),
@@ -292,7 +291,7 @@ def _progress_metrics(
     items_this_attempt: int,
     exhausted: bool,
 ) -> dict[str, Any]:
-    """Describe one walk's progress for the run ledger."""
+    """为运行账本描述一次走查的进展。"""
     return {
         "backfill_job_id": job.id,
         "provider": job.provider,

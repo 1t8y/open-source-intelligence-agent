@@ -1,4 +1,6 @@
-"""add immutable report versions
+"""新增不可变的报告版本
+
+每次发布都留一份内容不可改的历史，供回滚与审计比对。
 
 Revision ID: d9e4b7c1a2f3
 Revises: c4a9e2f1d6b8
@@ -18,12 +20,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def utc_datetime() -> sa.DateTime:
-    """Return the project MySQL UTC DATETIME type."""
+    """返回项目统一的 MySQL UTC `DATETIME` 类型。"""
     return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 def upgrade() -> None:
-    """Create immutable report versions."""
+    """创建不可变的报告版本表。"""
     op.create_table(
         "report_versions",
         sa.Column(
@@ -84,7 +86,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop immutable report versions."""
+    """删除不可变的报告版本表。"""
     op.drop_index("ix_report_versions_report_created", table_name="report_versions")
     op.execute(
         sa.text("ALTER TABLE `report_versions` DROP CHECK `ck_report_versions_version_positive`")

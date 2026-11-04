@@ -1,9 +1,8 @@
-"""Integration tests for the push card in the server-rendered admin UI.
+"""守护管理界面里的推送卡片：同一条链路，换界面这条通道。
 
-They drive the T13 UI path over the same real route/service/persistence stack the JSON API
-tests use, and check the two things the UI adds on top: the action is gated by the cookie
-session plus the double-submit CSRF token, and the channel is taken from the allowlist row
-rather than from the browser.
+用例走的是 T13 界面路径，底层仍是 JSON API 测试用的那套真实路由 / 服务 /
+持久化，并检查界面在此之上新增的两件事：动作要过 Cookie 会话加双提交 CSRF
+令牌；渠道取自白名单那一行，而不是取自浏览器。
 """
 
 from __future__ import annotations
@@ -32,41 +31,41 @@ BASE = "/ui/reports"
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def admin(session: Session) -> Actor:
-    """An administrator, who may both read every report and push."""
+    """管理员：既能读全部报告，也能推送。"""
     return create_actor(session, username="ui-push-admin", role="ADMIN")
 
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """An editor on the team scope, holding the other write role."""
+    """团队范围上的编辑，持有另一个可写角色。"""
     return create_actor(session, username="ui-push-editor", role="EDITOR", data_scope="team")
 
 
 @pytest.fixture()
 def viewer(session: Session) -> Actor:
-    """A read-only user, who must not be able to push at all."""
+    """只读用户：完全不该有推送能力。"""
     return create_actor(session, username="ui-push-viewer", role="VIEWER")
 
 
 def _token(client: TestClient) -> dict[str, str]:
-    """Return the CSRF form payload for a mutating request."""
+    """返回一个写请求要用的 CSRF 表单载荷。"""
     return {"csrf_token": csrf_value(client)}
 
 
 def _push_audit(session_factory: sessionmaker[Session]) -> list[tuple[str, str]]:
-    """Return only the push entries, so seeding noise does not leak into an assertion."""
+    """只取推送相关的审计条目，免得写入夹具的杂音混进断言里。"""
     return [entry for entry in audit_trail(session_factory) if entry[0] == "report.push"]
 
 
 # --------------------------------------------------------------------------------------
-# Rendering
+# 渲染
 # --------------------------------------------------------------------------------------
 
 
@@ -76,7 +75,7 @@ def test_the_panel_offers_the_allowlist_and_the_delivery_history(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The card lists the delivery hint and each allowlisted destination."""
+    """卡片列出投递提示，以及每一个被放行的目的地。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target(name="ops-email")
     assert web_login(client, editor).status_code == 303
@@ -98,12 +97,11 @@ def test_the_panel_explains_a_missing_target_for_the_role_reading_it(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """Without an allowlist entry the card explains why, in terms its reader can act on.
+    """没有白名单条目时，卡片要用读者能据此行动的措辞解释原因。
 
-    Adding a push target is deployment configuration written from the backend, so an editor cannot
-    do it. Telling an editor to go write `push_targets` describes an action they do not have — and
-    hands them a table name they have no business matching against. The admin, who can act on it,
-    gets the table; the editor gets the admin.
+    添加推送目标是后端写入的部署配置，编辑做不了。叫编辑去改 `push_targets`，
+    描述的是他并不具备的动作 —— 还顺手把一个他本不该去对表的表名递给了他。能动手
+    的管理员拿到表名，编辑则拿到「去找管理员」。
     """
     report = seed_pushable_report(session, workspace, status=APPROVED)
 
@@ -121,7 +119,7 @@ def test_the_panel_explains_a_missing_target_for_the_role_reading_it(
 
 
 # --------------------------------------------------------------------------------------
-# Delivering
+# 投递
 # --------------------------------------------------------------------------------------
 
 
@@ -132,7 +130,7 @@ def test_pushing_from_the_panel_records_the_delivery(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A form post delivers the report and the refreshed panel shows the sent row."""
+    """表单提交完成投递，刷新后的面板显示出那条已发送记录。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target()
     assert web_login(client, editor).status_code == 303
@@ -154,7 +152,7 @@ def test_a_second_post_from_the_panel_replays_instead_of_resending(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The same target twice is a replay, and the panel says so."""
+    """同一个目标推两次就是重放，面板也这样说明。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target()
     assert web_login(client, editor).status_code == 303
@@ -175,7 +173,7 @@ def test_a_blocked_push_is_rendered_as_a_refusal_not_a_crash(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A draft never leaves the building, and the panel comes back with the reason."""
+    """草稿出不了门，面板会带着原因回来。"""
     report = seed_pushable_report(session, workspace, status="draft")
     target = workspace.add_push_target()
     assert web_login(client, editor).status_code == 303
@@ -197,7 +195,7 @@ def test_the_channel_comes_from_the_allowlist_not_the_form(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A forged channel field is ignored; the target row decides which transport is used."""
+    """被伪造的渠道字段会被忽略；用哪条传输由目标那一行决定。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target(name="ops-email")
     assert web_login(client, editor).status_code == 303
@@ -220,7 +218,7 @@ def test_an_unknown_target_renders_the_refusal(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """A target id that is not on the allowlist is refused with a readable code."""
+    """不在白名单上的目标 id 会被拒绝，并给出一个可读的错误码。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     workspace.add_push_target()
     assert web_login(client, editor).status_code == 303
@@ -235,7 +233,7 @@ def test_an_unknown_target_renders_the_refusal(
 
 
 # --------------------------------------------------------------------------------------
-# Guards
+# 守卫
 # --------------------------------------------------------------------------------------
 
 
@@ -246,7 +244,7 @@ def test_pushing_through_the_ui_needs_a_csrf_token(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """An omitted token is stopped before the service is reached."""
+    """缺了令牌，在到达服务层之前就被拦住。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target()
     assert web_login(client, editor).status_code == 303
@@ -264,7 +262,7 @@ def test_a_read_only_role_cannot_push_through_the_ui(
     viewer: Actor,
     client: TestClient,
 ) -> None:
-    """The write-role guard answers before the push service is reached."""
+    """写角色守卫先作答，推送服务根本轮不到。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target()
     prime_csrf(client)
@@ -284,7 +282,7 @@ def test_an_anonymous_post_is_redirected_to_login(
     workspace: Workspace,
     client: TestClient,
 ) -> None:
-    """No session means a redirect back to the login page, token or not."""
+    """没有会话就重定向回登录页，带不带令牌都一样。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     token = prime_csrf(client)
 
@@ -299,7 +297,7 @@ def test_an_anonymous_post_is_redirected_to_login(
 
 
 # --------------------------------------------------------------------------------------
-# The delivery ledger (T30 regression: the target name must not depend on the reader's role)
+# 投递流水（T30 回归：目标名不能取决于读者的角色）
 # --------------------------------------------------------------------------------------
 
 
@@ -309,11 +307,11 @@ def test_the_delivery_ledger_names_the_target_for_an_editor(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """An editor sees the destination's name, not a tombstone.
+    """编辑看到的是目的地的名字，而不是一块墓碑。
 
-    The ledger used to resolve the name by looking it up in the allowlist, and only `ADMIN` may
-    read the allowlist — so an editor's page said 「（目标 #N 已不存在）」 for every row while the
-    target was alive and enabled. The name is denormalized onto the delivery row instead.
+    流水曾经靠查白名单来解析名字，而白名单只有 `ADMIN` 读得到 —— 于是目标
+    明明还活着且已启用，编辑的页面上每一行都写着「（目标 #N 已不存在）」。
+    现在名字被反规范化，直接存在投递行上。
     """
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target(name="ops-mailbox")
@@ -331,6 +329,6 @@ def test_the_delivery_ledger_names_the_target_for_an_editor(
     assert page.status_code == 200
     assert "ops-mailbox" in page.text
     assert "已不存在" not in page.text
-    # The name is stored on the row, so it survives the allowlist entry being retargeted later.
+    # 名字存在行上，所以日后白名单条目被改指向别处，它也不会变。
     rows = list_pushes(session, limit=10)
     assert [row.target_name for row in rows] == ["ops-mailbox"]

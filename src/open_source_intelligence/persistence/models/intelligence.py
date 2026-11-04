@@ -1,4 +1,4 @@
-"""Source, topic, repository, snapshot, pipeline, and backfill models."""
+"""数据源、主题、仓库、快照、流水线与回填任务的模型。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from .identity import User
 
 
 class DataSource(Base, TimestampMixin):
-    """External source such as GitHub or Hugging Face."""
+    """外部数据源，例如 GitHub 或 Hugging Face。"""
 
     __tablename__ = "data_sources"
     __table_args__ = (
@@ -55,14 +55,14 @@ class DataSource(Base, TimestampMixin):
     repositories: Mapped[list[Repository]] = relationship(back_populates="source")
 
 
-#: The values `topics.publish_mode` accepts, mirroring the `publish_mode_valid` check below.
-#: Named for the same reason `REPORT_PUBLISH_MODES` is: the UI has to offer exactly the values the
-#: database will take, and a list retyped in the template is a list that drifts.
+#: `topics.publish_mode` 允许的取值，与下面的 `publish_mode_valid` 约束一一对应。
+#: 单独命名的理由与 `REPORT_PUBLISH_MODES` 相同：界面必须只提供数据库真正接受的取值，而在
+#: 模板里重新敲一遍的列表迟早会走样。
 TOPIC_PUBLISH_MODES: tuple[str, ...] = ("AUTO", "AUTO_WITH_DELAY", "MANUAL")
 
 
 class Topic(Base, TimestampMixin):
-    """Monitoring topic and candidate-selection policy."""
+    """监控主题与候选筛选策略。"""
 
     __tablename__ = "topics"
     __table_args__ = (
@@ -100,7 +100,7 @@ class Topic(Base, TimestampMixin):
 
 
 class Repository(Base):
-    """Normalized repository identity and latest counters."""
+    """规范化后的仓库身份与最新计数。"""
 
     __tablename__ = "repositories"
     __table_args__ = (
@@ -143,7 +143,7 @@ class Repository(Base):
 
 
 class RepoSnapshot(Base):
-    """Daily point-in-time repository counters."""
+    """仓库计数的每日时点快照。"""
 
     __tablename__ = "repo_snapshots"
     __table_args__ = (
@@ -176,7 +176,7 @@ class RepoSnapshot(Base):
 
 
 class RepositoryContent(Base, TimestampMixin):
-    """Cached, cleaned long-form repository content such as the README."""
+    """缓存并清洗后的仓库长文本内容，例如 README。"""
 
     __tablename__ = "repository_contents"
     __table_args__ = (
@@ -204,7 +204,7 @@ class RepositoryContent(Base, TimestampMixin):
 
 
 class TopicRepository(Base):
-    """Candidate score and Agent selection state for a topic."""
+    """某个主题下候选仓库的得分与 Agent 选中状态。"""
 
     __tablename__ = "topic_repositories"
     __table_args__ = (
@@ -238,7 +238,7 @@ class TopicRepository(Base):
 
 
 class PipelineRun(Base):
-    """Execution record for collection, snapshot, ranking, and Agent pipelines."""
+    """采集、快照、排序与 Agent 流水线的执行记录。"""
 
     __tablename__ = "pipeline_runs"
     __table_args__ = (
@@ -284,26 +284,22 @@ class PipelineRun(Base):
 
 
 class BackfillJob(Base, TimestampMixin):
-    """Durable, resumable walk over a provider's paged search results.
+    """对一个供应商分页搜索结果的可续爬、可恢复遍历。
 
-    One row is one *job*, not one attempt. The cursor (`next_page`) and the two
-    counters live on the row and are committed after every page, so a walk that
-    loses its process resumes at the page it had not finished instead of starting
-    the whole history again. Replaying a page would be harmless anyway - ingestion
-    is idempotent on (source, provider_repo_id) - but replaying twenty of them is
-    what turns a network blip into a duplicate crawl.
+    一行是一个*任务*，而不是一次尝试。游标（`next_page`）与两个计数器都放在这一行上，
+    并且每翻完一页就提交，因此丢失进程的遍历会从它尚未完成的那一页继续，而不是把整段
+    历史重走一遍。重放一页本来也无害 —— 入库对 `(source, provider_repo_id)` 幂等 ——
+    但连着重放二十页，正是把一次网络抖动变成一次重复抓取的原因。
 
-    `target_pages` is the operator's budget, not a promise: a search that runs out
-    of results first closes the job as `succeeded` with `pages_completed` below the
-    target. `per_page` is capped at 100 because that is the largest page both
-    providers honour.
+    `target_pages` 是运维给出的预算，而不是承诺：如果搜索结果先一步耗尽，任务会以
+    `succeeded` 关闭，此时 `pages_completed` 低于目标值。`per_page` 上限为 100，因为
+    这是两家供应商都遵守的最大分页大小。
 
-    `heartbeat_at` is its own column rather than a reuse of `updated_at`. `updated_at`
-    is the mixin's "this row changed" stamp: its `onupdate` is applied by SQLAlchemy on
-    every UPDATE and cannot be pinned by an explicit assignment, so any future write to
-    this row - a migration backfill, an operator edit - would refresh it and make an
-    abandoned walk look alive. A dedicated column says exactly one thing and says it only
-    when the walk itself says it.
+    `heartbeat_at` 单独占一列，而不是复用 `updated_at`。`updated_at` 是本 mixin 的
+    「这一行变了」时间戳：它的 `onupdate` 由 SQLAlchemy 在每次 UPDATE 时写入，也无法
+    用显式赋值钉住，因此今后对这一行的任何写入 —— 迁移回填、运维手工编辑 —— 都会刷新
+    它，让一次已被放弃的遍历看起来还活着。专用列只说一件事，而且只在遍历自己说的
+    时候才说。
     """
 
     __tablename__ = "backfill_jobs"

@@ -1,4 +1,4 @@
-"""One-shot collector command for local operation and verification."""
+"""本地运行与验证用的一次性采集命令。"""
 
 import argparse
 import json
@@ -24,15 +24,16 @@ def build_collectors(
     github_sort: str = "stars",
     settings: Settings | None = None,
 ) -> list[RepositoryCollector]:
-    """Build selected collectors using configured optional tokens.
+    """用配置好的可选令牌构建选中的采集器。
 
-    `github_sort` chooses how GitHub search results are ordered. The daily pipeline passes
-    `"updated"` so it discovers recently active repositories instead of re-fetching the same
-    star leaders every day; backfill and the one-shot CLI keep the default `"stars"` so their
-    walk still pages the head of the distribution.
+    `github_sort` 决定 GitHub 搜索结果如何排序。每日流水线传
+    `"updated"`，以便发现近期活跃的仓库，而不是每天重复拉取同一批 star
+    榜前列；回填与一次性 CLI 保留默认的 `"stars"`，这样它们的走查仍然
+    从分布头部开始翻页。
 
-    `settings` is injectable so tests can build collectors with `Settings(_env_file=None)`
-    instead of reading the developer's real `.env`; production callers leave it as `None`.
+    `settings` 可注入，是为了让测试能用 `Settings(_env_file=None)` 构
+    建采集器，而不是去读开发者真实的 `.env`；生产调用方保持它为
+    `None`。
     """
     settings = settings or get_settings()
     http = RetryingHttpClient(client)
@@ -54,13 +55,13 @@ def build_collectors(
 
 
 def build_content_sources(provider: str, client: httpx.Client) -> list[RepositoryContentSource]:
-    """Build the content sources among the selected providers.
+    """构建所选供应商中能提供内容的那些源。
 
-    Filtered from `build_collectors` rather than constructed separately, so that "which providers
-    can serve a README" is answered by the adapters themselves: a provider that does not
-    implement `RepositoryContentSource` simply drops out, and adding the capability to one is one
-    class no longer being skipped. Building a second GitHub client here would also make the
-    collector object and the content source two objects with one configuration between them.
+    从 `build_collectors` 里筛出来，而不是另外构造，这样「哪些供应商能
+    提供 README」由适配器自己回答：没有实现 `RepositoryContentSource`
+    的供应商自然被筛掉，给某个供应商加上这项能力，也只是让它不再被跳
+    过。在这里另建一个 GitHub 客户端，还会让采集器对象与内容源变成两个
+    对象共用一份配置。
     """
     return [
         collector
@@ -70,7 +71,7 @@ def build_content_sources(provider: str, client: httpx.Client) -> list[Repositor
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse provider and limit arguments."""
+    """解析供应商与数量参数。"""
     parser = argparse.ArgumentParser(description="Run one repository collection batch")
     parser.add_argument("--provider", choices=("github", "huggingface", "all"), default="all")
     parser.add_argument("--limit", type=int, default=5)
@@ -78,7 +79,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Collect one batch and print a JSON summary."""
+    """采集一批并打印 JSON 摘要。"""
     args = parse_args()
     if not 1 <= args.limit <= 100:
         raise SystemExit("--limit must be between 1 and 100")

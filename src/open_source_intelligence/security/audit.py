@@ -1,4 +1,4 @@
-"""Audit event creation helpers."""
+"""审计事件创建的辅助函数。"""
 
 import ipaddress
 from typing import Any
@@ -9,7 +9,7 @@ from open_source_intelligence.persistence.models.audit import AuditLog
 
 
 def pack_ip_address(value: str | None) -> bytes | None:
-    """Convert an IPv4 or IPv6 address into its compact binary form."""
+    """把 IPv4 或 IPv6 地址转成紧凑的二进制形式。"""
     if not value:
         return None
     try:
@@ -19,12 +19,11 @@ def pack_ip_address(value: str | None) -> bytes | None:
 
 
 def format_ip_address(value: bytes | None) -> str | None:
-    """Convert a packed address back to text for egress.
+    """把打包后的地址转回文本，供对外输出使用。
 
-    The counterpart of `pack_ip_address`, kept next to it so the two stay in step: one column
-    holds both IPv4 (4 bytes) and IPv6 (16 bytes), and only the pair of functions knows that.
-    A value the packing side would have rejected cannot appear here, so `None` and a textual
-    address are the only two outcomes.
+    它是 `pack_ip_address` 的对应物，放在一起是为了两者始终同步：同一列既存 IPv4
+    （4 字节）又存 IPv6（16 字节），而只有这一对函数知道这件事。打包侧会拒绝的值
+    不可能出现在这里，因此结果只有两种：`None` 或一个文本地址。
     """
     if not value:
         return None
@@ -46,7 +45,7 @@ def record_audit_event(
     ip_address: str | None = None,
     metadata_json: dict[str, Any] | None = None,
 ) -> AuditLog:
-    """Stage one audit event in the caller's transaction."""
+    """在调用方的事务中挂起一条审计事件。"""
     event = AuditLog(
         actor_id=actor_id,
         action=action,

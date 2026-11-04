@@ -1,33 +1,30 @@
-"""Run T15 observability smoke checks against MySQL.
+"""针对 MySQL 跑 T15 的可观测性冒烟。
 
-The script drives the *real* aggregation layer, the *real* JSON endpoints, and the *real*
-server-rendered dashboard over a database it seeded itself, rather than over in-memory SQLite.
-It exercises the T15 acceptance criteria end to end:
+脚本在它自己种下的数据库上（而不是内存 SQLite 上）驱动*真正的*聚合层、*真正的*
+JSON 端点与*真正的*服务端渲染看板。它端到端覆盖 T15 的验收标准：
 
-1. **任务、Token、延迟、失败率可见** - the overview reports pipeline throughput, Agent token
-   spend, and both latency percentiles from the run ledger, and every number matches a fresh
-   aggregate over the same rows.
-2. **评测结果可见** - the newest evaluation sweep is reused verbatim, so the verdict on the
-   dashboard is the verdict `compare_latest` produces rather than a second implementation.
-3. **窗口是可调且有界的** - `1 / 7 / 30` day windows each report on the rows inside them, an
-   out-of-range value is clamped, and a zero or negative one is refused.
-4. **未行使的指标是 `None` 而不是 0** - a window holding no Agent run reports no success rate
-   at all, which reads differently from a window full of real failures.
-5. **能从失败运行追到具体工具调用** - the trace endpoint and the trace page both reach the
-   step that failed, the tool that was denied, and its error code.
-6. **看板与轨迹页只对 ADMIN / EDITOR 开放** - a `VIEWER` is refused on the API and on the UI,
-   and the navigation entry is not rendered for them.
-7. **出口只有一条脱敏规则** - a credential-shaped result summary is redacted in the JSON
-   response and in the rendered page, because the UI is an egress path too.
+1. **任务、Token、延迟、失败率可见** —— 总览从运行账本报出流水线吞吐、Agent 的
+   Token 花销与两个延迟分位数，而且每个数都与对同一批行的新聚合结果吻合。
+2. **评测结果可见** —— 最近一次评估清扫被原样复用，所以看板上的结论就是
+   `compare_latest` 给出的结论，而不是第二套实现。
+3. **窗口是可调且有界的** —— `1 / 7 / 30` 天窗口各自只报落在窗内的行，越界值会被
+   夹到边界，零或负数则被拒绝。
+4. **未行使的指标是 `None` 而不是 0** —— 一个没有任何 Agent 运行的窗口根本不报
+   成功率，这与一个全是真实失败的窗口读起来是不同的。
+5. **能从失败运行追到具体工具调用** —— 轨迹端点与轨迹页都能追到失败的那一步、
+   被拒绝的那个工具，以及它的错误码。
+6. **看板与轨迹页只对 ADMIN / EDITOR 开放** —— `VIEWER` 在 API 与界面上都被拒，
+   导航项也不会为他们渲染。
+7. **出口只有一条脱敏规则** —— 结果摘要里凭据形状的字符串，在 JSON 响应与渲染后
+   的页面里都会被脱敏，因为界面也是一条出口路径。
 
-Two design notes worth stating rather than hiding. The window is anchored on the wall clock at
-run time (`utc_now()`) and every seeded row is placed at a fixed *offset* from it, so the
-assertions hold on any day and a 7-day window means seven days. And the seeded world includes
-one block of rows 40 days old: without it, "the window filters" could pass on a query that
-never filters at all.
+有两条设计说明值得直说而不是藏起来。窗口锚定在运行时的墙上时钟（`utc_now()`），
+每一行种下的数据都放在相对它固定的*偏移*上，因此断言在任何一天都成立，7 天窗口
+也确实意味着 7 天。另外，种下的世界里包含一块 40 天前的行：没有它，「窗口会过滤」
+这件事在一份根本不过滤的查询上也能通过。
 
-Every assertion reads through a *fresh* session, so a passing check cannot be explained by the
-identity map of the session that wrote the row.
+每次断言都经一个*全新的*会话读取，所以通过的检查不可能是靠写行那个会话的身份映射
+解释掉的。
 """
 
 from __future__ import annotations
@@ -98,7 +95,7 @@ SMOKE_PASSWORD = "t15-smoke-password-not-for-production"
 ACTOR_PREFIX = "__t15_"
 ROLES = {"admin": "ADMIN", "editor": "EDITOR", "viewer": "VIEWER"}
 
-#: The topic the observability rows hang off, and the topic the evaluation case names.
+#: 这些可观测性行所挂靠的主题，同时也是评估用例点名的主题。
 TOPIC_NAME = "__T15 Topic__"
 DATASET_NAME = "__t15-observability__"
 DATASET_VERSION = "v1"
@@ -106,21 +103,21 @@ REPORT_TITLE_PREFIX = "__T15 report__"
 PROVIDER_PREFIX = "__t15_smoke_"
 CONFIG_PREFIX = "__t15_"
 
-#: A credential-shaped value that must never reach a client through either egress path.
+#: 一个凭据形状的值，绝不允许经任何一条出口路径到达客户端。
 LEAKED_SECRET = "sk-Abcdefghij0123456789"
 DENIED_TOOL = "get_repository_content"
 DENIED_ERROR = "TOOL_NOT_ALLOWED"
 FAILED_RUN_ERROR = "AGENT_TOOL_BUDGET_EXCEEDED"
 UNLINKED_TOOL_ERROR = "TOOL_TIMEOUT"
 
-#: Row offsets from the run clock. `RECENT` sits inside 1, 7, and 30 day windows; `PRIOR_REPORT`
-#: sits inside 30 and 90 but outside 7; `STALE` sits outside 30 and inside 90 only. Three
-#: distinct bands are what make the window assertion mean something.
+#: 各行相对运行时钟的偏移。`RECENT` 落在 1、7、30 天窗口内；`PRIOR_REPORT` 落在
+#: 30 与 90 天内、7 天外；`STALE` 落在 30 天外、只在 90 天内。正是这三条互不相同的
+#: 带，才让窗口断言有了意义。
 RECENT = timedelta(days=3)
 PRIOR_REPORT = timedelta(days=9)
 STALE = timedelta(days=40)
 
-#: Two snapshot points inside the evaluation case window, matching the seeded counters.
+#: 评估用例窗口内的两个快照点，与种下的计数对得上。
 FIRST_SNAPSHOT = timedelta(days=9)
 LAST_SNAPSHOT = timedelta(days=4)
 
@@ -129,13 +126,13 @@ ALPHA_FORKS = 210
 BETA_STARS = 880
 BETA_FORKS = 96
 
-#: Agent run rows inside the 7-day window: (status, publish_mode, error_code, tokens, cost, ms).
+#: 7 天窗口内的 Agent 运行行：(状态, publish_mode, 错误码, token, 成本, 毫秒)。
 AGENT_ROWS: tuple[tuple[str, str | None, str | None, int, int, str, int], ...] = (
     ("completed", "AUTO_WITH_DELAY", None, 1200, 300, "0.012300", 40_000),
     ("needs_review", "MANUAL", None, 900, 200, "0.008000", 60_000),
     ("failed", None, FAILED_RUN_ERROR, 400, 50, "0", 80_000),
 )
-#: Pipeline rows inside the 7-day window: (run_type, status, ms).
+#: 7 天窗口内的流水线行：(run_type, 状态, 毫秒)。
 PIPELINE_ROWS: tuple[tuple[str, str, int], ...] = (
     ("collect", "succeeded", 10_000),
     ("snapshot", "succeeded", 20_000),
@@ -145,23 +142,23 @@ PIPELINE_ROWS: tuple[tuple[str, str, int], ...] = (
 
 
 def _count(session: Session, entity: Any) -> int:
-    """Return the row count of one table."""
+    """返回单张表的行数。"""
     return int(session.scalar(select(func.count()).select_from(entity)) or 0)
 
 
 def _refresh(session: Session) -> None:
-    """Drop cached rows after another session wrote to the database."""
+    """另一个会话写过库之后，丢弃本地缓存的行。"""
     session.rollback()
     session.expire_all()
 
 
 # --------------------------------------------------------------------------------------
-# Seeding and cleanup
+# 播种与清理
 # --------------------------------------------------------------------------------------
 
 
 def _actor_ids(session: Session) -> dict[str, int]:
-    """Return the ids of the T15 smoke users, creating them when missing."""
+    """返回 T15 冒烟用户的 id；缺失的当场建出来。"""
     found: dict[str, int] = {}
     for suffix, role in ROLES.items():
         username = f"{ACTOR_PREFIX}{suffix}__"
@@ -183,7 +180,7 @@ def _actor_ids(session: Session) -> dict[str, int]:
 
 
 def _t15_dataset_ids(session: Session) -> list[int]:
-    """Return the datasets a previous or current T15 run created."""
+    """返回上一轮或本轮 T15 运行建出的数据集。"""
     return [
         int(value)
         for value in session.scalars(select(EvalDataset.id).where(EvalDataset.name == DATASET_NAME))
@@ -191,17 +188,17 @@ def _t15_dataset_ids(session: Session) -> list[int]:
 
 
 def _topic_ids(session: Session) -> list[int]:
-    """Return the seeded topic ids."""
+    """返回种下的主题 id。"""
     rows = session.scalars(select(Topic.id).where(Topic.name == TOPIC_NAME))
     return [int(value) for value in rows]
 
 
 def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
-    """Remove every row a T15 smoke run created, leaf-first.
+    """删掉一轮 T15 冒烟创建的全部行，从叶到根。
 
-    Deletion order is explicit rather than left to cascades, so the same statement sequence works
-    on MySQL and on the SQLite stand-in. Reports reference both `topics` and `agent_runs` with
-    `RESTRICT`, so they have to go before either parent.
+    删除顺序是显式写出来的，不交给级联，这样同一串语句在 MySQL 与 SQLite 替身上都
+    成立。报告同时以 `RESTRICT` 引用 `topics` 与 `agent_runs`，所以它必须排在两个
+    父表之前。
     """
     dataset_ids = _t15_dataset_ids(session)
     if dataset_ids:
@@ -246,7 +243,7 @@ def _cleanup(session: Session, actor_ids: dict[str, int]) -> None:
 
 
 def _source(session: Session) -> DataSource:
-    """Return the single GitHub source, creating it on first use."""
+    """返回那个唯一的 GitHub 数据源；首次使用时创建它。"""
     existing = session.scalar(select(DataSource).order_by(DataSource.id).limit(1))
     if existing is not None:
         return existing
@@ -271,7 +268,7 @@ def _pipeline_run(
     started_at: datetime,
     duration_ms: int,
 ) -> PipelineRun:
-    """Write one pipeline run with a measured duration."""
+    """写一条带实测耗时的流水线运行。"""
     row = PipelineRun(
         topic_id=topic_id,
         run_type=run_type,
@@ -286,7 +283,7 @@ def _pipeline_run(
 
 
 def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -> dict[str, Any]:
-    """Create the topics, repositories, runs, reports, and traces the dashboard reports on."""
+    """建出看板要报的主题、仓库、运行、报告与轨迹。"""
     source = _source(session)
     config_id = int(load_or_create_config(session, get_settings()).id)
     topic = Topic(
@@ -363,8 +360,8 @@ def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -
             )
         )
 
-    # A published report from an earlier week, so `search_prior_reports` has a baseline and the
-    # 30/90-day windows have something the 7-day window must not show.
+    # 一份更早那周发布的报告，好让 `search_prior_reports` 有基线，也让 30/90 天窗口
+    # 里有 7 天窗口不该展示的东西。
     prior_pipeline = _pipeline_run(
         session,
         topic_id=topic_id,
@@ -404,7 +401,7 @@ def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -
         )
     )
 
-    # The rows inside the 7-day window.
+    # 7 天窗口内的那些行。
     for index, (run_type, status, duration_ms) in enumerate(PIPELINE_ROWS):
         _pipeline_run(
             session,
@@ -449,7 +446,7 @@ def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -
         session.flush()
         agent_runs.append(int(run.id))
 
-    # A third of the reports are parked for a human, which is the rate ARCHITECTURE §12 asks for.
+    # 三分之一的报告停在等人处理，这正是 ARCHITECTURE §12 要求的比例。
     for index, (report_status, run_status) in enumerate(
         (("published", "completed"), ("pending_review", "needs_review"))
     ):
@@ -472,7 +469,7 @@ def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -
             )
         )
 
-    # The failing run's trajectory, including one tool call with no step to hang off.
+    # 失败运行的轨迹，其中包含一次没有步骤可挂的工具调用。
     failing = agent_runs[2]
     steps: list[AgentStep] = []
     for index, (step_type, status, summary, latency_ms) in enumerate(
@@ -514,7 +511,7 @@ def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -
                 agent_step_id=steps[2].id,
                 tool_name=DENIED_TOOL,
                 arguments_json={"topic_id": topic_id, "repository_id": repositories[0]},
-                # Deliberately carries a credential-shaped string: both egress paths must strip it.
+                # 刻意带一个凭据形状的字符串：两条出口路径都必须把它剥掉。
                 result_summary=f"读取被拒绝，调试令牌 {LEAKED_SECRET}",
                 status="denied",
                 error_code=DENIED_ERROR,
@@ -523,7 +520,7 @@ def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -
             ),
             ToolCall(
                 agent_run_id=failing,
-                # No step: the foreign key degrades to null, and the call must still be reported.
+                # 不挂步骤：外键退化为 null，但这次调用仍必须被报出来。
                 agent_step_id=None,
                 tool_name="search_prior_reports",
                 arguments_json={"topic_id": topic_id},
@@ -536,8 +533,8 @@ def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -
         ]
     )
 
-    # A block older than every window the dashboard offers, so "the window filters" is a real
-    # claim rather than a query that happens to select everything.
+    # 一块比看板提供的任何窗口都旧的行，好让「窗口会过滤」成为一条真断言，而不是
+    # 一条恰好把一切都选中的查询。
     stale_pipeline = _pipeline_run(
         session,
         topic_id=topic_id,
@@ -580,11 +577,10 @@ def _seed_world(session: Session, actor_ids: dict[str, int], anchor: datetime) -
 
 
 def _seed_evaluation(session: Session, anchor: datetime, topic_id: int) -> dict[str, Any]:
-    """Import one small dataset and run one real sweep over it.
+    """导入一个小数据集，并在它上面真跑一趟评估。
 
-    The dashboard reads the newest sweep through `compare_latest`, so the fixture has to be a
-    sweep the real runner produced. Hand-writing `eval_runs` rows would test the page against a
-    shape no producer emits.
+    看板经 `compare_latest` 读最近一次清扫，所以夹具必须是真实运行器产出的清扫。
+    手写 `eval_runs` 行，等于拿一个没有任何生产者会产出的形状去测页面。
     """
     start = anchor - FIRST_SNAPSHOT
     end = anchor - timedelta(days=3)
@@ -652,17 +648,17 @@ def _seed_evaluation(session: Session, anchor: datetime, topic_id: int) -> dict[
 
 
 # --------------------------------------------------------------------------------------
-# Criterion checks
+# 判据核对
 # --------------------------------------------------------------------------------------
 
 
 def _inside(value: datetime | None, start: datetime, end: datetime) -> bool:
-    """Return whether a timestamp falls in the half-open window both sides use."""
+    """返回时间戳是否落在两侧共用的左闭右开窗口内。"""
     return value is not None and start <= value < end
 
 
 def _rate(numerator: int, denominator: int) -> str | None:
-    """Compute a ratio the documented way: four places, half-up, `None` when unmeasured."""
+    """按文档规定的方式算比率：四位小数、四舍五入，未测量时为 `None`。"""
     if denominator <= 0:
         return None
     quantized = (Decimal(numerator) / Decimal(denominator)).quantize(
@@ -672,12 +668,12 @@ def _rate(numerator: int, denominator: int) -> str | None:
 
 
 def _as_text(value: Decimal | None) -> str | None:
-    """Render a ratio for comparison against the JSON payload, without inventing a number."""
+    """把比率渲染成可与 JSON 结果比较的文本，不凭空造一个数。"""
     return None if value is None else str(value)
 
 
 def _percentile(values: list[int], percent: int) -> int | None:
-    """Compute a nearest-rank percentile the documented way."""
+    """按文档规定的方式算最近秩分位数。"""
     if not values:
         return None
     ordered = sorted(values)
@@ -686,19 +682,18 @@ def _percentile(values: list[int], percent: int) -> int | None:
 
 
 def _millis(started: datetime | None, finished: datetime | None) -> int | None:
-    """Return a whole-millisecond duration, or `None` while a row is unfinished."""
+    """返回整毫秒的耗时；行还没结束就返回 `None`。"""
     if started is None or finished is None:
         return None
     return int((finished - started).total_seconds() * 1000)
 
 
 def _expected_aggregate(session: Session, anchor: datetime, days: int) -> dict[str, Any]:
-    """Recompute the headline numbers straight from the rows, as a second implementation.
+    """直接从行里重算头条数字，作为第二套实现。
 
-    The point is not to restate `collect_metrics`; it is to derive the same quantities a second
-    way - direct row reads plus the documented formulas - so a defect in the aggregation shows up
-    as a disagreement rather than as a matching wrong answer. The clock is passed in rather than
-    read here, so the recomputation and the aggregation are evaluated against one instant.
+    重点不是把 `collect_metrics` 复述一遍，而是用另一种方式（直接读行，加上文档里的
+    公式）推出同一批量，这样聚合层里的缺陷会表现为两边不一致，而不是一个碰巧也对
+    的错答案。时钟是传进来的，不在这里读，于是重算与聚合面对的是同一个瞬间。
     """
     start = anchor - timedelta(days=days)
     end = anchor
@@ -776,7 +771,7 @@ def _expected_aggregate(session: Session, anchor: datetime, days: int) -> dict[s
 
 
 def _status_counts(values: Iterable[str]) -> dict[str, int]:
-    """Count rows per status, sorted, so the two implementations compare equal."""
+    """按状态统计行数并排序，好让两套实现能直接比相等。"""
     counts: dict[str, int] = {}
     for value in values:
         counts[value] = counts.get(value, 0) + 1
@@ -784,7 +779,7 @@ def _status_counts(values: Iterable[str]) -> dict[str, int]:
 
 
 def _window_checks(session: Session, anchor: datetime, ahead_anchor: datetime) -> dict[str, Any]:
-    """Criteria 1, 3, and 4: the numbers, the windows, and the absent-versus-zero rule."""
+    """判据 1、3、4：数字、窗口，以及「缺席 ≠ 零」这条规则。"""
     metrics = {
         days: collect_metrics(session, now=anchor, window_days=days) for days in (1, 7, 30, 90)
     }
@@ -793,8 +788,8 @@ def _window_checks(session: Session, anchor: datetime, ahead_anchor: datetime) -
     week = metrics[7]
     day = metrics[1]
     independent = expected[7]
-    # Every headline number the first two criteria claim to show, checked against the second
-    # implementation. A `false` here is the whole point of the exercise.
+    # 前两条判据声称要展示的每个头条数字，都拿第二套实现核一遍。这里出现 `false`
+    # 正是整件事的意义所在。
     agree = {
         f"matches_{name}": actual == independent[name]
         for name, actual in (
@@ -885,7 +880,7 @@ def _window_checks(session: Session, anchor: datetime, ahead_anchor: datetime) -
 
 
 def _trace_checks(session: Session, failing_run_id: int) -> dict[str, Any]:
-    """Criterion 5: a failed run reaches the exact tool call that failed."""
+    """判据 5：一次失败的运行能追到那个具体失败的工具调用。"""
     trace = get_agent_run_trace(session, run_id=failing_run_id)
     if trace is None:
         raise RuntimeError("the seeded failing run has no trace")
@@ -911,7 +906,7 @@ def _trace_checks(session: Session, failing_run_id: int) -> dict[str, Any]:
 
 
 def _ledger_checks(session: Session, failing_run_id: int) -> dict[str, Any]:
-    """Criterion 1 for the run ledger: the list is newest-first, filtered, and paged."""
+    """判据 1 之于运行账本：列表按从新到旧、可筛选、可分页。"""
     first_page = list_agent_runs(session, page=1, page_size=5)
     second_page = list_agent_runs(session, page=2, page_size=5)
     by_status = list_agent_runs(session, status="failed", page=1, page_size=50)
@@ -933,7 +928,7 @@ def _ledger_checks(session: Session, failing_run_id: int) -> dict[str, Any]:
 
 
 def _login(client: TestClient, suffix: str) -> dict[str, str]:
-    """Sign one smoke user in through the JSON API and return its bearer header."""
+    """经 JSON API 登录一个冒烟用户，并返回它的 Bearer 请求头。"""
     response = client.post(
         "/api/v1/auth/login",
         json={"username": f"{ACTOR_PREFIX}{suffix}__", "password": SMOKE_PASSWORD},
@@ -944,7 +939,7 @@ def _login(client: TestClient, suffix: str) -> dict[str, str]:
 
 
 def _web_login(client: TestClient, suffix: str) -> TestClient:
-    """Sign one smoke user into the browser UI and keep the session cookie on the client."""
+    """把一个冒烟用户登进浏览器界面，并把会话 Cookie 留在客户端上。"""
     client.get("/ui/login")
     token = client.cookies.get("osia_csrf", "")
     if not token:
@@ -972,11 +967,10 @@ def _api_checks(
     failing_run_id: int,
     observed: dict[str, Any],
 ) -> dict[str, Any]:
-    """Criteria 1-4 and 6 over HTTP, cross-checked against the direct aggregation.
+    """判据 1-4 与 6 在 HTTP 层，再与直接聚合的结果对账。
 
-    The endpoint and the aggregation are two entry points to one service, so every headline
-    number has to come back identical. A disagreement here means the transport is reshaping the
-    payload rather than forwarding it.
+    端点与聚合是同一个服务的两个入口，所以每个头条数字回来必须一模一样。这里若不
+    一致，意味着传输层在重塑载荷，而不是把它转发出去。
     """
     overview = client.get(METRICS_API, params={"window_days": 7}, headers=admin)
     body = overview.json()
@@ -1016,8 +1010,8 @@ def _api_checks(
         "api_overview_evaluation_passed": body["evaluations"]["passed"],
         **agree,
         "api_all_agree_with_aggregate": all(agree.values()),
-        # Out-of-range windows are refused rather than clamped, matching `page_size`. The clamp
-        # itself is asserted against the aggregation directly, in `_window_checks`.
+        # 越界窗口被拒而不是被夹，与 `page_size` 保持一致。夹取本身在 `_window_checks`
+        # 里直接对着聚合层断言。
         "api_too_large_status": too_large.status_code,
         "api_too_small_status": too_small.status_code,
         "api_runs_status": runs.status_code,
@@ -1044,7 +1038,7 @@ def _api_checks(
 
 
 def _percent_text(value: str | None) -> str:
-    """Render a ratio exactly the way the template does, so the page can be searched for it."""
+    """按模板的方式渲染比率，好让页面里能搜到它。"""
     return "—" if value is None else f"{float(value) * 100:.1f}%"
 
 
@@ -1055,14 +1049,13 @@ def _ui_checks(
     denied_error: str,
     ahead_anchor: datetime,
 ) -> dict[str, Any]:
-    """Criteria 1-7 through the rendered pages, including the role guard and the nav entry."""
+    """判据 1-7 走渲染后的页面，含角色守卫与导航项。"""
     _web_login(client, "admin")
     week = client.get(DASHBOARD, params={"window_days": 7})
     month = client.get(DASHBOARD, params={"window_days": 30})
     day = client.get(DASHBOARD, params={"window_days": 1})
-    # The page reads its clock through a dependency, so the empty window can be rendered by
-    # handing it the same future instant the aggregation probe used. Without that the page could
-    # only ever be observed with data in it, and the dash would go unchecked.
+    # 页面通过依赖注入读时钟，所以把聚合探针用的同一个未来瞬间交给它，就能渲染出空
+    # 窗口。否则页面只可能在有数据时被观察到，那条破折号也就永远得不到核对。
     client.app.dependency_overrides[utc_now] = lambda: ahead_anchor
     try:
         empty = client.get(DASHBOARD, params={"window_days": 1})
@@ -1077,8 +1070,8 @@ def _ui_checks(
         "ui_dashboard_is_html": html.lstrip().startswith("<!DOCTYPE html>"),
         "ui_dashboard_names_window": "7 天" in html,
         "ui_dashboard_shows_pipeline_total": "窗口内任务" in html,
-        # The page is searched for the numbers the aggregation produced, not for constants typed
-        # into this script: that way the page has to agree with the service, not with the fixture.
+        # 页面里搜的是聚合算出来的数，而不是本脚本里手敲的常量：这样页面必须与服务
+        # 一致，而不是与夹具一致。
         "ui_dashboard_shows_tokens": str(observed["agent_total_tokens"]) in html,
         "ui_dashboard_shows_success_rate": _percent_text(observed["agent_success_rate"]) in html,
         "ui_dashboard_shows_block_rate": _percent_text(observed["report_manual_block_rate"])
@@ -1090,8 +1083,7 @@ def _ui_checks(
         "ui_dashboard_links_runs": f"/ui/dashboard/runs/{failing_run_id}" in html,
         "ui_month_differs_from_week": month.text != html,
         "ui_day_page_status": day.status_code,
-        # The empty window must render the dash rather than a zero, which is the whole point of
-        # the absent-versus-zero rule as an operator experiences it.
+        # 空窗口必须渲染成破折号而不是零，这正是「缺席 ≠ 零」规则落到操作者眼里的样子。
         "ui_empty_window_uses_dash": "metric-missing" in empty.text,
         "ui_empty_window_more_dashes": empty.text.count("metric-missing")
         > html.count("metric-missing"),
@@ -1108,7 +1100,7 @@ def _ui_checks(
 
 
 def _ui_guard_checks(client: TestClient) -> dict[str, Any]:
-    """Criterion 6 for the UI: a viewer is refused and never sees the navigation entry."""
+    """判据 6 之于界面：只读角色被拒，且从来看不到导航项。"""
     client.cookies.clear()
     _web_login(client, "viewer")
     dashboard = client.get(DASHBOARD, params={"window_days": 7})
@@ -1122,7 +1114,7 @@ def _ui_guard_checks(client: TestClient) -> dict[str, Any]:
 
 
 def _editor_checks(client: TestClient) -> dict[str, Any]:
-    """Criterion 6: an EDITOR is allowed, so the guard is role-based rather than admin-only."""
+    """判据 6：EDITOR 是放行的，可见守卫按角色判定，而不是只认管理员。"""
     client.cookies.clear()
     _web_login(client, "editor")
     dashboard = client.get(DASHBOARD, params={"window_days": 7})
@@ -1133,23 +1125,20 @@ def _editor_checks(client: TestClient) -> dict[str, Any]:
 
 
 def run_checks(session: Session, client: TestClient, failing_run_id: int) -> dict[str, Any]:
-    """Drive the real aggregates, endpoints, and pages through the T15 acceptance path.
+    """让真正的聚合、端点与页面走一遍 T15 验收路径。
 
-    The read clock is taken *here*, after every row has been written. Taking it before seeding
-    would let the evaluation harness's own run land on the far side of the half-open upper bound,
-    so the direct aggregates would miss a row the HTTP read - a few hundred milliseconds later -
-    would count, and the two would disagree for a reason that has nothing to do with the code
-    under test.
+    读取时钟是在*这里*取的，就在每一行都写完以后。若在建种子之前取，评估吊具自己
+    写下的运行就会落到左闭右开上界之外，于是直接聚合会漏掉一行，而几百毫秒之后的
+    HTTP 读取却会算上它 —— 两边就会因为一个与被测代码无关的原因对不上。
     """
     settings = get_settings()
-    # Deliberately *not* truncated to the second. A floored read clock is not strictly after the
-    # rows the seeding just wrote, so a row written later in the same second would sit on the far
-    # side of the half-open upper bound for the in-process aggregate and on the near side for an
-    # HTTP read a moment later - the two would disagree for a reason unrelated to the code.
+    # 刻意*不*截到整秒。被抹掉零头的读取时钟并不严格晚于刚种下的那些行，于是同一秒
+    # 里稍后写的行，对进程内聚合来说落在左闭右开上界之外，对片刻之后的 HTTP 读取却
+    # 落在界内 —— 两边会因为一个与代码无关的原因不一致。
     anchor = utc_now()
-    # Two days, not one: with `window_days=1` the window is `[anchor + 1d, anchor + 2d)`, which
-    # starts a full day after the read clock. A one-day offset would make the window `[anchor,
-    # anchor + 1d)` and thereby include anything the run itself wrote.
+    # 两天而不是一天：`window_days=1` 时窗口是 `[anchor + 1d, anchor + 2d)`，比读取
+    # 时钟整整晚一天才开始。若只偏一天，窗口会变成 `[anchor, anchor + 1d)`，把本次
+    # 运行自己写下的东西也裹进来。
     ahead_anchor = anchor + timedelta(days=2)
     windows = _window_checks(session, anchor, ahead_anchor)
     _refresh(session)
@@ -1180,7 +1169,7 @@ def run_checks(session: Session, client: TestClient, failing_run_id: int) -> dic
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run T15 observability smoke checks")
     parser.add_argument(
         "--cleanup-only",
@@ -1191,14 +1180,13 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the T15 smoke checks on a real database and print the assertion payload."""
+    """在真实数据库上跑 T15 冒烟，并打印断言结果。"""
     args = _parse_args()
     settings: Settings = get_settings()
     engine = create_database_engine(settings.database_url)
     factory = create_session_factory(engine)
-    # Every seeded row is placed at a fixed offset from this instant, so the windows mean the
-    # same thing whenever the smoke is run. It is *not* the read clock; `run_checks` takes that
-    # one after seeding has finished.
+    # 每一行种下的数据都放在相对这个瞬间的固定偏移上，所以无论哪天跑冒烟，窗口的
+    # 含义都一样。它*不是*读取时钟；那个由 `run_checks` 在播种结束后再取。
     seed_clock = utc_now().replace(microsecond=0)
 
     actor_ids: dict[str, int] = {}

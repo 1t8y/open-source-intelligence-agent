@@ -1,4 +1,4 @@
-"""FastAPI authentication, RBAC, and audit dependencies."""
+"""FastAPI 的认证、RBAC 与审计依赖。"""
 
 from collections.abc import Callable, Iterator
 from typing import Annotated, NoReturn
@@ -16,19 +16,19 @@ _BEARER_SCHEME = HTTPBearer(auto_error=False)
 
 
 def get_db_session(request: Request) -> Iterator[Session]:
-    """Yield a database session managed by the application factory."""
+    """产出由应用工厂管理的数据库会话。"""
     session_factory: sessionmaker[Session] = request.app.state.session_factory
     with session_factory() as session:
         yield session
 
 
 def request_id(request: Request) -> str:
-    """Return the request correlation identifier assigned by middleware."""
+    """返回中间件分配的请求关联标识。"""
     return str(getattr(request.state, "request_id", "unknown"))
 
 
 def client_ip(request: Request) -> str | None:
-    """Return the direct client address for audit logging."""
+    """返回用于审计记录的直连客户端地址。"""
     return request.client.host if request.client is not None else None
 
 
@@ -43,12 +43,11 @@ def deny_request(
     resource_type: str = "auth",
     resource_id: str | None = None,
 ) -> NoReturn:
-    """Record a denied or failed request and raise an HTTP error.
+    """记录一次被拒绝或失败的请求，并抛出 HTTP 错误。
 
-    `resource_id` is passed through when the caller already knows which resource it refused.
-    A resource-scoped denial that omits it produces an audit row reading "someone was denied
-    something", which is not enough to investigate; a request-scoped denial (a missing token,
-    a missing role) legitimately has no resource to name.
+    调用方已经知道被拒绝的是哪个资源时，要把 `resource_id` 传进来。资源级的拒绝若漏掉
+    它，审计行读起来就是「有人被拒绝了某件事」，不足以支撑排查；请求级的拒绝（缺少
+    令牌、缺少角色）则本来就没有资源可写。
     """
     record_audit_event(
         session,
@@ -69,7 +68,7 @@ def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_BEARER_SCHEME)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> User:
-    """Validate a bearer token and return the current active user."""
+    """校验 bearer 令牌并返回当前处于活跃状态的用户。"""
     if credentials is None or credentials.scheme.lower() != "bearer":
         deny_request(
             session,
@@ -102,7 +101,7 @@ def get_current_user(
 
 
 def require_roles(*allowed_roles: str) -> Callable[..., User]:
-    """Build a dependency that requires at least one current database role."""
+    """构造一个要求至少具备一个当前数据库角色的依赖。"""
 
     def dependency(
         request: Request,

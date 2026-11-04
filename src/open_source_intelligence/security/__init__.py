@@ -1,1 +1,1 @@
-"""Authentication, authorization, and audit security primitives."""
+"""认证、授权与审计的安全原语。"""

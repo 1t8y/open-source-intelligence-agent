@@ -1,9 +1,9 @@
-"""Seeding helpers shared by the report, API, and web tests.
+"""报告、API 与 Web 测试共用的种子数据辅助。
 
-They sit next to `support.py` at the top of `tests/` because pytest puts `tests` on
-`sys.path` (`pythonpath` in `pyproject.toml`), so every test directory can import them as a
-plain top-level module. A sibling of `conftest.py` inside `tests/reports/` would only be
-importable from that one directory.
+它们和 `support.py` 一起放在 `tests/` 顶层，因为 pytest 会把 `tests` 加进
+`sys.path`（见 `pyproject.toml` 的 `pythonpath`），每个测试目录才能把它们
+当作普通顶层模块导入。如果放进 `tests/reports/` 里做 `conftest.py` 的邻居，
+那就只有那一个目录能导入它们了。
 """
 
 from __future__ import annotations
@@ -32,15 +32,15 @@ AUTO = "AUTO"
 AUTO_WITH_DELAY = "AUTO_WITH_DELAY"
 MANUAL = "MANUAL"
 
-#: `topics.name` is unique, so every seeded topic needs its own label.
+#: `topics.name` 有唯一约束，所以每个种子主题都要有自己的名字。
 _TOPIC_SEQUENCE = count(1)
-#: `repositories(source_id, provider_repo_id)` is unique, so ids must not repeat.
+#: `repositories(source_id, provider_repo_id)` 有唯一约束，所以 id 不能重复。
 _REPO_SEQUENCE = count(1)
 
 
 @dataclass(slots=True)
 class SeededReport:
-    """A generated report together with the run, topic, and repositories behind it."""
+    """一份已生成的报告，以及它背后的运行、主题与仓库。"""
 
     report_id: int
     agent_run_id: int
@@ -48,17 +48,17 @@ class SeededReport:
     repositories: list[Repository] = field(default_factory=list)
 
     def reload(self, session: Session) -> Report:
-        """Return the current report row."""
+        """返回报告当前的行。"""
         report = session.get(Report, self.report_id)
         assert report is not None
         return report
 
 
 def _shared_source(workspace: Workspace) -> DataSource:
-    """Return the single GitHub source, creating it on first use.
+    """返回唯一的 GitHub 数据源，首次调用时创建。
 
-    `data_sources.source_type` is unique — one row per provider — so every seeded topic
-    attaches its repositories to the same source.
+    `data_sources.source_type` 有唯一约束 —— 每个供应商只留一行 ——
+    所以每个种子主题的仓库都挂到同一个数据源上。
     """
     existing = workspace.session.scalar(select(DataSource).order_by(DataSource.id).limit(1))
     if existing is not None:
@@ -82,7 +82,7 @@ def seed_topic(
     repo_count: int = 2,
     name: str | None = None,
 ) -> tuple[Topic, list[Repository]]:
-    """Create a topic with ranked candidates, a metric series, and cached READMEs."""
+    """创建一个主题，带上排名候选、指标序列与缓存的 README。"""
     topic = workspace.add_topic(name=name or f"AI Agent {next(_TOPIC_SEQUENCE)}")
     topic.publish_mode = publish_mode
     source = _shared_source(workspace)
@@ -108,7 +108,7 @@ def seed_topic(
 
 
 def run_agent_once(session: Session, topic_id: int) -> int:
-    """Run the real deterministic Agent once and return the Agent run id."""
+    """完整跑一次确定性的 Agent，并返回 Agent 运行 id。"""
     result = run_research_agent(
         session,
         topic_id=topic_id,
@@ -126,7 +126,7 @@ def build_report(
     publish_mode: str,
     repo_count: int = 2,
 ) -> SeededReport:
-    """Seed a topic, run the Agent, and promote the draft into a report."""
+    """灌一个主题、跑一次 Agent，再把草稿提升成正式报告。"""
     topic, repositories = seed_topic(
         workspace,
         publish_mode=publish_mode,
@@ -143,10 +143,10 @@ def build_report(
 
 
 def seed_published_sibling(session: Session, case: SeededReport) -> Report:
-    """Insert an already-published sibling so the topic is no longer a first run.
+    """插入一份已发布的兄弟报告，让该主题不再是首轮运行。
 
-    It reuses the report's own Agent run, which keeps the model/prompt/tool fingerprint
-    identical — otherwise `MODEL_OR_PROMPT_CHANGED` would mask the behaviour under test.
+    它复用这份报告自己的 Agent 运行，从而让模型 / 提示词 / 工具的指纹
+    保持完全一致 —— 否则 `MODEL_OR_PROMPT_CHANGED` 会盖住被测行为。
     """
     sibling = Report(
         agent_run_id=case.agent_run_id,

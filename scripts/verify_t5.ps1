@@ -46,10 +46,10 @@ docker @composeArgs exec -T api alembic check
 Assert-LastCommandSucceeded 'alembic check'
 
 if ($Offline) {
-    # The T5 smoke needs repository rows, not fresh ones: snapshotting and ranking
-    # only read what T4 already stored. On a host without GitHub egress, seed from
-    # whichever source still answers and otherwise reuse the existing data instead
-    # of failing the whole verification on a network precondition.
+    # T5 的 smoke 需要的是已有的仓库行，而不是新采集的行：快照和排序只读取 T4 已经入库的
+    # 数据。在没有 GitHub 出网能力的主机上，改用仍能应答的数据源补种数据，否则就复用
+    # 既有数据，而不是让整个验证因为一个网络前提条件
+    # 而失败。
     Write-Host '==> Offline mode: seed from the reachable source, otherwise reuse stored data'
     $seedSucceeded = $false
     $collectionOutput = docker @composeArgs exec -T api python -m open_source_intelligence.collectors.cli --provider huggingface --limit 2

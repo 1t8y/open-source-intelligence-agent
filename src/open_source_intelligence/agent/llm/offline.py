@@ -1,13 +1,12 @@
-"""Deterministic offline model client used for local runs and evaluation baselines.
+"""供本地运行与评估基线使用的确定性离线模型客户端。
 
-The stub performs no network calls. It reads exactly the same prompt context a remote
-model receives, then advances one fixed research step per turn:
+这个桩不做任何网络调用。它读取的 prompt 上下文与远程模型收到的完全
+相同，然后每轮推进一个固定的研究步骤：
 
     profile -> metrics -> prior reports -> content -> final
 
-Because the policy is a pure function of the conversation, two runs over the same
-inputs produce byte-identical turns. That makes it a usable evaluation baseline and
-lets the whole graph run on a machine without outbound network access.
+由于策略是对话的纯函数，同样的输入跑两遍会得到逐字节相同的回复。这既
+让它能当评估基线，也让整张图可以在没有出网访问的机器上跑完。
 """
 
 from __future__ import annotations
@@ -39,23 +38,22 @@ from .messages import (
 
 DEFAULT_OFFLINE_MODEL = "offline-deterministic-v1"
 
-#: Deep README review is the most expensive step, so the stub spends it on the top candidates.
+#: 深读 README 是最贵的一步，所以桩只把它花在排名靠前的候选上。
 DEFAULT_CONTENT_REPO_LIMIT = 2
 DEFAULT_PRIOR_REPORT_LIMIT = 5
 
 
 @cache
 def _block_pattern(tag: str) -> re.Pattern[str]:
-    """Return the cached non-greedy matcher for one context tag."""
+    """返回某个上下文标签对应的、带缓存的非贪婪匹配器。"""
     return re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL)
 
 
 def _extract_tag(messages: Sequence[ChatMessage], tag: str) -> str | None:
-    """Return the first user context block with the given tag.
+    """返回第一个带指定标签的用户上下文块。
 
-    Only user messages are inspected. The system prompt documents the block syntax with
-    placeholder examples, and scanning it would let those placeholders masquerade as real
-    run context.
+    只检查 user 消息。系统提示词用占位示例说明块语法，如果连它也扫，
+    那些占位符就会冒充本次运行的真实上下文。
     """
     pattern = _block_pattern(tag)
     for message in messages:
@@ -68,12 +66,12 @@ def _extract_tag(messages: Sequence[ChatMessage], tag: str) -> str | None:
 
 
 def _is_real_int(value: object) -> TypeGuard[int]:
-    """Return whether a JSON value is an integer and not a boolean."""
+    """判断一个 JSON 值是否为整数而非布尔值。"""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
 def extract_candidate_ids(messages: Sequence[ChatMessage]) -> tuple[int, ...]:
-    """Return the candidate repository ids advertised in the prompt context."""
+    """返回 prompt 上下文里声明的候选仓库 id。"""
     raw = _extract_tag(messages, CANDIDATE_TAG)
     if raw is None:
         return ()
@@ -87,7 +85,7 @@ def extract_candidate_ids(messages: Sequence[ChatMessage]) -> tuple[int, ...]:
 
 
 def extract_topic_id(messages: Sequence[ChatMessage]) -> int | None:
-    """Return the topic id advertised in the prompt context."""
+    """返回 prompt 上下文里声明的主题 id。"""
     raw = _extract_tag(messages, TOPIC_TAG)
     if raw is None:
         return None
@@ -99,7 +97,7 @@ def extract_topic_id(messages: Sequence[ChatMessage]) -> int | None:
 
 
 def extract_window(messages: Sequence[ChatMessage]) -> tuple[datetime, datetime] | None:
-    """Return the research window advertised in the prompt context."""
+    """返回 prompt 上下文里声明的研究窗口。"""
     raw = _extract_tag(messages, WINDOW_TAG)
     if raw is None:
         return None
@@ -120,7 +118,7 @@ def extract_window(messages: Sequence[ChatMessage]) -> tuple[datetime, datetime]
 
 
 def requested_tool_calls(messages: Sequence[ChatMessage]) -> set[tuple[str, int | None]]:
-    """Return every `(tool_name, repo_id)` pair the assistant already asked for."""
+    """返回助手已经请求过的所有 `(tool_name, repo_id)` 组合。"""
     requested: set[tuple[str, int | None]] = set()
     for message in messages:
         if message.role != "assistant":
@@ -132,7 +130,7 @@ def requested_tool_calls(messages: Sequence[ChatMessage]) -> set[tuple[str, int 
 
 
 def _arguments_by_call_id(messages: Sequence[ChatMessage]) -> dict[str, dict[str, Any]]:
-    """Map each tool call id back to the arguments the assistant supplied."""
+    """把每个工具调用 id 映射回助手当时给出的参数。"""
     mapping: dict[str, dict[str, Any]] = {}
     for message in messages:
         if message.role != "assistant":
@@ -144,7 +142,7 @@ def _arguments_by_call_id(messages: Sequence[ChatMessage]) -> dict[str, dict[str
 
 @dataclass(slots=True)
 class _Evidence:
-    """Tool observations re-assembled into a comparable snapshot."""
+    """把工具观测重新拼装成的可比较快照。"""
 
     profiles: dict[int, dict[str, Any]] = field(default_factory=dict)
     metrics: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
@@ -152,13 +150,13 @@ class _Evidence:
     prior_reports: list[dict[str, Any]] = field(default_factory=list)
 
     def repo_ids(self) -> list[int]:
-        """Return every repository id seen across all observation types."""
+        """返回所有观测类型中出现过的仓库 id。"""
         seen = set(self.profiles) | set(self.metrics) | set(self.contents)
         return sorted(seen)
 
 
 def _int_field(payload: dict[str, Any], key: str) -> int:
-    """Read an integer field defensively, treating anything else as zero."""
+    """防御式读取一个整数字段，其它类型一律按 0 处理。"""
     value = payload.get(key)
     if not _is_real_int(value):
         return 0
@@ -166,7 +164,7 @@ def _int_field(payload: dict[str, Any], key: str) -> int:
 
 
 def _net_star_delta(points: Sequence[dict[str, Any]]) -> int:
-    """Return last-minus-first stars across an ordered metric series."""
+    """返回有序指标序列中「末点减首点」的 stars 变化量。"""
     if len(points) < 2:
         return 0
     return _int_field(points[-1], "stars") - _int_field(points[0], "stars")
@@ -174,12 +172,11 @@ def _net_star_delta(points: Sequence[dict[str, Any]]) -> int:
 
 @dataclass(frozen=True, slots=True)
 class _Trend:
-    """A qualitative reading of one repository's metric series.
+    """对单个仓库指标序列的定性解读。
 
-    The report's `trend` section should say *what is happening* — is the topic heating up,
-    cooling off, or holding steady — rather than restate the counters every other section
-    already lists. Deriving a direction and an acceleration from the per-day deltas turns a
-    two-point "before/after" into a judgement the reader can act on.
+    报告的 `trend` 一节应当说清*正在发生什么* —— 主题在升温、降温还是
+    走平 —— 而不是把其它小节已经列过的计数再念一遍。从每日增量里推出
+    方向与加速度，才能把只有两点的「前后对比」变成读者可以据以行动的判断。
     """
 
     direction: str  # "rising" / "steady" / "declining" / "unknown"
@@ -189,15 +186,15 @@ class _Trend:
 
     @property
     def label(self) -> str:
-        """A short Chinese reading for the report body."""
+        """报告正文用的简短中文判读。"""
         direction_label = {
             "rising": "升温",
             "steady": "平稳",
             "declining": "回落",
             "unknown": "数据不足",
         }[self.direction]
-        # A steady series has no acceleration worth naming; appending "增速平稳" to "平稳"
-        # would be a tautology. Only a directional series gets an acceleration qualifier.
+        # 走平的序列没有值得一提的加速度；在「平稳」后面再补一句「增速平稳」
+        # 是同义反复。只有有方向的序列才追加加速度限定词。
         if self.direction in {"steady", "unknown"} or self.acceleration in {"steady", "unknown"}:
             return direction_label
         acceleration_label = {
@@ -208,11 +205,10 @@ class _Trend:
 
 
 def _daily_deltas(points: Sequence[dict[str, Any]]) -> list[int]:
-    """Return the per-day star deltas, preferring the stored delta over the adjacent difference.
+    """返回每日 stars 增量，优先用存好的增量而不是相邻两点相减。
 
-    `repo_snapshots.stars_delta` may be null (older seeds only stored absolute counts), so fall
-    back to the difference between consecutive `stars` values. Both are integers; the caller
-    only cares about sign and magnitude.
+    `repo_snapshots.stars_delta` 可能为 null（早期的种子数据只存了绝对值），
+    此时退回到相邻两个 `stars` 值相减。两者都是整数，调用方只关心符号与量级。
     """
     deltas: list[int] = []
     for index, point in enumerate(points):
@@ -225,7 +221,7 @@ def _daily_deltas(points: Sequence[dict[str, Any]]) -> list[int]:
 
 
 def _analyze_trend(points: Sequence[dict[str, Any]]) -> _Trend:
-    """Classify one metric series into a direction and an acceleration."""
+    """把一个指标序列归类成方向与加速度。"""
     net = _net_star_delta(points)
     count = len(points)
     if count < 2:
@@ -243,9 +239,9 @@ def _analyze_trend(points: Sequence[dict[str, Any]]) -> _Trend:
     else:
         direction = "steady"
 
-    # Acceleration compares the recent half of the series against the earlier half, so a series
-    # that is still positive but slowing reports "增速放缓" rather than an undifferentiated
-    # "升温". With only two points there is a single delta, so acceleration is unknowable.
+    # 加速度比较的是序列后半段与前半段，因此一个仍在增长但正在放缓的序列
+    # 会报「增速放缓」，而不是笼统的「升温」。只有两个点时只有一个增量，
+    # 加速度无从判断。
     half = max(1, len(deltas) // 2)
     early = sum(deltas[:half])
     late = sum(deltas[half:])
@@ -262,14 +258,14 @@ def _analyze_trend(points: Sequence[dict[str, Any]]) -> _Trend:
 
 
 def _collect_evidence(messages: Sequence[ChatMessage]) -> _Evidence:
-    """Rebuild the research snapshot from recorded tool observations.
+    """从记录下来的工具观测重建研究快照。
 
-    A failed observation is skipped before any branch sees it. Both a failure and a result are
-    JSON objects, so without this the two are indistinguishable here, and a call that answered
-    `TOOL_NOT_FOUND` would be filed as "the cached README was read" - the agent would then cite a
-    document it never received, and report generation would fail downstream on a citation whose
-    source row does not exist. Skipping is uniform across branches rather than added to the two
-    that take a dict, so a future observation type cannot reintroduce the bug by omitting it.
+    失败的观测在任何分支看到它之前就被跳过。失败与结果都是 JSON 对象，
+    没有这一步，两者在这里无法区分，一个返回 `TOOL_NOT_FOUND` 的调用
+    就会被归档成「读到了缓存的 README」—— Agent 随后会引用一份它从未
+    收到的文档，报告生成则会在下游因为一条源行不存在的引用而失败。跳过
+    这一步放在所有分支之前，而不是只加进那两个接受 dict 的分支，将来的
+    新观测类型就无法靠漏写它把这个 bug 带回来。
     """
     evidence = _Evidence()
     arguments_by_call = _arguments_by_call_id(messages)
@@ -303,14 +299,14 @@ def _collect_evidence(messages: Sequence[ChatMessage]) -> _Evidence:
 
 
 def _metric_citation(repo_id: int, points: Sequence[dict[str, Any]]) -> CitationRef:
-    """Build a traceable citation to the latest snapshot of a repository."""
+    """构造一条指向仓库最新快照的可溯源引用。"""
     latest = points[-1].get("snapshot_date") if points else None
     suffix = latest if isinstance(latest, str) else "unknown"
     return CitationRef(source_type="metric", source_ref=f"repo_snapshots:{repo_id}:{suffix}")
 
 
 def _readme_citation(repo_id: int) -> CitationRef:
-    """Build a traceable citation to the cached README of a repository."""
+    """构造一条指向仓库缓存 README 的可溯源引用。"""
     return CitationRef(
         source_type="readme",
         source_ref=f"repository_contents:{repo_id}:readme",
@@ -318,12 +314,12 @@ def _readme_citation(repo_id: int) -> CitationRef:
 
 
 def _prior_report_citation(report_id: int) -> CitationRef:
-    """Build a traceable citation to one prior published report."""
+    """构造一条指向某篇历史已发布报告的可溯源引用。"""
     return CitationRef(source_type="prior_report", source_ref=f"reports:{report_id}")
 
 
 def _repository_label(evidence: _Evidence, repo_id: int) -> str:
-    """Return a human-readable repository label, falling back to the raw id."""
+    """返回便于人读的仓库标签，取不到时退回原始 id。"""
     profile = evidence.profiles.get(repo_id)
     if profile is None:
         return f"repo#{repo_id}"
@@ -332,10 +328,10 @@ def _repository_label(evidence: _Evidence, repo_id: int) -> str:
 
 
 def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
-    """Turn the research snapshot into one deterministic draft per report section.
+    """把研究快照变成每个报告小节各一份的确定性草稿。
 
-    Every section is derived from recorded observations only. README text is never copied
-    into the draft: it stays marked as untrusted input and is only acknowledged as a source.
+    每一节都只由记录下来的观测推导得出。README 原文绝不会被抄进草稿：
+    它始终标记为不可信输入，最多只在来源里被提到。
     """
     repo_ids = evidence.repo_ids()
     trends = {repo_id: _analyze_trend(evidence.metrics.get(repo_id, [])) for repo_id in repo_ids}
@@ -361,11 +357,10 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
         for report_id in [report["report_id"]]
     ]
 
-    # The summary states the conclusion, not the census: the total movement, the split between
-    # rising / flat / falling, and how concentrated the movement is. Naming the top two movers
-    # here (as it used to) said the same thing as the highlights section in different words.
-    # Only the non-zero buckets are named. "3 个升温、0 个平稳、0 个回落" spends a third of the
-    # opening sentence on categories that do not exist.
+    # 摘要给的是结论而不是普查：总变化量、升温/走平/回落三类的分布，以及
+    # 变化有多集中。在这里点名前两名（以前的写法）只是换些词把 highlights
+    # 一节又讲了一遍。只点名非零的分桶。「3 个升温、0 个平稳、0 个回落」
+    # 会把开头那句的三分之一花在并不存在的类别上。
     buckets = (
         (len(growing), "升温"),
         (len(steady), "平稳"),
@@ -387,10 +382,9 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
         cooling = "、".join(_repository_label(evidence, repo_id) for repo_id in declining[:2])
         summary_lines.append(f"{cooling} 本期出现回落。")
 
-    # The trend section states a *judgement*, not a restatement of counters. It opens with a
-    # topic-level reading (is the topic heating up or cooling off) and then explains each
-    # repository's direction and acceleration, so a reader gets the narrative without having
-    # to re-derive it from the summary's numbers.
+    # trend 一节给的是*判断*，不是把计数复述一遍。它先给出主题层面的判读
+    # （主题在升温还是降温），再逐个解释每个仓库的方向与加速度，读者不必
+    # 自己从摘要的数字里再推一遍。
     trend_lines: list[str] = []
     if growing and not declining:
         trend_lines.append("本期主题整体处于**升温**阶段，多数候选仓库热度上行。")
@@ -401,8 +395,8 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
     else:
         trend_lines.append("本期主题整体**平稳**，各候选仓库热度未见明显方向性变化。")
     trend_lines.append("")
-    # Ranked by net movement, not by repository id: the reader wants the mover that decided the
-    # week first, and id order put a 2,068-star repository above an 84,713-star one.
+    # 按净变化排序而不是按仓库 id：读者想先看到决定了这一周的那一个，而按
+    # id 排序会把一个 2,068 stars 的仓库排到 84,713 stars 的仓库前面。
     for repo_id in ranked:
         trend = trends[repo_id]
         points = evidence.metrics.get(repo_id, [])
@@ -418,10 +412,10 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
     if not repo_ids:
         trend_lines.append("- 本期没有可用的时间序列观测点。")
 
-    # `highlights` ranks the same repositories the trend section describes, so it has to add
-    # something the trend section does not: each mover's *share* of the topic's movement, which
-    # is what says who is actually carrying the topic. Restating the labels and deltas verbatim
-    # (as it used to) left two of six sections saying one sentence twice.
+    # `highlights` 排的是 trend 一节描述过的同一批仓库，所以它必须补上
+    # trend 没给的东西：每个变化者占主题总变化量的*份额*，这才说明是谁
+    # 真正在扛着这个主题。逐字复述标签与增量（以前的写法）会让六个小节
+    # 里的两节把同一句话说了两遍。
     highlight_lines = [
         f"- {_repository_label(evidence, repo_id)}：净增 {deltas[repo_id]} stars，"
         f"占本期合计净增的 {deltas[repo_id] * 100.0 / total_delta:.0f}%，"
@@ -443,9 +437,9 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
     if repo_ids and len(evidence.contents) < len(repo_ids):
         missing = [repo_id for repo_id in repo_ids if repo_id not in evidence.contents]
         labels = "、".join(_repository_label(evidence, repo_id) for repo_id in missing[:3])
-        # "未读取" is the fact; "没有缓存到" was an assertion about the content store that this
-        # code never checks — the README can be cached and simply not read, which is exactly what
-        # the offline planner does past its content budget.
+        # 「未读取」是事实；「没有缓存到」是对内容存储的断言，而这段代码
+        # 从不检查它 —— README 完全可能已缓存、只是没被读取，离线规划器
+        # 超出内容预算之后正是这样。
         risk_lines.append(f"- {labels}：本期未读取 README，结论仅基于指标数据。")
     if not risk_lines:
         risk_lines.append("- 本期未发现需要特别提示的风险项。")
@@ -486,9 +480,9 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
         "仓库 README 属于外部不可信文本，仅用于交叉核对，不直接引用其原文。",
     ]
 
-    # Each section cites exactly the observations its prose is derived from. The metric
-    # series is the shared spine of every section, so a section never ends up with an empty
-    # citation list just because the topic has no prior reports and no cached README yet.
+    # 每一节只引用它那段文字真正推导自的观测。指标序列是所有小节共用的
+    # 脊柱，因此一节不会仅仅因为主题还没有历史报告、也没有缓存 README
+    # 就落得一个空的引用列表。
     raw_sections: dict[str, tuple[list[str], list[CitationRef]]] = {
         "summary": (summary_lines, metric_citations),
         "trend": (trend_lines, metric_citations),
@@ -509,7 +503,7 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
 
 
 class OfflineModelClient:
-    """Deterministic, network-free implementation of the model client contract."""
+    """模型客户端契约的确定性、无网络实现。"""
 
     def __init__(
         self,
@@ -524,12 +518,12 @@ class OfflineModelClient:
 
     @property
     def provider(self) -> str:
-        """Return the offline provider identifier."""
+        """返回离线供应商的标识。"""
         return "offline"
 
     @property
     def model(self) -> str:
-        """Return the stub model identifier."""
+        """返回桩模型标识。"""
         return self._model
 
     def complete(
@@ -537,23 +531,23 @@ class OfflineModelClient:
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSchema],
     ) -> ModelTurn:
-        """Advance one deterministic research step, or draft the report when no tools are given."""
+        """推进一个确定性的研究步骤；没有给出工具时改为起草报告。"""
         if tools:
             return self._plan_turn(messages)
         return self._write_turn(messages)
 
     def _turn(self, calls: Sequence[ModelToolCall] = (), text: str = "") -> ModelTurn:
-        """Build one stub turn with zero cost, because the stub never calls a paid model."""
+        """构造一轮零成本的桩回复，因为桩从不调用付费模型。"""
         return ModelTurn(text=text, tool_calls=tuple(calls), model=self._model)
 
     def _call(self, name: str, arguments: dict[str, Any]) -> ModelToolCall:
-        """Build a deterministic tool call whose id encodes the tool and target."""
+        """构造一次确定性的工具调用，其 id 编码了工具与目标。"""
         repo_id = arguments.get("repo_id")
         suffix = f"-r{repo_id}" if _is_real_int(repo_id) else ""
         return ModelToolCall(call_id=f"{name}{suffix}", name=name, arguments=arguments)
 
     def _plan_turn(self, messages: Sequence[ChatMessage]) -> ModelTurn:
-        """Return the next batch of research tool calls for the current evidence state."""
+        """针对当前证据状态返回下一批研究工具调用。"""
         candidates = extract_candidate_ids(messages)
         requested = requested_tool_calls(messages)
         if not candidates:
@@ -622,6 +616,6 @@ class OfflineModelClient:
         return self._turn(text="证据收集完成。")
 
     def _write_turn(self, messages: Sequence[ChatMessage]) -> ModelTurn:
-        """Return the draft sections as a JSON document for the runtime to parse."""
+        """把各节草稿作为 JSON 文档返回，交给运行时解析。"""
         payload = {"sections": compose_sections(_collect_evidence(messages))}
         return self._turn(text=json.dumps(payload, ensure_ascii=False, sort_keys=True))

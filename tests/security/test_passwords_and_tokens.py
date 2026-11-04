@@ -1,4 +1,4 @@
-"""Tests for password hashing and JWT access tokens."""
+"""守护密码哈希与 JWT 访问令牌。"""
 
 from datetime import UTC, datetime
 
@@ -11,7 +11,7 @@ from open_source_intelligence.security.tokens import create_access_token, decode
 
 
 def build_settings(secret: str = "x" * 32) -> Settings:
-    """Create deterministic settings for token tests."""
+    """为令牌用例构造一套确定的配置。"""
     return Settings(
         _env_file=None,
         app_env="test",
@@ -22,7 +22,7 @@ def build_settings(secret: str = "x" * 32) -> Settings:
 
 
 def build_user() -> User:
-    """Create a transient user with one role for token tests."""
+    """为令牌用例构造一个带单一角色的游离用户。"""
     role = Role(id=1, code="ADMIN", name="Administrator")
     user = User(
         id=1,
@@ -35,7 +35,7 @@ def build_user() -> User:
 
 
 def test_password_hash_round_trip_and_policy() -> None:
-    """Passwords must use a non-plaintext hash and enforce minimum length."""
+    """证明口令不以明文保存、能校验通过，且强制了最小长度。"""
     password = "correct horse battery staple"
     password_hash = hash_password(password)
 
@@ -47,7 +47,7 @@ def test_password_hash_round_trip_and_policy() -> None:
 
 
 def test_access_token_round_trip() -> None:
-    """A valid token must carry the user identity and current roles."""
+    """证明有效令牌携带了用户身份与当前角色。"""
     settings = build_settings()
     token = create_access_token(build_user(), settings)
 
@@ -60,7 +60,7 @@ def test_access_token_round_trip() -> None:
 
 
 def test_access_token_rejects_wrong_secret_and_expiry() -> None:
-    """Tokens must fail validation across secrets or after expiry."""
+    """证明换一把密钥或过了有效期，令牌都无法通过校验。"""
     settings = build_settings()
     token = create_access_token(build_user(), settings, expires_minutes=-1)
 

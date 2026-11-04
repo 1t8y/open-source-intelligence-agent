@@ -1,4 +1,4 @@
-"""Integration tests for authentication, RBAC, and audit events."""
+"""守护登录、RBAC 与审计：每一次放行和拒绝都要在 `audit_logs` 里留下痕迹。"""
 
 from collections.abc import Iterator
 from typing import Annotated
@@ -19,7 +19,7 @@ from open_source_intelligence.security.passwords import hash_password
 
 
 def build_auth_app(role_code: str = "ADMIN") -> tuple[TestClient, sessionmaker[Session], str]:
-    """Create a test app backed by a shared in-memory SQLite database."""
+    """构造一个由共享的内存 SQLite 数据库支撑的测试应用。"""
     settings = Settings(
         _env_file=None,
         app_env="test",
@@ -63,7 +63,7 @@ def build_auth_app(role_code: str = "ADMIN") -> tuple[TestClient, sessionmaker[S
 
 
 def test_login_success_returns_token_and_audit_event() -> None:
-    """Valid credentials should return a usable token and success audit."""
+    """证明正确的凭据既换回可用的令牌，也留下一条成功审计。"""
     client, session_factory, password = build_auth_app()
     with client:
         response = client.post(
@@ -86,7 +86,7 @@ def test_login_success_returns_token_and_audit_event() -> None:
 
 
 def test_login_failure_is_audited() -> None:
-    """Invalid credentials should return 401 and create a failed audit event."""
+    """证明错误的凭据返回 401，并且审计表里留下一条失败记录。"""
     client, session_factory, _ = build_auth_app()
     with client:
         response = client.post(
@@ -102,7 +102,7 @@ def test_login_failure_is_audited() -> None:
 
 
 def test_missing_token_is_audited() -> None:
-    """Protected endpoints must reject and audit missing credentials."""
+    """证明受保护端点会拒绝并审计缺失的凭据。"""
     client, session_factory, _ = build_auth_app()
     with client:
         response = client.get("/api/v1/auth/me")
@@ -115,7 +115,7 @@ def test_missing_token_is_audited() -> None:
 
 
 def test_rbac_denial_is_audited() -> None:
-    """A current database role outside the allow list must receive 403."""
+    """证明数据库里的当前角色不在白名单内时必须收到 403。"""
     client, session_factory, password = build_auth_app(role_code="VIEWER")
     with client:
         login = client.post(

@@ -1,4 +1,4 @@
-"""Tests for the daily collect, snapshot, rank orchestration."""
+"""守护每日「采集 — 快照 — 排名」的编排。"""
 
 from datetime import UTC, date, datetime
 
@@ -34,7 +34,7 @@ OBSERVED_AT = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)
 
 
 def build_session_factory() -> sessionmaker[Session]:
-    """Build a shared in-memory database for orchestration tests."""
+    """构造编排测试共用的内存数据库。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -45,7 +45,7 @@ def build_session_factory() -> sessionmaker[Session]:
 
 
 def build_item(index: int, *, stars: int = 100, provider: str = "github") -> CollectedRepository:
-    """Build one normalized repository payload for a stub collector."""
+    """为桩采集器构造一条归一化仓库载荷。"""
     return CollectedRepository(
         provider=provider,
         provider_repo_id=f"repo-{index}",
@@ -62,7 +62,7 @@ def build_item(index: int, *, stars: int = 100, provider: str = "github") -> Col
 
 
 class StubCollector:
-    """Collector double that returns fixed payloads or raises a source error."""
+    """返回固定载荷、或抛出来源错误的采集器替身。"""
 
     def __init__(
         self,
@@ -86,7 +86,7 @@ class StubCollector:
 
 
 def add_topic(session: Session, *, name: str, enabled: bool = True) -> Topic:
-    """Insert one topic owned by a test user."""
+    """插入一个由测试用户拥有的主题。"""
     user = session.scalar(select(User).where(User.id == 1))
     if user is None:
         session.add(
@@ -115,7 +115,7 @@ def add_topic(session: Session, *, name: str, enabled: bool = True) -> Topic:
 
 
 def test_daily_pipeline_records_every_stage_and_stays_idempotent() -> None:
-    """Each stage gets a run record, and a rerun must not duplicate business rows."""
+    """每个阶段各留一条运行记录，重跑也不能多出业务行。"""
     session_factory = build_session_factory()
     collector = StubCollector([build_item(1), build_item(2, stars=500)])
     with session_factory() as session:
@@ -157,12 +157,12 @@ def test_daily_pipeline_records_every_stage_and_stays_idempotent() -> None:
     assert candidate_count == 2
     assert first_attempt == 1
     assert len(second_attempts) == 3
-    # 6 run rows: two attempts of collect + snapshot + rank.
+    # 共 6 条运行行：collect、snapshot、rank 各两轮。
     assert run_row_count == 6
 
 
 def test_all_provider_failure_fails_the_collect_run_and_stops_the_batch() -> None:
-    """A batch where no provider returns data must fail instead of ranking nothing."""
+    """所有来源都没返回数据的批次应当失败，而不是空排一场。"""
     session_factory = build_session_factory()
     collector = StubCollector([], error=SourceUnavailableError("source returned HTTP 500"))
     with session_factory() as session:
@@ -191,7 +191,7 @@ def test_all_provider_failure_fails_the_collect_run_and_stops_the_batch() -> Non
 
 
 def test_partial_provider_failure_continues_the_batch() -> None:
-    """One failing provider must not stop snapshots and ranking."""
+    """单个来源失败不该连带停掉快照与排名。"""
     session_factory = build_session_factory()
     working = StubCollector([build_item(1)])
     broken = StubCollector(
@@ -223,7 +223,7 @@ def test_partial_provider_failure_continues_the_batch() -> None:
 def test_rank_failure_is_isolated_to_one_topic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One broken topic must not stop the ranking of the other topics."""
+    """一个主题出错不该让其它主题停止排名。"""
     session_factory = build_session_factory()
     collector = StubCollector([build_item(1)])
 
@@ -264,7 +264,7 @@ def test_rank_failure_is_isolated_to_one_topic(
 
 
 def test_attempt_is_recorded_on_every_stage_for_the_retry_trail() -> None:
-    """Retried attempts must be visible on each run record of the attempt."""
+    """重试的次数必须在该轮每条运行记录上都看得见。"""
     session_factory = build_session_factory()
     collector = StubCollector([build_item(1)])
     with session_factory() as session:
@@ -289,7 +289,7 @@ def test_attempt_is_recorded_on_every_stage_for_the_retry_trail() -> None:
 
 
 class StubContentSource:
-    """Content source double for the orchestration tests."""
+    """供编排测试使用的内容来源替身。"""
 
     provider = "github"
 
@@ -298,7 +298,7 @@ class StubContentSource:
         self.calls: list[str] = []
 
     def fetch_readme(self, full_name: str) -> FetchedContent:
-        """Return one README and record the name that was asked for."""
+        """返回一份 README，并记下被问到的是哪个名称。"""
         self.calls.append(full_name)
         return FetchedContent(
             provider=self.provider,
@@ -311,7 +311,7 @@ class StubContentSource:
 
 
 def test_the_contents_stage_is_opt_in_and_caches_the_ranked_candidates() -> None:
-    """The batch stays three stages until a source is supplied, and then it warms the cache."""
+    """没给内容来源时批次仍是三个阶段，给了才顺带预热缓存。"""
     session_factory = build_session_factory()
     collector = StubCollector([build_item(1), build_item(2, stars=500)])
     source = StubContentSource()
@@ -353,11 +353,11 @@ def test_the_contents_stage_is_opt_in_and_caches_the_ranked_candidates() -> None
 def test_an_unexpected_collect_failure_still_closes_the_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An error the collector did not classify must not leave the run row `running`.
+    """采集器没有归类的错误，不能让运行行永远停在 `running`。
 
-    Every other stage wraps its work and writes a terminal state; collect only re-raised its own
-    `CollectorError`. A database error (or a bad `limit`) therefore left the row in `running`
-    forever, which is the one state that makes a dead batch look like a live one.
+    其它阶段都把自己的工作包起来并写入终态；只有 collect 仅重新抛出自己的
+    `CollectorError`。于是数据库错误（或一个不合法的 `limit`）会把那一行永远留在
+    `running` —— 正是这个状态让一批早已死掉的运行看起来还活着。
     """
     session_factory = build_session_factory()
     with session_factory() as session:

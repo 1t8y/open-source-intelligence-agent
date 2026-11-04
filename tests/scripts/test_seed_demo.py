@@ -1,18 +1,18 @@
-"""The demo seeder has to be idempotent and honest about its two boundary shapes.
+"""演示数据播种脚本必须幂等，并且对它的两种边界形态说实话。
 
-`scripts/seed_demo.py` turns an empty database into a demonstrable state. Two properties are worth
-pinning in a test rather than trusting to a manual run:
+`scripts/seed_demo.py` 把空库变成可演示的状态。有两条性质值得写进测试，
+而不是靠手动跑一遍来相信：
 
-1. **Idempotency** — every entity is looked up before it is created, so a second run must not add
-   a single row. The seeder is meant to be re-run against a live deployment, and a seeder that
-   duplicates on re-run is a bug waiting to inflate a candidate budget.
+1. **幂等** —— 每个实体在创建前都会先查一遍，所以第二次运行不能多出一行。
+   这个播种脚本本来就要对着线上部署反复运行，而一个重跑就重复写入的播种脚本，
+   是随时会把候选预算吹大的隐患。
 
-2. **The boundary shapes are real** — the T25 evaluation dataset keeps two cases disabled because
-   this deployment cannot yet produce their data shapes. The seeder is what produces them:
-   `example/readme-missing` must have *no* `repository_contents` row, and
-   `example/prompt-injection` must carry instruction-shaped text in its cached README. If either
-   drifts, the evaluation would re-enable a case against data that does not actually exercise the
-   boundary it names.
+2. **边界形态是真的** —— T25 评估数据集有两个用例保持停用，因为当前部署
+   还造不出它们需要的数据形态。造出来的正是这个播种脚本：
+   `example/readme-missing` 必须*没有* `repository_contents` 行，
+   `example/prompt-injection` 的缓存 README 必须带着指令形状的文本。
+   任一处漂移，评估就会重新启用一个用例，而它面对的数据
+   其实并没有走到用例所说的那条边界。
 """
 
 from __future__ import annotations
@@ -35,12 +35,12 @@ from open_source_intelligence.persistence.models.notifications import PushTarget
 
 
 def _count(session: Session, model: type) -> int:
-    """Return the row count for one model."""
+    """返回某个模型的行数。"""
     return int(session.scalar(select(func.count()).select_from(model)) or 0)
 
 
 def test_seeding_is_idempotent(session: Session) -> None:
-    """A second pass over the same database adds no rows."""
+    """证明在同一个库上再跑一遍不会多出任何行。"""
     seed._ensure_accounts(  # noqa: SLF001
         session,
         admin_password="admin-password-123",
@@ -60,7 +60,7 @@ def test_seeding_is_idempotent(session: Session) -> None:
     links = _count(session, TopicRepository)
     targets = _count(session, PushTarget)
 
-    # Second pass: nothing may change.
+    # 第二遍：什么都不能变。
     seed._ensure_repositories(session, source, topic)  # noqa: SLF001
     seed._ensure_push_targets(session)  # noqa: SLF001
     session.commit()
@@ -73,7 +73,7 @@ def test_seeding_is_idempotent(session: Session) -> None:
 
 
 def test_boundary_shapes_are_real(session: Session) -> None:
-    """The two disabled evaluation cases have to be produced as documented data shapes."""
+    """证明那两个停用的评估用例确实按文档所述的形态被造了出来。"""
     admin = seed.get_user_by_username(session, "admin")
     if admin is None:
         seed._ensure_accounts(  # noqa: SLF001
@@ -111,7 +111,7 @@ def test_boundary_shapes_are_real(session: Session) -> None:
 
 
 def test_seed_writes_the_full_loop_shape(session: Session) -> None:
-    """The seeder has to land a topic, ranked candidates, snapshots, and a data source."""
+    """证明播种脚本写出了完整闭环：主题、排名候选、快照与数据源。"""
     admin = seed.get_user_by_username(session, "admin")
     if admin is None:
         seed._ensure_accounts(  # noqa: SLF001
@@ -135,13 +135,13 @@ def test_seed_writes_the_full_loop_shape(session: Session) -> None:
         .order_by(TopicRepository.rank)
     ).all()
     assert [link.rank for link in links] == [1, 2, 3, 4, 5]
-    # The three normal candidates are research targets; the two boundary shapes are not.
+    # 三个正常候选是研究对象；两个边界形态不是。
     assert [link.selected_for_agent for link in links] == [True, True, True, False, False]
 
-    # No candidate gets a fabricated snapshot series. A seeder that writes even one point puts a
-    # star count nobody can reproduce from GitHub into the timeline, and a later real collection
-    # would then straddle a fabricated→real boundary — the exact defect A1 removes. The series is
-    # the collector's to write.
+    # 任何候选都不带伪造的快照序列。播种脚本哪怕只写一个点，
+    # 也会把一个谁都无法从 GitHub 复现的星数塞进时间线，之后真实采集
+    # 就会跨在「伪造→真实」的边界上 —— 这正是 A1 要消除的缺陷。
+    # 序列该由采集器来写。
     for repo in session.scalars(select(Repository)).all():
         snap = session.scalars(
             select(RepoSnapshot).where(RepoSnapshot.repository_id == repo.id)
@@ -150,14 +150,14 @@ def test_seed_writes_the_full_loop_shape(session: Session) -> None:
 
 
 def test_collected_repository_is_bound_not_rewritten(session: Session) -> None:
-    """A repository the collector owns keeps its own counters, history, and README.
+    """证明采集器拥有的仓库保留自己的计数器、历史与 README。
 
-    This is the mixed-database defect stated as a test. The seeder used to look a candidate up by
-    `provider_repo_id`, which it writes as `owner/name`; a collected GitHub row carries the
-    numeric provider id instead, so the lookup missed and the seeder inserted a *second* row for
-    the same project, with a fabricated star series and a fabricated snapshot history. The console
-    then showed two different star counts for `morluto/rea` — 370,108 collected and 285,395
-    seeded — and a topic that ranked both.
+    这就是把「混库」缺陷写成一个测试。播种脚本原先按 `provider_repo_id` 查候选，
+    而它自己写的是 `owner/name`；采集来的 GitHub 行带的却是数字 provider id，
+    于是查询落空，播种脚本给同一个项目插入了*第二*行，
+    还配上一套伪造的星数序列与快照历史。控制台随后给 `morluto/rea`
+    显示出两个不同的星数 —— 采集的 370,108 与播种的 285,395 ——
+    而一个主题把两者都排了进去。
     """
     admin = seed.get_user_by_username(session, "admin")
     if admin is None:
@@ -234,12 +234,12 @@ def test_collected_repository_is_bound_not_rewritten(session: Session) -> None:
 
 
 def test_seeding_leaves_no_shared_rank(session: Session) -> None:
-    """A leftover candidate must not hold a position the fixture also holds.
+    """证明残留的候选不会占据夹具同样占用的名次。
 
-    A ranking pass leaves the topic carrying the repositories it scored, ranked from 1. Seeding
-    then writes ranks 1..5 for its own candidates, so a leftover that happens to sit at 2 gives the
-    topic two candidates at position 2 — and every reader that orders by rank (the candidate list,
-    the report's provenance block, the Agent's candidate loader) then orders them arbitrarily.
+    一轮排名之后，主题上会留下它评过分的仓库，名次从 1 开始排。
+    播种脚本接着给自己的候选写 1..5 名，于是残留项若正好排在 2，
+    主题就有两个候选处在第 2 位 —— 此后每个按名次排序的读者
+    （候选列表、报告的出处区块、Agent 的候选加载器）都会得到任意的顺序。
     """
     admin = seed.get_user_by_username(session, "admin")
     if admin is None:
@@ -292,7 +292,7 @@ def test_seeding_leaves_no_shared_rank(session: Session) -> None:
 
 
 def test_accounts_cover_all_three_roles(session: Session) -> None:
-    """The seeder has to produce an admin, an editor, and a viewer."""
+    """证明播种脚本造出了管理员、编辑者与只读者三种账号。"""
     seed._ensure_accounts(  # noqa: SLF001
         session,
         admin_password="admin-password-123",
@@ -300,16 +300,16 @@ def test_accounts_cover_all_three_roles(session: Session) -> None:
     )
     for username in ("admin", "editor", "viewer"):
         assert seed.get_user_by_username(session, username) is not None
-    # The data source is created once, not per account.
+    # 数据源只创建一次，不是每个账号一份。
     assert _count(session, DataSource) == 0
 
 
 def test_init_demo_gate_sees_a_published_report(workspace) -> None:
-    """The init gate reports an already-published topic, so re-running mints nothing.
+    """证明初始化闸门能识别出已发布的主题，于是重跑不会凭空造东西。
 
-    `init_demo.py` drove research → generate → publish on every run, which minted a new agent run
-    and report for the same window each time. The gate is the idempotency guard: a topic that
-    already reached `published` has nothing left to demonstrate.
+    `init_demo.py` 原本次次都跑研究 → 生成 → 发布，每回都为同一窗口
+    新造一次 Agent 运行和一份报告。这个闸门就是幂等守卫：
+    已经走到 `published` 的主题没有什么可再演示的了。
     """
     import scripts.init_demo as init_demo
 
@@ -326,5 +326,5 @@ def test_init_demo_gate_sees_a_published_report(workspace) -> None:
 
     assert init_demo._has_published_report(session, topic_id) is not None  # noqa: SLF001
 
-    # A topic with only a non-published report is not gated: the loop still has work to do.
+    # 只有未发布报告的主题不进闸门：这一轮还有活要干。
     assert init_demo._has_published_report(session, topic_id + 1) is None  # noqa: SLF001

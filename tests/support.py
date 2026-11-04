@@ -1,4 +1,4 @@
-"""Shared seeding helpers and settings builders for the test suite."""
+"""整个测试套件共享的种子数据辅助与配置构造器。"""
 
 from __future__ import annotations
 
@@ -50,13 +50,14 @@ TEST_SECRET_KEY = "test-secret-key-with-at-least-32-characters"
 
 
 def build_settings(**overrides: Any) -> Settings:
-    """Build validated settings for in-memory Agent tests without reading `.env`.
+    """为内存版 Agent 用例构造已校验的配置，且不读取 `.env`。
 
-    ``_env_file=None`` is load-bearing, not tidiness. ``Settings`` reads ``.env`` from the
-    working directory, and a developer's ``.env`` points at a real provider
-    (``AGENT_PROVIDER=openai_compatible``), so without this the suite would build real HTTP
-    clients, spend real quota, and assert against a provider that tests never meant to use.
-    Callers that want a provider pass it explicitly, which still wins over the default.
+    ``_env_file=None`` 是承重的，不是洁癖。``Settings`` 会从工作目录
+    读 ``.env``，而开发者本机的 ``.env`` 指向真实供应商
+    （``AGENT_PROVIDER=openai_compatible``），少了这个参数，
+    套件就会构造出真实的 HTTP 客户端、消耗真实额度，
+    并对着一个测试从未打算使用的供应商做断言。
+    需要指定供应商的调用方显式传入即可，它依然优先于默认值。
     """
     values: dict[str, Any] = {
         "database_url": "mysql+pymysql://app:secret@127.0.0.1:3306/open_source_intelligence",
@@ -68,7 +69,7 @@ def build_settings(**overrides: Any) -> Settings:
 
 
 def build_session_factory() -> sessionmaker[Session]:
-    """Build a shared in-memory database factory."""
+    """构造一个共享的内存数据库工厂。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -79,7 +80,7 @@ def build_session_factory() -> sessionmaker[Session]:
 
 
 class Workspace:
-    """Seed helper that builds a consistent authorization and data graph."""
+    """构造一致的授权关系与数据图的种子数据辅助。"""
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -103,7 +104,7 @@ class Workspace:
         return self._user
 
     def add_topic(self, *, name: str = "AI Agent", enabled: bool = True) -> Topic:
-        """Create one topic owned by the shared test user."""
+        """创建一个归共享测试用户所有的主题。"""
         user = self._ensure_user()
         topic = Topic(
             name=name,
@@ -119,7 +120,7 @@ class Workspace:
         return topic
 
     def add_source(self, *, source_type: str = "github") -> DataSource:
-        """Create one data source."""
+        """创建一个数据源。"""
         source = DataSource(
             name=source_type,
             source_type=source_type,
@@ -143,7 +144,7 @@ class Workspace:
         topics: Sequence[str] | None = None,
         description: str | None = "A test repository",
     ) -> Repository:
-        """Create one repository with latest counters."""
+        """创建一个带最新计数器的仓库。"""
         repository = Repository(
             source_id=source_id,
             provider_repo_id=provider_repo_id,
@@ -171,7 +172,7 @@ class Workspace:
         score: Decimal = Decimal("1"),
         selected: bool = True,
     ) -> TopicRepository:
-        """Link a repository to a topic as a ranked candidate."""
+        """把仓库挂到主题下，作为一个带排名的候选。"""
         link = TopicRepository(
             topic_id=topic_id,
             repository_id=repository_id,
@@ -194,7 +195,7 @@ class Workspace:
         stars_delta: int | None = None,
         forks_delta: int | None = None,
     ) -> RepoSnapshot:
-        """Create one daily snapshot."""
+        """创建一条每日快照。"""
         snapshot = RepoSnapshot(
             repository_id=repository_id,
             snapshot_date=snapshot_date,
@@ -215,7 +216,7 @@ class Workspace:
         content: str,
         source_url: str = "https://example.com/readme",
     ) -> RepositoryContent:
-        """Cache cleaned README content for a repository."""
+        """为仓库缓存一份已清洗的 README 内容。"""
         record = RepositoryContent(
             repository_id=repository_id,
             content_type="readme",
@@ -229,7 +230,7 @@ class Workspace:
         return record
 
     def add_agent_run(self, topic_id: int) -> AgentRun:
-        """Create the config, pipeline run, and agent run chain."""
+        """创建配置、流水线运行与 Agent 运行这条链路。"""
         index = self._next()
         config = AgentConfig(
             name=f"default-{index}",
@@ -278,7 +279,7 @@ class Workspace:
         summary: str = "executed 1 tool call(s)",
         step_index: int = 1,
     ) -> AgentStep:
-        """Append one step row to a run, for tests that need a trail to read."""
+        """给一次运行追加一步，供需要读取轨迹的用例使用。"""
         step = AgentStep(
             agent_run_id=agent_run_id,
             step_index=step_index,
@@ -301,7 +302,7 @@ class Workspace:
         arguments: dict[str, object] | None = None,
         result_summary: str = "1 row",
     ) -> ToolCall:
-        """Append one tool call, optionally attached to the step that made it."""
+        """追加一次工具调用，可选择挂到发起它的那一步上。"""
         call = ToolCall(
             agent_run_id=agent_run_id,
             agent_step_id=agent_step_id,
@@ -328,7 +329,7 @@ class Workspace:
         source_refs: Sequence[str] = (),
         section_key: str = "summary",
     ) -> Report:
-        """Create one report with optional citation rows."""
+        """创建一份报告，并可附带引用行。"""
         report = Report(
             agent_run_id=agent_run_id,
             topic_id=topic_id,
@@ -366,7 +367,7 @@ class Workspace:
         max_tool_calls: int = 10,
         tool_call_count: int = 0,
     ) -> ToolContext:
-        """Build a tool context for the given run and topic."""
+        """为给定的运行与主题构造一份工具上下文。"""
         authorized_ids = {topic_id} if authorized is None else set(authorized)
         return ToolContext(
             agent_run_id=agent_run_id,
@@ -387,10 +388,10 @@ class Workspace:
         allow_private: bool = False,
         allow_confidential: bool = False,
     ) -> PushTarget:
-        """Create one allowlisted delivery destination.
+        """创建一个在白名单内的投递目标。
 
-        The two `allow_*` switches default to `False`, mirroring the column defaults: a
-        freshly added destination is safe until someone deliberately widens it.
+        两个 `allow_*` 开关默认取 `False`，与列默认值保持一致：
+        新加进来的投递目标在有人刻意放宽之前都是安全的。
         """
         target = PushTarget(
             name=name or f"target-{self._next()}",

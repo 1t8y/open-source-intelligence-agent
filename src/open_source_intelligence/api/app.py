@@ -1,4 +1,8 @@
-"""FastAPI application factory."""
+"""组装 FastAPI 应用实例。
+
+本模块把配置、日志、数据库引擎、请求关联中间件、Problem Details 处理器与全部路由按
+固定顺序接好，调用方只需拿到返回值，不必关心装配顺序。
+"""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -32,7 +36,14 @@ from .routes.topics import router as topics_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """Create an application with explicit settings injection."""
+    """按显式注入的配置创建应用实例。
+
+    生产环境由 `uvicorn` 的 `--factory` 模式在进程启动时调用，目标模块路径是
+    `open_source_intelligence.api.app:create_app`；测试夹具与
+    `scripts/check_docs_drift.py` 也直接调用它。不传 `settings` 时回落到进程内唯一的
+    `get_settings()`，显式传入则是为了让不读 `.env` 的调用方（干净 checkout 的
+    CI）也能装配应用。
+    """
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings)
     engine = create_database_engine(resolved_settings.database_url)
@@ -71,7 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def index() -> RedirectResponse:
-        """Open interactive docs for browser previews."""
+        """为浏览器预览打开交互式文档。"""
         destination = "/docs" if resolved_settings.docs_enabled else "/health"
         return RedirectResponse(url=destination, status_code=307)
 

@@ -1,8 +1,7 @@
-"""Monitoring endpoint: the operational overview behind the dashboard.
+"""监控端点：看板背后的运营概览。
 
-The overview is a pure read. It aggregates the ledger the pipeline, the Agent, the report and
-the evaluation layers already wrote, which is why it could be added to a running deployment
-without a migration and cannot disturb a run it is only describing.
+概览是纯读操作。它汇总的是流水线、Agent、报告与评测各层早就写好的台账，所以它能在不跑迁移的
+前提下加进一个已在运行的部署，也不会打扰它只是在描述的那次运行。
 """
 
 from __future__ import annotations
@@ -33,13 +32,13 @@ DbSession = Annotated[Session, Depends(get_db_session)]
 
 
 def request_settings(request: Request) -> Settings:
-    """Return the settings bound to this application instance."""
+    """返回绑定在这个应用实例上的配置。"""
     settings: Settings = request.app.state.settings
     return settings
 
 
 class MetricsOverviewResponse(BaseModel):
-    """The dashboard payload: one window plus five read-only sections."""
+    """看板的响应体：一个时间窗口加五个只读分区。"""
 
     window: dict[str, Any]
     pipeline: dict[str, Any]
@@ -59,11 +58,11 @@ def get_metrics_overview(
         int, Query(ge=MIN_WINDOW_DAYS, le=MAX_WINDOW_DAYS)
     ] = DEFAULT_WINDOW_DAYS,
 ) -> MetricsOverviewResponse:
-    """Return task, token, latency, failure and evaluation metrics for one time window.
+    """返回一个时间窗口内的任务、token、耗时、失败与评测指标。
 
-    `window_days` is validated to the documented 1-90 range; the values an operator actually
-    asks for are 1, 7 and 30. The evaluation section is deliberately not windowed - see
-    `observability.metrics.EvaluationMetrics`.
+    `window_days` 按文档规定校验在 1-90 之间；运维实际会要的值是 1、7 和
+    30。评测分区特意不按窗口切分 —— 原因见
+    `observability.metrics.EvaluationMetrics`。
     """
     overview = collect_metrics(
         session,

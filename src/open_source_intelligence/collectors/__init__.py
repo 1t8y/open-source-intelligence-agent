@@ -1,1 +1,1 @@
-"""External repository source collectors."""
+"""汇集外部仓库源采集适配器。"""

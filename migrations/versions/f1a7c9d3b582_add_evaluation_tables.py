@@ -1,4 +1,6 @@
-"""add evaluation datasets, cases, runs, and results
+"""新增评测数据集、用例、运行与结果表
+
+四张表构成评测闭环：数据集 → 用例 → 运行 → 逐例结果。
 
 Revision ID: f1a7c9d3b582
 Revises: d4f8b2c6a1e9
@@ -18,23 +20,21 @@ depends_on: str | Sequence[str] | None = None
 
 
 def utc_datetime() -> sa.DateTime:
-    """Return the project MySQL UTC DATETIME type."""
+    """返回项目统一的 MySQL UTC `DATETIME` 类型。"""
     return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 def uint64() -> sa.BigInteger:
-    """Return the project unsigned BIGINT type."""
+    """返回项目统一的无符号 `BIGINT` 类型。"""
     return sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 def upgrade() -> None:
-    """Create the four evaluation tables.
+    """创建四张评测表。
 
-    `eval_datasets` is versioned and immutable, `eval_cases` holds the frozen samples,
-    `eval_runs` records one dataset-against-target execution, and `eval_results` holds the
-    per-case measurement. Deleting a dataset therefore removes its cases, its runs, and
-    their results in one cascade, which is what keeps the evaluation tables from leaking
-    orphans during a re-import.
+    `eval_datasets` 带版本且不可变，`eval_cases` 存冻结样本，`eval_runs` 记录一次
+    「数据集对目标」的执行，`eval_results` 存逐例测量值。因此删除一个数据集会级联删掉
+    它的用例、运行与结果，重新导入时评测表才不会留下孤儿行。
     """
     op.create_table(
         "eval_datasets",
@@ -213,7 +213,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the evaluation tables in reverse dependency order."""
+    """按依赖的反序删除这些评测表。"""
     existing = set(sa.inspect(op.get_bind()).get_table_names())
     for table_name in ("eval_results", "eval_runs", "eval_cases", "eval_datasets"):
         if table_name in existing:

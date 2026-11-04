@@ -1,19 +1,18 @@
-"""Report authorization: one place that decides who may read, edit, review, and publish.
+"""报告授权：唯一决定谁能读、改、审、发布的地方。
 
-`docs/security-and-privacy.md` §3.3 requires the permission decision to be centralized
-rather than scattered across routes, so both the request-time guard and the list-query
-predicate come from here.
+`docs/security-and-privacy.md` §3.3 要求把权限判定集中起来，而不是散落在各个路由里，
+因此请求时的守卫与列表查询的谓词都出自这里。
 
-The initial model is deliberately small:
+初始模型刻意做得很小：
 
-* `ADMIN` reads every report.
-* `INTERNAL` visibility is readable by any authenticated user.
-* `TEAM` visibility additionally requires `data_scope = team`.
-* `PRIVATE` visibility requires being the recorded owner. A report with no owner stays
-  `ADMIN`-only, which is the safe reading of "private" for a row whose owner was never set.
+* `ADMIN` 可读所有报告。
+* `INTERNAL` 可见性对任何已认证用户可读。
+* `TEAM` 可见性还要求 `data_scope = team`。
+* `PRIVATE` 可见性要求是记录在案的属主。没有属主的报告仅对 `ADMIN` 开放，对于一行从未
+  设置过属主的记录，这才是对「私密」的安全解读。
 
-`readable_reports_filter` expresses the same rule as a SQL predicate, so a list query can
-push the decision into the database instead of fetching rows and filtering afterwards.
+`readable_reports_filter` 把同一条规则表达成 SQL 谓词，让列表查询把判定下推到数据库，而
+不是先取出行再在事后过滤。
 """
 
 from __future__ import annotations
@@ -34,38 +33,33 @@ ROLE_ADMIN: Final[str] = "ADMIN"
 ROLE_EDITOR: Final[str] = "EDITOR"
 ROLE_VIEWER: Final[str] = "VIEWER"
 
-#: Roles allowed to write: verify, edit, review, publish, and roll back.
+#: 允许写入的角色：校验、编辑、审核、发布与回滚。
 REPORT_WRITE_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR)
-#: Roles allowed to read reports at all.
+#: 有资格读取任何报告的角色。
 REPORT_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER)
 
-#: Roles allowed to read the operational overview and the Agent run ledger. These surfaces
-#: expose cross-topic cost, failure reasons and evaluation verdicts, so they sit with the
-#: operator roles rather than with report readers - a viewer sees reports, not the ledger that
-#: produced them.
+#: 允许读取运维总览与 Agent 运行流水的角色。这些界面会暴露跨主题的成本、失败原因与评测
+#: 结论，因此它们归运维角色而不是归报告读者 —— viewer 看的是报告，不是产出报告的那本流水。
 METRICS_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR)
 
-#: Roles allowed to read the repository catalog. The catalog holds public repository metadata
-#: (`docs/security-and-privacy.md` §2 classifies it as public), so every authenticated role
-#: reads it; what needs adjudicating is not the catalog but whose topics it may be sliced by,
-#: which is what `can_read_topic` decides.
+#: 允许读取仓库目录的角色。目录里是公开的仓库元数据（`docs/security-and-privacy.md` §2
+#: 将其归为公开），因此每个已认证角色都能读；需要裁定的不是目录本身，而是它可以按谁的
+#: 主题来切分，那由 `can_read_topic` 决定。
 REPOSITORY_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER)
 
-#: Roles allowed to read the audit log. Reading it is itself a privilege: the entries name
-#: every refused request, every configuration change and every publish on the platform.
+#: 允许读取审计日志的角色。读它本身就是一种特权：每一条记录都写明了平台上每一次被拒绝的
+#: 请求、每一次配置变更和每一次发布。
 AUDIT_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN,)
 
-#: Roles allowed to see the topic list at all. This is only the gate that keeps anonymous callers
-#: out; *which* topics a caller sees is decided by `can_read_topic`, because a disabled topic is
-#: unpublished configuration rather than someone else's private data. The set matches the report
-#: and catalog read sets: reading a topic is no more privileged than reading a report.
+#: 允许看到主题列表的角色。这道门只负责把匿名调用方挡在外面；调用方*能看哪些*主题由
+#: `can_read_topic` 决定，因为被禁用的主题属于未发布的配置，而不是别人的私密数据。这个集合
+#: 与报告、目录的读集合一致：读主题并不比读报告更有特权。
 TOPIC_READ_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN, ROLE_EDITOR, ROLE_VIEWER)
 
-#: Roles allowed to change a topic. `EDITOR`'s write permission covers reports and nothing else,
-#: and a topic is not a report: it decides which repositories get collected, which fixes the model
-#: budget and the public-API quota the next daily run will spend. That is the same reason
-#: `docs/api-contract.md` §3.1 refuses a `POST /sources` - an endpoint that can move a rate-limit
-#: budget hands usage control to any authenticated client.
+#: 允许修改主题的角色。`EDITOR` 的写权限只覆盖报告，而主题不是报告：它决定采集哪些仓库，
+#: 也就决定了下一次每日运行要花掉多大的模型预算、消耗多少公共 API 配额。`docs/api-contract.md`
+#: §3.1 拒绝提供 `POST /sources` 也是同一个理由 —— 一个能挪动限流预算的端点，等于把用量控制权
+#: 交给任何已认证的客户端。
 TOPIC_WRITE_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN,)
 
 TEAM_DATA_SCOPE: Final[str] = "team"
@@ -76,7 +70,11 @@ VISIBILITY_INTERNAL: Final[str] = "INTERNAL"
 
 
 def can_read_report(user: User, report: Report, roles: set[str]) -> bool:
-    """Return whether `user` may read `report`."""
+    """判断 `user` 是否可以读 `report`。
+
+    这是读取规则作用在单条记录上的入口；`readable_reports_filter` 是同一条规则作用在 SQL
+    上的入口。两处入口，一条规则，必须始终一致。
+    """
     if ROLE_ADMIN in roles:
         return True
     if report.visibility == VISIBILITY_INTERNAL:
@@ -87,7 +85,12 @@ def can_read_report(user: User, report: Report, roles: set[str]) -> bool:
 
 
 def readable_reports_filter(user: User, roles: set[str]) -> ColumnElement[bool]:
-    """Return the access rule as a SQL predicate for report list queries."""
+    """把访问规则表达成报告列表查询用的 SQL 谓词。
+
+    这是与 `can_read_report` 同一条规则的第二个入口：一处判定单条记录，一处交给数据库筛
+    选整个列表。两处入口，一条规则 —— 两边一旦分头实现，列表就会开始显示调用方其实读不
+    到的行。
+    """
     if ROLE_ADMIN in roles:
         return true()
     conditions: list[ColumnElement[bool]] = [Report.visibility == VISIBILITY_INTERNAL]
@@ -103,12 +106,11 @@ def require_report_read(
     user: User,
     report: Report,
 ) -> None:
-    """Deny and audit when the current user may not read the report.
+    """当前用户无权读取报告时，拒绝请求并写入审计。
 
-    The 403 body carries no report metadata, so a denied request learns nothing about a
-    report it may not see. The audit row is the mirror image: it *does* name the report, since
-    an internal trail that cannot say which resource was refused cannot answer "who tried to
-    read what", which is the only question a denial record exists to answer.
+    403 响应体不携带任何报告元数据，因此被拒绝的请求对一份自己看不到的报告一无所知。审计
+    行则正好相反：它*确实*写明是哪份报告，因为一条说不出被拒资源是什么的内部流水，无法回
+    答「谁试图读什么」—— 而这正是拒绝记录唯一存在的意义。
     """
     if can_read_report(user, report, get_role_codes(user)):
         return
@@ -131,7 +133,7 @@ def authorize_report_read(
     *,
     report_id: int,
 ) -> Report:
-    """Load one report for reading, enforcing the ACL and mapping failures to HTTP codes."""
+    """加载一份报告供读取，同时执行 ACL 并把失败映射为 HTTP 状态码。"""
     report = session.get(Report, report_id)
     if report is None:
         raise HTTPException(
@@ -143,17 +145,15 @@ def authorize_report_read(
 
 
 def can_read_topic(user: User, topic: Topic, roles: set[str]) -> bool:
-    """Return whether `user` may slice the repository catalog by `topic`.
+    """判断 `user` 是否可以按 `topic` 切分仓库目录。
 
-    The catalog itself is public, so this is not a container ACL. It guards the membership
-    question: which repositories a topic tracks is internal strategy, and `topic_repositories`
-    is where that becomes observable.
+    仓库目录本身是公开的，所以这不是容器级 ACL。它守的是成员关系问题：某个主题跟踪哪些
+    仓库属于内部策略，而 `topic_repositories` 正是这件事变得可观测的地方。
 
-    `ADMIN` reads every topic. Everyone else reads `enabled` topics — that is the whole of the
-    rule, deliberately. `topics` has no ACL column, and inventing a per-topic grant would be a
-    new feature (`REQUIREMENTS.md` puts full ABAC out of scope), not documentation sync. A
-    disabled topic is treated as unpublished configuration rather than as someone else's
-    private data, which is why the gate is a role check and not an ownership check.
+    `ADMIN` 可读所有主题。其他人可读 `enabled` 的主题 —— 规则就是这一条，刻意如此。
+    `topics` 没有 ACL 列，凭空造一个按主题的授权会是新功能（`REQUIREMENTS.md` 已把
+    完整的 ABAC 划出范围），而不是文档同步。被禁用的主题被当作未发布的配置，而不是
+    别人的私密数据，因此这道门是角色检查，而不是属主检查。
     """
     if ROLE_ADMIN in roles:
         return True
@@ -161,15 +161,13 @@ def can_read_topic(user: User, topic: Topic, roles: set[str]) -> bool:
 
 
 def readable_topics_filter(user: User, roles: set[str]) -> ColumnElement[bool]:
-    """Return the topic visibility rule as a SQL predicate for topic list queries.
+    """把主题可见性规则表达成主题列表查询用的 SQL 谓词。
 
-    The predicate form of `can_read_topic`, and it has to remain the predicate form of it. The
-    contract states two different-looking requirements that are the same requirement: the rule
-    must not be reimplemented per surface, and the list's `total` must be computed under it - a
-    query that fetched every topic and dropped the invisible ones afterwards would still report a
-    count of topics the caller may not see. `tests/security/test_authorization.py` compares this
-    predicate against `can_read_topic` row by row rather than trusting the pair to be edited
-    together.
+    这是 `can_read_topic` 的谓词形式，而且必须一直是它的谓词形式。契约里两条看似不同
+    的要求其实是同一条：规则不得按界面各实现一遍，列表的 `total` 也必须在同一条规则
+    下计算 —— 先取回所有主题、再在事后丢掉看不见的那些，统计出来的仍会是调用方无权
+    看到的主题数量。`tests/security/test_authorization.py` 会逐行把这个谓词与
+    `can_read_topic` 比对，而不是指望两者靠「一起改」来保持一致。
     """
     if ROLE_ADMIN in roles:
         return true()
@@ -184,16 +182,15 @@ def authorize_topic_read(
     topic_id: int,
     action: str = "repository.read",
 ) -> Topic:
-    """Load one topic for catalog filtering, or refuse the request.
+    """加载一个主题用于目录筛选，否则拒绝请求。
 
-    The failure split follows the report resource: a topic that does not exist is `404`, and a
-    topic that exists but is not visible is `403`. The `403` body carries no topic metadata and
-    the audit row names the topic — the same mirror the report ACL uses, for the same reason.
+    失败的分工与报告资源一致：主题不存在是 `404`，主题存在但不可见是 `403`。
+    `403` 响应体不携带任何主题元数据，而审计行会写明是哪个主题 —— 与报告 ACL 相同的
+    镜像关系，理由也相同。
 
-    `action` is a parameter because one rule has two surfaces: the repository catalog filters by
-    topic and records `repository.read`, while the topic endpoint itself records `topic.read`. The
-    default keeps the older caller's behaviour, so a second surface names its own action instead of
-    inheriting a name that describes a different request.
+    `action` 之所以是参数，是因为同一条规则有两个界面：仓库目录按主题筛选并记录
+    `repository.read`，而主题端点自己记录 `topic.read`。默认值保持了较早调用方的行为，
+    让第二个界面用自己的动作名，而不是继承一个描述着另一种请求的名字。
     """
     topic = session.get(Topic, topic_id)
     if topic is None:

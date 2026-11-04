@@ -1,4 +1,4 @@
-"""Compose a versioned, traceable report from Agent draft sections."""
+"""把 Agent 的草稿章节编排成一份带版本、可追溯的报告。"""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ _NUMBER_PATTERN = re.compile(r"\d")
 
 @dataclass(frozen=True, slots=True)
 class ReportGenerationResult:
-    """Summary of one draft-to-report promotion."""
+    """一次「草稿提升为报告」的摘要。"""
 
     report_id: int
     agent_run_id: int
@@ -57,7 +57,7 @@ class ReportGenerationResult:
     version_incremented: bool
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe response payload."""
+        """返回可安全转 JSON 的响应载荷。"""
         return {
             "report_id": self.report_id,
             "agent_run_id": self.agent_run_id,
@@ -69,7 +69,7 @@ class ReportGenerationResult:
 
 
 def _latest_sections(session: Session, report_draft_id: int) -> dict[str, ReportSection]:
-    """Return the latest version of every section in one draft."""
+    """返回一份草稿中每个章节的最新版本。"""
     rows = session.scalars(
         select(ReportSection)
         .where(ReportSection.report_draft_id == report_draft_id)
@@ -82,7 +82,7 @@ def _latest_sections(session: Session, report_draft_id: int) -> dict[str, Report
 
 
 def _parse_citations(section: ReportSection) -> list[CitationRef]:
-    """Validate the JSON citations attached to one draft section."""
+    """校验挂在某个草稿章节上的 JSON 引用。"""
     try:
         return [CitationRef.model_validate(item) for item in (section.citations_json or [])]
     except ValidationError as exc:
@@ -92,11 +92,10 @@ def _parse_citations(section: ReportSection) -> list[CitationRef]:
 
 
 def _candidate_full_names(session: Session, topic_id: int) -> list[str]:
-    """Return the repositories the run was allowed to research, in rank order.
+    """按排名顺序返回本次运行被允许研究的仓库。
 
-    This is the candidate set, not the cited set. A repository that was studied and then not
-    quoted is still part of the input the conclusions were drawn from, and leaving it out of the
-    provenance line would understate what the report could see.
+    这是候选集合，不是被引用的集合。一个研究了却没被引用的仓库，依然是结论所依据的
+    输入的一部分；把它从来源说明行里去掉，就等于低报了这份报告实际能看到什么。
     """
     rows = session.execute(
         select(Repository.full_name)
@@ -117,13 +116,12 @@ def _movement_rows(
     window_start: datetime,
     window_end: datetime,
 ) -> list[tuple[str, int]]:
-    """Return each research candidate's net star movement over the report window.
+    """返回每个研究候选在报告窗口内的 stars 净增。
 
-    Computed here rather than asked of the model. A language model asked to divide two numbers it
-    read a paragraph apart gets it wrong often enough to matter — one live run reported 84,713 out
-    of 92,667 as "64.8%". Percentages are arithmetic, they are already derivable from the rows
-    this report is built on, and a reader cannot tell a wrong percentage from a right one without
-    doing the division themselves.
+    在这里算，而不是去问模型。让语言模型去除两个隔了一段话才读到的数字，它错得足够
+    频繁，足以影响结论 —— 有一次真实运行把 92,667 中的 84,713 报成了「64.8%」。百分比
+    是算术，本来就能从这份报告所依据的行里推出来；而读者若不自己动手做除法，就分辨不出
+    一个百分比是对是错。
     """
     rows = session.execute(
         select(Repository.id, Repository.full_name, TopicRepository.rank)
@@ -165,20 +163,18 @@ def _compose_from_resolved(
     candidate_full_names: Sequence[str] = (),
     movements: Sequence[tuple[str, int]] = (),
 ) -> str:
-    """Render the fixed report template in deterministic section order.
+    """按确定的章节顺序渲染固定的报告模板。
 
-    A short provenance block follows the title so a reader can see, without digging into the
-    database, exactly which candidate set and snapshot window produced this report. That is
-    what makes two consecutive reports with different conclusions explainable: the input
-    (candidates + window) is printed next to the output (conclusions).
+    标题之后跟一段简短的来源说明，读者不必翻数据库就能看清这份报告究竟由哪个候选集合、
+    哪个快照窗口产生。这正是「两期结论不同的报告可以被解释」的原因：输入（候选 + 窗口）
+    就印在输出（结论）旁边。
     """
     lines = [f"# {title}", ""]
 
-    # Provenance: the candidate set actually selected for the run, the snapshot window, and how
-    # many distinct snapshots back the numbers. The count is de-duplicated — one snapshot cited
-    # by three sections is one snapshot — and it is labelled "引用快照" rather than "观测点":
-    # the body also reports how many snapshots each series *covers*, and calling both of those
-    # an observation made a single report state two different totals for the same word.
+    # 来源说明：本次运行实际选中的候选集合、快照窗口，以及有多少个不同的快照支撑了这些
+    # 数字。计数已去重 —— 被三个章节引用的同一个快照只算一个 —— 而且标签用「引用快照」
+    # 而不是「观测点」：正文里还会报每条序列*覆盖*了多少个快照，两者都叫观测点，会让
+    # 同一份报告用同一个词给出两个不同的总数。
     candidates = list(candidate_full_names)
     cited_snapshots = len(
         {
@@ -194,9 +190,8 @@ def _compose_from_resolved(
     )
     lines.append("")
 
-    # The numbers a reader checks first, computed rather than drafted. Placing them above the
-    # prose means a wrong figure in a section stands out against the table instead of standing
-    # alone as the only number on the page.
+    # 读者最先核对的数字，由系统算出而非由模型撰写。把它们放在正文之上，某个章节里的
+    # 错误数字就会与表格对不上，而不是孤零零地成为页面上唯一的数字。
     if movements:
         total = sum(delta for _, delta in movements)
         lines.extend(
@@ -214,9 +209,8 @@ def _compose_from_resolved(
 
     if resolved_sources:
         lines.extend(["## 引用与证据", ""])
-        # De-duplicate by source_ref across sections: one snapshot cited by three sections is
-        # one piece of evidence, not three. Group by type so a reader sees the metric snapshots
-        # first, then README and prior-report references.
+        # 跨章节按 source_ref 去重：被三个章节引用的同一个快照是一份证据，不是三份。
+        # 按类型分组，读者先看到指标快照，再看 README 与历史报告引用。
         unique: dict[str, ResolvedCitation] = {}
         for (_, _), citation in resolved_sources.items():
             unique.setdefault(citation.source_ref, citation)
@@ -246,7 +240,7 @@ def generate_report(
     title: str | None = None,
     now: datetime | None = None,
 ) -> ReportGenerationResult:
-    """Promote the latest Agent draft into a versioned report and citation rows."""
+    """把最新的 Agent 草稿提升为带版本的报告与引用行。"""
     agent_run = session.get(AgentRun, agent_run_id)
     if agent_run is None:
         raise ReportGenerationError(f"agent run {agent_run_id} does not exist")
@@ -331,19 +325,18 @@ def generate_report(
         report.topic_id = draft.topic_id
         report.publish_mode = topic.publish_mode
         if report.status == "changes_requested":
-            # A reviewer asked for changes; regenerating is the response, so the report has
-            # to re-enter the draft queue even when the Agent lands on identical content.
-            # Without this the documented `changes_requested -> draft` edge is unreachable
-            # and the report is stuck in a state nothing may publish from.
+            # 评审要求修改，重新生成就是回应，所以即使 Agent 产出的内容完全一样，报告
+            # 也必须重新进入草稿队列。缺了这一步，文档里那条
+            # `changes_requested -> draft` 边就永远走不到，报告会卡在一个任何发布路径
+            # 都进不去的状态里。
             transition_report(report, "draft")
             report.publish_at = None
         if report.content_markdown != markdown:
             report.current_version += 1
             report.content_markdown = markdown
             report.generated_at = generated_at
-            # Go through the state machine rather than assigning `status` directly: it is the
-            # only writer of `reports.status`, and a direct write would silently keep working
-            # even if this branch later became reachable from a state it must not be.
+            # 走状态机而不是直接给 `status` 赋值：它是 `reports.status` 唯一的写入方，
+            # 直接写会悄悄地继续生效，哪怕这个分支日后真从一个不该迁出的状态被走到。
             transition_report(report, "draft")
             version_incremented = True
         version = report.current_version
@@ -365,9 +358,8 @@ def generate_report(
             )
         )
 
-    # Only this version's citation rows are replaced. Earlier versions keep theirs so a
-    # rollback can restore the evidence that backed that version, and `INV-10` can always be
-    # checked against the version actually being published.
+    # 只替换这一版的引用行。更早的版本保留各自的引用，回滚才能还原支撑那一版的证据，
+    # `INV-10` 也才能始终针对真正在发布的那个版本做检查。
     session.execute(
         delete(ReportSource).where(
             ReportSource.report_id == report.id,

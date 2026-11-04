@@ -1,8 +1,8 @@
-"""Manual edit and rollback: state guards, version bookkeeping, and citation copying.
+"""手动编辑与回滚：状态守卫、版本记账，以及引用拷贝。
 
-`tests/web/test_web.py` drives these services through the UI, but only from `published`.
-The guards themselves were never pinned, which is how a rollback from `scheduled` slipped
-through and mutated the report before the state machine refused the transition.
+`tests/web/test_web.py` 会经由 UI 驱动这些服务，但只从 `published` 起步。
+守卫本身一直没有用例钉住，`scheduled` 状态下的回滚正是因此溜了过去，在状态机
+拒绝这次迁移之前就已经改动了报告。
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ from open_source_intelligence.reports.revisions import (
 from open_source_intelligence.reports.state import ALLOWED_TRANSITIONS, transition_report
 from open_source_intelligence.reports.verification import verify_report
 
-#: Statuses a report can be parked in that must refuse a rollback, with the legal path to
-#: reach each one. `failed` is covered separately because it is the terminal branch.
+#: 报告可能停留、且必须拒绝回滚的状态，以及抵达每一个的合法路径。`failed` 单独
+#: 覆盖，因为它是终态分支。
 PUBLISHING_PATH = (
     ("pending_review", ("pending_review",)),
     ("approved", ("pending_review", "approved")),
@@ -44,7 +44,7 @@ PUBLISHING_PATH = (
 
 
 def _advance(session: Session, report_id: int, *targets: str) -> Report:
-    """Drive a report through the real state machine and return the row."""
+    """让报告走一遍真实的状态机，并返回那一行。"""
     report = session.get(Report, report_id)
     assert report is not None
     for target in targets:
@@ -54,7 +54,7 @@ def _advance(session: Session, report_id: int, *targets: str) -> Report:
 
 
 def _revise(session: Session, case: SeededReport) -> Report:
-    """Apply one content edit so the report carries a second version."""
+    """做一次正文修改，让报告带上第二个版本。"""
     report = case.reload(session)
     revise_report(
         session,
@@ -66,22 +66,22 @@ def _revise(session: Session, case: SeededReport) -> Report:
 
 
 def _version_rows(session: Session, report_id: int) -> int:
-    """Return how many versions are persisted for a report."""
+    """返回某份报告已落库的版本数。"""
     return len(
         session.scalars(select(ReportVersion).where(ReportVersion.report_id == report_id)).all()
     )
 
 
 def test_rollbackable_statuses_match_the_state_machine() -> None:
-    """The declared set must equal the statuses whose legal moves include `draft`."""
+    """声明的集合必须等于「合法迁移中含 `draft`」的那些状态。"""
     derived = {status for status, targets in ALLOWED_TRANSITIONS.items() if "draft" in targets}
-    derived.add("draft")  # `transition_report` treats draft -> draft as a no-op
+    derived.add("draft")  # `transition_report` 把 `draft` -> `draft` 视为空操作
     assert ROLLBACKABLE_STATUSES == frozenset(derived)
     assert "failed" not in ROLLBACKABLE_STATUSES
 
 
 def test_editable_statuses_are_the_draft_queue() -> None:
-    """Only the draft queue may be rewritten by hand."""
+    """只有草稿队列里的报告可以手工改写。"""
     assert EDITABLE_STATUSES == frozenset({"draft", "changes_requested"})
     assert EDITABLE_STATUSES <= ROLLBACKABLE_STATUSES
 
@@ -93,11 +93,11 @@ def test_rollback_is_refused_without_touching_the_report(
     label: str,
     targets: tuple[str, ...],
 ) -> None:
-    """A refused rollback leaves both the object and the database untouched.
+    """被拒绝的回滚，对象与数据库都必须原封不动。
 
-    This is the regression for the ordering bug: the service used to append the version
-    first and consult the state machine last, so a refusal arrived after `current_version`
-    had already been bumped and the body replaced on the very object the UI renders.
+    这是顺序缺陷的回归用例：服务此前先追加版本、最后才问状态机，于是拒绝来得太迟
+    —— `current_version` 已经被抬高，正文也已经在 UI 正在渲染的那个对象上
+    被替换。
     """
     case = build_report(session, workspace, publish_mode=AUTO)
     _revise(session, case)
@@ -111,8 +111,8 @@ def test_rollback_is_refused_without_touching_the_report(
     with pytest.raises(ReportStateError):
         rollback_report(session, report_id=case.report_id, version=1, now=NOW)
 
-    # The identity-mapped object the service mutated; asserting without a fresh query is the
-    # point, because that object is exactly what the UI panel renders after catching the error.
+    # 断言的是服务改动过的那个同一性映射对象；刻意不重新查询，因为错误被捕获
+    # 之后 UI 面板渲染的正是这个对象。
     assert report.status == label
     assert report.current_version == before_version
     assert report.content_markdown == before_content
@@ -123,7 +123,7 @@ def test_rollback_refuses_the_terminal_failed_status(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`failed` is terminal: a rejected report is never revived by a rollback."""
+    """`failed` 是终态：被驳回的报告永远不会靠回滚复活。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     report = _revise(session, case)
     _advance(session, case.report_id, "failed")
@@ -140,7 +140,7 @@ def test_rollback_from_draft_restores_an_earlier_version(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Rewinding a draft appends a new version and copies that version's citations."""
+    """把草稿回退会追加一个新版本，并拷贝目标版本的引用。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     report = _revise(session, case)
     before_version = report.current_version
@@ -168,7 +168,7 @@ def test_rollback_from_draft_restores_an_earlier_version(
     assert report.content_markdown == first_content
     assert report.published_at is None
     assert report.publish_at is None
-    # The restored version carries its own copy of the citation set.
+    # 恢复出来的版本带着它自己的一份引用集合。
     restored = session.scalars(
         select(ReportSource).where(
             ReportSource.report_id == case.report_id,
@@ -182,7 +182,7 @@ def test_rollback_from_published_withdraws_the_report(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A published report can be pulled back to `draft`."""
+    """已发布的报告可以被拉回 `draft`。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     _revise(session, case)
     _advance(session, case.report_id, "scheduled", "published")
@@ -198,7 +198,7 @@ def test_rollback_rejects_the_current_version(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Rolling back to the version already in place is not a revision."""
+    """回滚到当前已在的版本，不算一次修订。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     report = _revise(session, case)
     with pytest.raises(ReportGenerationError):
@@ -209,7 +209,7 @@ def test_rollback_rejects_an_unknown_version(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A version that was never written cannot be restored."""
+    """从未写入过的版本无从恢复。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     with pytest.raises(ReportNotFoundError):
         rollback_report(session, report_id=case.report_id, version=99)
@@ -219,7 +219,7 @@ def test_content_edit_appends_a_version_and_returns_to_draft(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A body change is immutable by definition, so it appends and re-enters the draft queue."""
+    """正文一变就不可变，因此它追加新版本并重回草稿队列。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     report = case.reload(session)
     original = report.content_markdown
@@ -241,7 +241,7 @@ def test_metadata_edit_does_not_append_a_version(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Editing only metadata keeps the current version and its status."""
+    """只改元数据时，当前版本与状态都保持不变。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     report = case.reload(session)
     before_version = report.current_version
@@ -264,7 +264,7 @@ def test_edit_is_refused_outside_the_draft_queue(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A report on the publishing path cannot be rewritten by hand."""
+    """已经走上发布流程的报告不能被手工改写。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     _advance(session, case.report_id, "scheduled")
 
@@ -276,7 +276,7 @@ def test_edit_refuses_an_unknown_visibility(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Visibility is a closed set; an unknown value never reaches the column."""
+    """可见性是封闭集合，未知取值根本到不了那一列。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     with pytest.raises(ReportGenerationError):
         revise_report(session, report_id=case.report_id, visibility="SECRET", now=NOW)
@@ -288,10 +288,10 @@ def test_edit_refuses_a_title_that_cannot_render_as_one_heading(
     workspace: Workspace,
     bad_title: str,
 ) -> None:
-    """A blank, multi-line, or over-long title is rejected instead of stored.
+    """空白、多行或过长的标题会被拒绝，而不是存进去。
 
-    The structure check compares the first body line against `# <title>`, so a newline would
-    leave the report failing verification with the reason looking like a content problem.
+    结构检查会拿正文第一行比对 `# <title>`，因此标题里一旦有换行，报告就会卡在
+    校验里，而失败原因看起来却像是正文出了问题。
     """
     case = build_report(session, workspace, publish_mode=AUTO)
     report = case.reload(session)
@@ -304,7 +304,7 @@ def test_edit_refuses_a_title_that_cannot_render_as_one_heading(
 
 
 def test_edit_trims_a_title(session: Session, workspace: Workspace) -> None:
-    """Surrounding whitespace is normalized rather than persisted."""
+    """首尾空白会被规范化，而不是原样落库。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     before_version = case.reload(session).current_version
 
@@ -312,15 +312,15 @@ def test_edit_trims_a_title(session: Session, workspace: Workspace) -> None:
 
     report = case.reload(session)
     assert report.title == "新标题"
-    # The title is the body's first heading, so a rename is also a content change: leaving the
-    # old `# ...` line behind would make the structure check reject this report forever.
+    # 标题就是正文的第一个标题行，所以改名同时也是一次正文改动：若把旧的 `# ...`
+    # 留在原处，结构检查会永远拒绝这份报告。
     assert outcome.changed_fields == ("title", "content_markdown")
     assert report.content_markdown.splitlines()[0] == "# 新标题"
     assert outcome.version == before_version + 1
 
 
 def test_rename_keeps_the_report_verifiable(session: Session, workspace: Workspace) -> None:
-    """A renamed report still passes the structure check, so it can still be published."""
+    """改过名的报告仍能通过结构检查，因此仍可发布。"""
     case = build_report(session, workspace, publish_mode=AUTO)
     revise_report(session, report_id=case.report_id, title="改过的标题", now=NOW)
 

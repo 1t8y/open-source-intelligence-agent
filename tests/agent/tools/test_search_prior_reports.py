@@ -1,4 +1,4 @@
-"""Tests for `search_prior_reports`: ACL, time window, and result shaping."""
+"""守护 `search_prior_reports` 的用例：ACL、时间窗与结果整形。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _seed(workspace: Workspace):
 
 
 def test_returns_published_prior_reports(workspace: Workspace) -> None:
-    """Prior published reports are summarized with their citation refs."""
+    """证明历史已发布报告会被摘要，并带上它们的引用。"""
     topic, repository, run = _seed(workspace)
     workspace.add_report(
         topic_id=topic.id,
@@ -52,7 +52,7 @@ def test_returns_published_prior_reports(workspace: Workspace) -> None:
 
 
 def test_draft_reports_are_excluded(workspace: Workspace) -> None:
-    """Only published reports count as prior reports."""
+    """证明只有已发布的报告才算历史报告。"""
     topic, repository, run = _seed(workspace)
     workspace.add_report(
         topic_id=topic.id,
@@ -75,7 +75,7 @@ def test_draft_reports_are_excluded(workspace: Workspace) -> None:
 
 
 def test_reports_not_before_the_cutoff_are_excluded(workspace: Workspace) -> None:
-    """The `before` bound excludes newer reports."""
+    """证明 `before` 这个上界会排除更新的报告。"""
     topic, repository, run = _seed(workspace)
     workspace.add_report(
         topic_id=topic.id,
@@ -103,7 +103,7 @@ def test_reports_not_before_the_cutoff_are_excluded(workspace: Workspace) -> Non
 
 
 def test_unauthorized_topic_is_denied_without_leaking(workspace: Workspace) -> None:
-    """An out-of-scope topic is denied and returns no summaries or counts."""
+    """证明越权主题会被拒绝，且不返回任何摘要或计数。"""
     topic, repository, run = _seed(workspace)
     other = workspace.add_topic(name="Other")
     workspace.add_report(
@@ -130,7 +130,7 @@ def test_unauthorized_topic_is_denied_without_leaking(workspace: Workspace) -> N
 
 
 def test_repository_filter_and_limit(workspace: Workspace) -> None:
-    """A repo filter narrows results and the limit sets the truncated flag."""
+    """证明仓库筛选会收窄结果，而 limit 决定截断标记。"""
     topic, repository, run = _seed(workspace)
     other_repository = workspace.add_repository(
         source_id=repository.source_id,
@@ -168,11 +168,10 @@ def test_repository_filter_and_limit(workspace: Workspace) -> None:
 
 
 def test_two_reports_with_the_same_text_are_both_returned(workspace: Workspace) -> None:
-    """Relevance ranking must key on position, not on the text it ranked.
+    """证明相关性排序必须按位置索引，而不能按被排序的文本本身。
 
-    Two reports can share a title and an identical opening paragraph. A `{text: summary}` lookup
-    collapsed them into one entry and then emitted it twice, so a baseline silently went missing
-    while the result count still looked right.
+    两份报告可以标题相同、开篇段落一字不差。一个 `{text: summary}` 查找会把它们并成
+    一条，再把这条发两遍，于是一份基线悄悄丢了，而结果条数看起来还是对的。
     """
     topic, repository, run = _seed(workspace)
     for offset in (7, 14):

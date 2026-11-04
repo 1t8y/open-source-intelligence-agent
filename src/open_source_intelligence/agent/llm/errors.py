@@ -1,4 +1,4 @@
-"""Stable error codes raised by model provider adapters."""
+"""定义模型供应商适配器抛出的稳定错误码。"""
 
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ RETRYABLE_MODEL_ERRORS = frozenset({MODEL_TIMEOUT, MODEL_RATE_LIMITED})
 
 
 class ModelClientError(Exception):
-    """A provider failure carrying a stable code instead of a vendor message.
+    """供应商故障，携带稳定错误码，而不是供应商自己那句提示文本。
 
-    `prompt_tokens`, `completion_tokens`, and `cost` carry the usage the provider already
-    billed for a request that failed *after* the response arrived (a truncated answer, an
-    unparsable body). A call that was paid for is a call that has to be accounted for, so the
-    graph adds these to the run totals instead of letting the budget walk backwards.
+    `prompt_tokens`、`completion_tokens` 与 `cost` 记录的是供应商已经
+    计过费的用量：请求在响应到达*之后*才失败（答案被截断、响应体无法
+    解析）。既然付过费，这次调用就一定要进账，所以图把这些用量累加进
+    本次运行的总额，而不是让预算悄悄往回走。
     """
 
     def __init__(
@@ -46,5 +46,5 @@ class ModelClientError(Exception):
 
     @property
     def retryable(self) -> bool:
-        """Return whether the caller may safely retry the same request."""
+        """返回调用方是否可以安全地重试同一个请求。"""
         return self.code in RETRYABLE_MODEL_ERRORS

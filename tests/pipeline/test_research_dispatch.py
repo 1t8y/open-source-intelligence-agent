@@ -1,4 +1,4 @@
-"""Tests for choosing and dispatching the research runs a daily batch should start."""
+"""守护每日批次该启动哪些研究运行的选择与派发。"""
 
 from datetime import UTC, date, datetime
 
@@ -20,14 +20,14 @@ from open_source_intelligence.pipeline.research_dispatch import (
 
 BUSINESS_DATE = date(2026, 10, 12)
 TIMEZONE = "Asia/Shanghai"
-# The business day starts at 2026-10-11T16:00Z in Asia/Shanghai.
+# 业务日在 Asia/Shanghai 时区从 2026-10-11T16:00Z 开始。
 TODAY = datetime(2026, 10, 12, 1, 0, tzinfo=UTC)
 YESTERDAY = datetime(2026, 10, 11, 1, 0, tzinfo=UTC)
 DAY_BEFORE = datetime(2026, 10, 10, 1, 0, tzinfo=UTC)
 
 
 def build_session_factory() -> sessionmaker[Session]:
-    """Build a shared in-memory database for dispatch tests."""
+    """构造派发测试共用的内存数据库。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -38,7 +38,7 @@ def build_session_factory() -> sessionmaker[Session]:
 
 
 def add_topic(session: Session, *, name: str, enabled: bool = True) -> Topic:
-    """Insert one topic owned by a test user."""
+    """插入一个由测试用户拥有的主题。"""
     user = session.scalar(select(User).where(User.id == 1))
     if user is None:
         session.add(User(id=1, username="admin", password_hash="hash", display_name="Admin"))
@@ -67,7 +67,7 @@ def add_rank_run(
     started_at: datetime = TODAY,
     status: str = "succeeded",
 ) -> PipelineRun:
-    """Insert one rank run for a topic."""
+    """为某个主题插入一条排名运行记录。"""
     run = PipelineRun(
         topic_id=topic_id,
         run_type="rank",
@@ -89,7 +89,7 @@ def add_agent_run(
     started_at: datetime = TODAY,
     status: str = "completed",
 ) -> AgentRun:
-    """Insert one research run, creating the config and pipeline run it requires."""
+    """插入一次研究运行，并顺带建出它需要的配置与流水线运行行。"""
     config = session.scalar(select(AgentConfig).limit(1))
     if config is None:
         config = AgentConfig(
@@ -139,7 +139,7 @@ def add_published_report(
     agent_run: AgentRun,
     published_at: datetime = TODAY,
 ) -> Report:
-    """Insert one published report tied to the given agent run."""
+    """插入一份与指定 Agent 运行绑定的已发布报告。"""
     report = Report(
         topic_id=topic_id,
         agent_run_id=agent_run.id,
@@ -158,7 +158,7 @@ def add_published_report(
 
 
 def select_targets(session: Session, *, limit: int = 5):
-    """Call the selector with the test's fixed business date and timezone."""
+    """用用例固定的业务日期与时区调用选择器。"""
     return select_research_targets(
         session,
         business_date=BUSINESS_DATE,
@@ -168,7 +168,7 @@ def select_targets(session: Session, *, limit: int = 5):
 
 
 def test_empty_ledger_selects_nothing() -> None:
-    """A day with no topics must report zero eligible, not a synthetic target."""
+    """当天没有任何主题时应报告可运行数为零，而不是凭空造一个目标。"""
     with build_session_factory()() as session:
         selection = select_targets(session)
 
@@ -178,7 +178,7 @@ def test_empty_ledger_selects_nothing() -> None:
 
 
 def test_disabled_topic_is_not_selected() -> None:
-    """A disabled topic produces no candidates, so it is not worth a research run."""
+    """停用的主题产不出候选，也就不值得为它跑一次研究。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="paused", enabled=False)
         add_rank_run(session, topic_id=topic.id, candidate_count=5)
@@ -189,7 +189,7 @@ def test_disabled_topic_is_not_selected() -> None:
 
 
 def test_topic_without_candidates_is_not_selected() -> None:
-    """Researching a topic whose ranking found nothing only spends budget to learn that."""
+    """给排名一无所获的主题做研究，只是花预算去确认这件事。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="quiet")
         add_rank_run(session, topic_id=topic.id, candidate_count=0)
@@ -200,7 +200,7 @@ def test_topic_without_candidates_is_not_selected() -> None:
 
 
 def test_failed_rank_run_is_not_selected() -> None:
-    """A ranking that failed has no trustworthy candidate count."""
+    """失败了的排名，其候选数不可信。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="broken")
         add_rank_run(session, topic_id=topic.id, candidate_count=5, status="failed")
@@ -211,7 +211,7 @@ def test_failed_rank_run_is_not_selected() -> None:
 
 
 def test_todays_rank_run_is_not_trusted_yesterday() -> None:
-    """Only today's ranking counts: yesterday's candidates may already be stale."""
+    """只认当天的排名：昨天的候选可能已经过期。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="stale")
         add_rank_run(session, topic_id=topic.id, candidate_count=5, started_at=YESTERDAY)
@@ -222,7 +222,7 @@ def test_todays_rank_run_is_not_trusted_yesterday() -> None:
 
 
 def test_topic_without_published_history_has_no_window_start() -> None:
-    """A topic that has never published falls back to the trailing window (None)."""
+    """从未发布过的主题退回滚动窗口（`None`）。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="fresh")
         add_rank_run(session, topic_id=topic.id, candidate_count=7)
@@ -235,16 +235,16 @@ def test_topic_without_published_history_has_no_window_start() -> None:
 
 
 def test_topic_with_published_history_carries_its_window_end() -> None:
-    """A topic's next window starts where its last published report's window ended.
+    """主题下一轮的窗口，从上一次已发布报告的窗口终点开始。
 
-    This is the regression guard for the duplicate-delivery bug: two reports a day apart used to
-    share a sliding 7-day window, so a re-delivered run re-covered the same snapshots. The next
-    run must begin at the previous report's observed window end.
+    这是重复投递缺陷的回归守卫：相隔一天的两份报告此前共用同一个滚动的
+    7 天窗口，于是重投的运行会把同样的快照再覆盖一遍。下一轮必须从上一次
+    报告观测到的窗口终点起步。
     """
     with build_session_factory()() as session:
         topic = add_topic(session, name="active")
         add_rank_run(session, topic_id=topic.id, candidate_count=7)
-        # A published report from a previous day, whose run observed up to TODAY (its window end).
+        # 一份前一天的已发布报告，其运行观测到 TODAY（即它的窗口终点）。
         previous_run = add_agent_run(session, topic_id=topic.id, started_at=YESTERDAY)
         add_published_report(
             session, topic_id=topic.id, agent_run=previous_run, published_at=YESTERDAY
@@ -258,7 +258,7 @@ def test_topic_with_published_history_carries_its_window_end() -> None:
 
 
 def test_window_start_uses_the_newest_published_report() -> None:
-    """When several reports exist, the most recent one's window end decides the start."""
+    """有多份报告时，由最新那份的窗口终点决定起点。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="active")
         add_rank_run(session, topic_id=topic.id, candidate_count=7)
@@ -279,7 +279,7 @@ def test_window_start_uses_the_newest_published_report() -> None:
 
 
 def test_eligible_topic_is_selected_with_its_candidate_count() -> None:
-    """The happy path carries the evidence for why the topic was chosen."""
+    """顺利路径也要带上「为什么选它」的证据，即候选数。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="active")
         add_rank_run(session, topic_id=topic.id, candidate_count=7)
@@ -291,7 +291,7 @@ def test_eligible_topic_is_selected_with_its_candidate_count() -> None:
 
 
 def test_topic_already_researched_today_is_not_selected() -> None:
-    """The budget guard: a re-delivered task must not charge for the same topic twice."""
+    """预算守卫：重投的任务不能在同一个主题上重复计费。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="active")
         add_rank_run(session, topic_id=topic.id, candidate_count=7)
@@ -304,7 +304,7 @@ def test_topic_already_researched_today_is_not_selected() -> None:
 
 
 def test_research_run_from_yesterday_does_not_block_today() -> None:
-    """The boundary is the business day, not "ever researched before"."""
+    """分界线是业务日，而不是「以前研究过没有」。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="active")
         add_rank_run(session, topic_id=topic.id, candidate_count=7)
@@ -317,12 +317,11 @@ def test_research_run_from_yesterday_does_not_block_today() -> None:
 
 
 def test_a_failed_run_today_can_be_retried() -> None:
-    """A run that failed produced no draft: it must not spend the day's only attempt.
+    """失败的运行没有产出草稿，就不该占掉当天唯一一次机会。
 
-    This is not a corner case - the first real run after wiring the dispatch failed with
-    `AGENT_MODEL_UNAVAILABLE` because the container had no outbound network, and the old rule
-    (any row counts) then reported "already researched" for the rest of the day. One transport
-    blip would have turned an unattended night into an empty day.
+    这不是边角情况 —— 接上派发功能后的第一次真实运行，就因为容器没有出网而以
+    `AGENT_MODEL_UNAVAILABLE` 失败，而旧规则（只要有一行就算）随后一整天都报
+    「已经研究过」。一次传输抖动，就足以把一个无人值守的夜晚变成空白的一天。
     """
     with build_session_factory()() as session:
         topic = add_topic(session, name="active")
@@ -336,7 +335,7 @@ def test_a_failed_run_today_can_be_retried() -> None:
 
 
 def test_a_running_research_run_blocks_a_second_dispatch() -> None:
-    """A run in flight has spent budget already; dispatching again would duplicate it."""
+    """尚在运行的那次已经花掉预算，再派发一次就是重复消耗。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="active")
         add_rank_run(session, topic_id=topic.id, candidate_count=7)
@@ -349,7 +348,7 @@ def test_a_running_research_run_blocks_a_second_dispatch() -> None:
 
 
 def test_limit_truncates_and_counts_what_was_deferred() -> None:
-    """A bounded batch must report how many eligible topics it did not reach."""
+    """有上限的批次必须报告自己没轮到的合格主题有几个。"""
     with build_session_factory()() as session:
         first = add_topic(session, name="first")
         second = add_topic(session, name="second")
@@ -364,7 +363,7 @@ def test_limit_truncates_and_counts_what_was_deferred() -> None:
 
 
 def test_newest_successful_rank_run_wins_over_an_older_one() -> None:
-    """A rerun supersedes the earlier ranking: the freshest count is the one that decides."""
+    """重跑会取代先前那次排名，由最新的候选数说了算。"""
     with build_session_factory()() as session:
         topic = add_topic(session, name="rerun")
         add_rank_run(session, topic_id=topic.id, candidate_count=9)
@@ -376,7 +375,7 @@ def test_newest_successful_rank_run_wins_over_an_older_one() -> None:
 
 
 def test_dispatch_records_the_task_id_per_topic() -> None:
-    """The report must map each topic to what the transport handed back."""
+    """报告必须把每个主题映射到传输层交回的任务标识。"""
     dispatched: list[int] = []
 
     def dispatcher(target: ResearchTarget) -> str:
@@ -397,7 +396,7 @@ def test_dispatch_records_the_task_id_per_topic() -> None:
 
 
 def test_dispatcher_receives_the_window_start() -> None:
-    """A topic with published history must hand its window start through to the dispatcher."""
+    """有发布历史的主题，必须把窗口起点透传给派发函数。"""
     seen: list[datetime | None] = []
 
     def dispatcher(target: ResearchTarget) -> str:
@@ -414,7 +413,7 @@ def test_dispatcher_receives_the_window_start() -> None:
 
 
 def test_one_topic_failing_to_enqueue_does_not_stop_the_others() -> None:
-    """One broken enqueue must not leave the remaining topics unresearched."""
+    """一次入队失败不该让剩下的主题都没人研究。"""
 
     def dispatcher(target: ResearchTarget) -> str:
         if target.topic_id == 3:
@@ -435,7 +434,7 @@ def test_one_topic_failing_to_enqueue_does_not_stop_the_others() -> None:
 
 
 def test_dispatch_payload_uses_string_keys() -> None:
-    """A JSON object cannot carry integer keys; the conversion must happen before serialising."""
+    """JSON 对象装不下整数键，转换必须在序列化之前完成。"""
     report = dispatch_research_targets(
         [ResearchTarget(topic_id=9, candidate_count=1)], lambda t: "t"
     )

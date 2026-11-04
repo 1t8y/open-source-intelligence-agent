@@ -1,17 +1,17 @@
-"""Backfill job lifecycle and cursor persistence.
+"""回填作业的生命周期与游标持久化。
 
-The job row *is* the checkpoint. Everything a resume needs - which page to ask for next and
-how much has already been ingested - lives in columns rather than in the process doing the
-walking, because the process is the part that dies.
+作业行*就是*检查点。续跑需要的一切 —— 下一页该请求哪一页、已经入库了
+多少 —— 都放在列里，而不是放在正在走查的那个进程里，因为进程才是会死
+掉的那一部分。
 
-All timestamps here are timezone-aware UTC. The column type refuses naive values on write,
-so a caller that pins the clock must pin it to an aware instant rather than a bare one.
+这里所有时间戳都是带时区的 UTC。列类型在写入时拒绝 naive 值，所以需要
+固定时钟的调用方，必须把它固定成一个带时区的时刻，而不是一个裸时刻。
 
-One trap worth stating once: `TimestampMixin.updated_at` cannot be pinned. Its Python-side
-`onupdate` is applied by SQLAlchemy on every UPDATE and wins over an explicit assignment, so
-the column always ends up holding the wall clock. That is why the liveness signal below is
-`heartbeat_at` rather than `updated_at` - a guard whose clock a test cannot control is a
-guard nobody will test.
+有一个坑值得说一次：`TimestampMixin.updated_at` 无法被固定。它的
+Python 侧 `onupdate` 由 SQLAlchemy 在每次 UPDATE 时施加，并且会盖过显
+式赋值，因此这一列最终总是拿着墙上时钟。这正是下面的存活信号用
+`heartbeat_at` 而不是 `updated_at` 的原因 —— 一个测试控制不了时钟的
+守卫，就是一个没人会去测的守卫。
 """
 
 from __future__ import annotations
@@ -47,22 +47,22 @@ DEFAULT_TARGET_PAGES: Final[int] = 5
 DEFAULT_PER_PAGE: Final[int] = 50
 
 MAX_TARGET_PAGES: Final[int] = 100
-"""Ceiling on a walk's page budget.
+"""单次走查页数预算的上限。
 
-GitHub's search API refuses to page past its 1000-result cap, so a larger budget would only
-buy requests the source will not serve. Keeping the budget inside the same range as
-`MAX_PER_PAGE` also means `next_page` can never name a page no provider will answer.
+GitHub 的搜索 API 拒绝翻过 1000 条结果的上限，预算再大也只是买到源端根本不会应答的请求。
+把预算限制在 `MAX_PER_PAGE` 同一量级，也意味着 `next_page` 永远不会指向一个没有供应商愿意
+回答的页码。
 """
 
 STALE_AFTER: Final[timedelta] = timedelta(minutes=15)
-"""How long a running job may go without a heartbeat before another walk may claim it."""
+"""运行中的作业可以多久不心跳，之后其它走查才能接管它。"""
 
 MAX_ERROR_MESSAGE_LENGTH: Final[int] = 2000
 
 
 @dataclass(frozen=True, slots=True)
 class BackfillJobSummary:
-    """Serializable view of one backfill job."""
+    """一个回填作业的可序列化视图。"""
 
     job_id: int
     provider: str
@@ -82,16 +82,16 @@ class BackfillJobSummary:
 
     @property
     def pages_remaining(self) -> int:
-        """Return how many pages the walk still intends to request."""
+        """返回这次走查还打算请求多少页。"""
         return max(self.target_pages - self.pages_completed, 0)
 
     @property
     def resumable(self) -> bool:
-        """Return whether another walk would make progress."""
+        """返回再走一次是否会有进展。"""
         return self.status != SUCCEEDED and self.next_page <= self.target_pages
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload for CLI and worker output."""
+        """返回供 CLI 与 Worker 输出使用的、可 JSON 序列化的载荷。"""
         return {
             "job_id": self.job_id,
             "provider": self.provider,
@@ -114,14 +114,14 @@ class BackfillJobSummary:
 
 
 def validate_target_pages(target_pages: int) -> int:
-    """Reject a page budget outside what the schema accepts."""
+    """拒绝超出 schema 接受的页预算。"""
     if not 1 <= target_pages <= MAX_TARGET_PAGES:
         raise BackfillLimitError(f"target_pages must be between 1 and {MAX_TARGET_PAGES}")
     return target_pages
 
 
 def validate_per_page(per_page: int) -> int:
-    """Reject a page size outside what the schema and the providers accept."""
+    """拒绝超出 schema 与供应商两者接受的页大小。"""
     if not 1 <= per_page <= MAX_PER_PAGE:
         raise BackfillLimitError(f"per_page must be between 1 and {MAX_PER_PAGE}")
     return per_page
@@ -136,12 +136,11 @@ def create_job(
     per_page: int = DEFAULT_PER_PAGE,
     now: datetime | None = None,
 ) -> BackfillJob:
-    """Create a pending job positioned before its first page.
+    """创建一个停在第一页之前的、状态为 pending 的作业。
 
-    `attempt` starts at 1 even though nothing has been walked yet, because the ledger's own
-    convention is that an attempt counts from one and never from zero. `started_at` staying
-    null is what marks the job as never claimed, and `claim_job` reads that to decide
-    whether the next walk is the first attempt or a repeat.
+    `attempt` 从 1 开始，尽管此时还什么都没走查，因为账本自己的约定是尝
+    试次数从 1 计、永不从 0 计。`started_at` 保持为空，正是它标记着作业
+    从未被认领，而 `claim_job` 读它来决定下一次走查是首次尝试还是重试。
     """
     validate_target_pages(target_pages)
     validate_per_page(per_page)
@@ -168,12 +167,12 @@ def create_job(
 
 
 def get_job(session: Session, job_id: int) -> BackfillJob | None:
-    """Return one job by primary key."""
+    """按主键返回一个作业。"""
     return session.get(BackfillJob, job_id)
 
 
 def require_job(session: Session, job_id: int) -> BackfillJob:
-    """Return one job or raise, so callers do not have to handle a null cursor."""
+    """返回一个作业或抛异常，这样调用方不必处理空游标。"""
     job = get_job(session, job_id)
     if job is None:
         raise BackfillJobNotFound(f"backfill job {job_id} does not exist")
@@ -187,7 +186,7 @@ def list_jobs(
     status: str | None = None,
     limit: int = 20,
 ) -> Sequence[BackfillJob]:
-    """Return recent jobs, newest first, filtered by optional criteria."""
+    """返回最近的作业，最新的在前，可按可选条件过滤。"""
     if limit < 1:
         raise ValueError("limit must be at least 1")
     statement = select(BackfillJob)
@@ -208,18 +207,17 @@ def claim_job(
     now: datetime | None = None,
     stale_after: timedelta = STALE_AFTER,
 ) -> BackfillJob:
-    """Take ownership of a job's cursor, or refuse because another walk holds it.
+    """接管一个作业的游标，或因另一个走查仍持有它而拒绝。
 
-    A `running` job becomes claimable again only once its heartbeat is older than
-    `stale_after`. The heartbeat is `heartbeat_at`, which every page commit refreshes, so a
-    live walk keeps it fresh for free. Refusing rather than stealing matters because two
-    walkers on one cursor do not merely duplicate work: each advances the same counter as if
-    it were alone, so the pages the slower one is on get counted once and requested twice,
-    and the budget can be spent on pages the other walker has already passed.
+    一个 `running` 状态的作业，只有在心跳早于 `stale_after` 之后才重新
+    可认领。心跳是 `heartbeat_at`，每次提交一页都会刷新它，于是一个活着
+    的走查免费地让它保持新鲜。拒绝而不是抢占很重要，因为一个游标上的两
+    个走查者不只是重复劳动：它们各自当作自己是唯一的那个来推进同一个计
+    数器，于是较慢者所在的那几页被计一次、被请求两次，预算还会花在另一
+    个走查者已经越过的页上。
 
-    A job that has never been claimed has no heartbeat and is claimable by definition; a
-    `running` job with no heartbeat is one whose first page never committed, which is also
-    safe to take over.
+    从未被认领过的作业没有心跳，按定义可认领；一个 `running` 却没有心
+    跳的作业，是首页从未提交成功的那一种，接管它同样安全。
     """
     moment = now or datetime.now(UTC)
     heartbeat = job.heartbeat_at
@@ -256,10 +254,10 @@ def advance_job(
     item_count: int,
     now: datetime | None = None,
 ) -> BackfillJob:
-    """Commit one finished page and move the cursor past it.
+    """提交一个已完成的页，并把游标推过它。
 
-    Callers commit the page's repositories in the same transaction, immediately before
-    this call, so that the cursor and the rows it accounts for become visible together.
+    调用方在紧邻本次调用之前、在同一个事务里提交该页的仓库，好让游标和
+    它所对应的那些行一起可见。
     """
     if page != job.next_page:
         raise BackfillNotResumable(
@@ -282,7 +280,7 @@ def finish_job(
     error_message: str | None = None,
     now: datetime | None = None,
 ) -> BackfillJob:
-    """Close a job with a terminal status and an optional redacted error."""
+    """用终态状态与可选的、已脱敏的错误关闭一个作业。"""
     if status not in TERMINAL_JOB_STATUSES:
         raise ValueError(f"{status} is not a terminal job status")
     moment = now or datetime.now(UTC)
@@ -305,7 +303,7 @@ def cancel_job(
     reason: str | None = None,
     now: datetime | None = None,
 ) -> BackfillJob:
-    """Stop a job without discarding its cursor, so it can be resumed later."""
+    """停下一个作业而不丢弃它的游标，以便之后续跑。"""
     if job.status == SUCCEEDED:
         raise BackfillNotResumable(f"backfill job {job.id} already completed its pages")
     return finish_job(
@@ -319,7 +317,7 @@ def cancel_job(
 
 
 def summarize_job(job: BackfillJob) -> BackfillJobSummary:
-    """Convert a job row into its serializable summary."""
+    """把作业行转换成它的可序列化摘要。"""
     return BackfillJobSummary(
         job_id=job.id,
         provider=job.provider,
@@ -340,5 +338,5 @@ def summarize_job(job: BackfillJob) -> BackfillJobSummary:
 
 
 def summarize_jobs(jobs: Sequence[BackfillJob]) -> list[dict[str, Any]]:
-    """Convert job rows into JSON-ready payloads."""
+    """把作业行转换成可 JSON 序列化的载荷。"""
     return [summarize_job(job).to_dict() for job in jobs]

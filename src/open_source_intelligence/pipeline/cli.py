@@ -1,4 +1,4 @@
-"""Command-line entry point for the deterministic pipeline and run history."""
+"""提供确定性流水线与运行历史的命令行入口。"""
 
 import argparse
 import json
@@ -32,7 +32,7 @@ from open_source_intelligence.pipeline.snapshots import create_daily_snapshots
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the pipeline action and its filters."""
+    """解析流水线动作及其筛选条件。"""
     parser = argparse.ArgumentParser(
         description="Run deterministic pipeline jobs and inspect pipeline run history"
     )
@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_date(value: str | None) -> date:
-    """Resolve a supplied date or the current date in the configured timezone."""
+    """解析传入的日期；未传入时取配置时区里的当天日期。"""
     if value:
         return date.fromisoformat(value)
     timezone = ZoneInfo(get_settings().app_timezone)
@@ -92,7 +92,7 @@ def resolve_date(value: str | None) -> date:
 
 
 def run_history(args: argparse.Namespace) -> dict[str, Any]:
-    """Return one run or a filtered run history page."""
+    """返回单条运行记录，或一页过滤后的运行历史。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
@@ -114,7 +114,7 @@ def run_history(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def resolve_content_limit(args: argparse.Namespace, settings: object) -> int:
-    """Return the content pre-warm bound, from the flag or the configured default."""
+    """返回内容预热上限：优先取命令行参数，否则取配置的默认值。"""
     configured = getattr(settings, "pipeline_content_limit", None)
     limit = args.content_limit if args.content_limit is not None else configured
     if not isinstance(limit, int) or not 1 <= limit <= 100:
@@ -123,7 +123,7 @@ def resolve_content_limit(args: argparse.Namespace, settings: object) -> int:
 
 
 def resolve_research_limit(args: argparse.Namespace, settings: object) -> int:
-    """Return the research dispatch bound, from the flag or the configured default."""
+    """返回研究派发上限：优先取命令行参数，否则取配置的默认值。"""
     configured = getattr(settings, "agent_daily_research_limit", None)
     limit = args.research_limit if args.research_limit is not None else configured
     if not isinstance(limit, int) or not 1 <= limit <= 50:
@@ -138,10 +138,10 @@ def run_research_inline(
     settings: Any,
     limit: int,
 ) -> dict[str, Any]:
-    """Run the research selection inline and return what each topic produced.
+    """就地跑一次研究选题，并返回每个主题的产出。
 
-    The CLI's counterpart to the worker's `send_task`: same selection rule, same report shape,
-    executed in this process so a demonstration can show the draft id instead of a task id.
+    这是工人 `send_task` 在 CLI 侧的对应物：同一套选题规则、同一种报告形状，只是在本进程
+    里执行，好让演示展示的是草稿 id 而不是任务 id。
     """
     selection = select_research_targets(
         session,
@@ -169,7 +169,7 @@ def run_research_inline(
 
 
 def run_deterministic_action(args: argparse.Namespace, business_date: date) -> dict[str, Any]:
-    """Execute one deterministic action and return its JSON payload."""
+    """执行一个确定性动作并返回它的 JSON 载荷。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
@@ -251,7 +251,7 @@ def run_deterministic_action(args: argparse.Namespace, business_date: date) -> d
 
 
 def main() -> None:
-    """Run the requested pipeline operation and print a JSON payload."""
+    """执行请求的流水线操作并打印 JSON 载荷。"""
     args = parse_args()
     if args.action == "runs":
         payload = run_history(args)

@@ -1,9 +1,8 @@
-"""HTTP tests for the share link: the JSON endpoints, and the page that needs no login.
+"""守护分享链接：JSON 接口，以及那个不需要登录的页面。
 
-Two surfaces, one rule. The JSON endpoints are guarded like every other report endpoint
-(bearer token, write role, report read access); `GET /share/{token}` is guarded by the token
-itself. What both must never do is widen which reports can leave the building, so the refusal
-cases are tested on both.
+两套入口，同一条规则。JSON 接口和别的报告接口一样要过鉴权（Bearer 令牌、写角色、
+报告读权限）；`GET /share/{token}` 则由令牌本身把关。两者都绝不能放宽「哪些报告
+可以出门」这条边界，所以拒绝路径在两边都要测。
 """
 
 from __future__ import annotations
@@ -27,20 +26,20 @@ BASE = "/api/v1/reports"
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """An editor on the team data scope."""
+    """团队数据范围上的编辑。"""
     return create_actor(session, username="sharing-editor", role="EDITOR", data_scope="team")
 
 
 @pytest.fixture()
 def viewer(session: Session) -> Actor:
-    """A read-only viewer."""
+    """只读用户。"""
     return create_actor(session, username="sharing-viewer", role="VIEWER", data_scope="team")
 
 
@@ -51,7 +50,7 @@ def seed_report(
     status: str = "published",
     sensitivity: str = "PUBLIC",
 ) -> Report:
-    """Seed a report whose row is constructed in its final state."""
+    """直接按最终状态构造一行报告再落库。"""
     case: SeededReport = build_report(session, workspace, publish_mode=AUTO_WITH_DELAY)
     report = Report(
         agent_run_id=case.agent_run_id,
@@ -74,7 +73,7 @@ def seed_report(
 def test_creating_a_link_returns_the_token_once(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """The create response is the only place a plaintext token ever appears."""
+    """创建响应是明文令牌唯一会现身的地方。"""
     report = seed_report(session, workspace)
     headers = auth_headers(client, editor)
 
@@ -92,7 +91,7 @@ def test_creating_a_link_returns_the_token_once(
 def test_listing_links_has_no_token_field(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """A later read must not be able to reconstruct the link, so no field even carries it."""
+    """之后再读不能把链接还原出来，所以干脆没有任何字段携带它。"""
     report = seed_report(session, workspace)
     headers = auth_headers(client, editor)
     created = client.post(f"{BASE}/{report.id}/shares", json={}, headers=headers).json()
@@ -109,7 +108,7 @@ def test_listing_links_has_no_token_field(
 def test_an_internal_report_is_refused_with_a_conflict(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """Sensitivity is the gate: `INTERNAL` content never gets a public address."""
+    """敏感级别就是闸门：`INTERNAL` 内容永远不会拿到一个公开地址。"""
     report = seed_report(session, workspace, sensitivity="INTERNAL")
     headers = auth_headers(client, editor)
 
@@ -122,7 +121,7 @@ def test_an_internal_report_is_refused_with_a_conflict(
 def test_a_viewer_cannot_mint_a_link(
     client: TestClient, session: Session, workspace: Workspace, viewer: Actor
 ) -> None:
-    """Creating a public address is a write action, so it needs a write role."""
+    """制造一个公开地址是写动作，所以需要写角色。"""
     report = seed_report(session, workspace)
     headers = auth_headers(client, viewer)
 
@@ -134,7 +133,7 @@ def test_a_viewer_cannot_mint_a_link(
 def test_an_anonymous_request_cannot_mint_a_link(
     client: TestClient, session: Session, workspace: Workspace
 ) -> None:
-    """The endpoints that widen exposure are not themselves reachable without a login."""
+    """负责扩大暴露面的接口，自己不能不需要登录就能访问。"""
     report = seed_report(session, workspace)
 
     response = client.post(f"{BASE}/{report.id}/shares", json={})
@@ -145,7 +144,7 @@ def test_an_anonymous_request_cannot_mint_a_link(
 def test_revoking_twice_reports_false_the_second_time(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """Idempotent: the intent is satisfied, so a repeat is not an error."""
+    """幂等：目的已经达到，重复一次不算错误。"""
     report = seed_report(session, workspace)
     headers = auth_headers(client, editor)
     created = client.post(f"{BASE}/{report.id}/shares", json={}, headers=headers).json()
@@ -160,7 +159,7 @@ def test_revoking_twice_reports_false_the_second_time(
 def test_the_public_page_reads_without_a_session(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """The whole point: a browser with no cookie can read the body."""
+    """整件事的关键：没有 Cookie 的浏览器也能读到正文。"""
     report = seed_report(session, workspace)
     headers = auth_headers(client, editor)
     created = client.post(f"{BASE}/{report.id}/shares", json={}, headers=headers).json()
@@ -177,9 +176,9 @@ def test_the_public_page_reads_without_a_session(
 def test_the_public_page_offers_no_write_action(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """A page for anonymous readers must not render anything they could post.
+    """给匿名读者的页面，不能渲染任何他们可以提交的东西。
 
-    No form, no CSRF field, and no sidebar: the reader's capability has to equal the page's.
+    没有表单、没有 CSRF 字段、没有侧边栏：读者的能力必须与页面的能力相等。
     """
     report = seed_report(session, workspace)
     headers = auth_headers(client, editor)
@@ -195,7 +194,7 @@ def test_the_public_page_offers_no_write_action(
 def test_a_revoked_link_answers_404_without_explaining_why(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """Revoked, unknown, and expired must be indistinguishable, or the route is an oracle."""
+    """已撤销、不存在、已过期三者必须无法区分，否则这条路由就成了探针。"""
     report = seed_report(session, workspace)
     headers = auth_headers(client, editor)
     created = client.post(f"{BASE}/{report.id}/shares", json={}, headers=headers).json()
@@ -206,14 +205,14 @@ def test_a_revoked_link_answers_404_without_explaining_why(
 
     assert revoked.status_code == 404
     assert unknown.status_code == 404
-    # Same page, not merely the same status: any difference in wording is a hint.
+    # 要的是同一份页面，而不只是同一个状态码：措辞上的任何差别都是提示。
     assert revoked.text == unknown.text
 
 
 def test_an_expired_link_answers_404(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """Expiry is checked at read time, not only when the link was minted."""
+    """过期是在读取时判定的，而不只在签发那一刻。"""
     report = seed_report(session, workspace)
     headers = auth_headers(client, editor)
     created = client.post(f"{BASE}/{report.id}/shares", json={}, headers=headers).json()
@@ -230,7 +229,7 @@ def test_an_expired_link_answers_404(
 def test_the_share_page_does_not_leak_other_reports(
     client: TestClient, session: Session, workspace: Workspace, editor: Actor
 ) -> None:
-    """The shared page shows one report, and nothing about the rest of the system."""
+    """分享页只呈现一份报告，关于系统其余部分则一个字都不露。"""
     report = seed_report(session, workspace)
     other = seed_report(session, workspace)
     headers = auth_headers(client, editor)

@@ -1,4 +1,4 @@
-"""Resolve and validate report citations against persisted evidence."""
+"""依据已持久化的证据解析并校验报告引用。"""
 
 from __future__ import annotations
 
@@ -19,28 +19,27 @@ from open_source_intelligence.persistence.models.reporting import Report
 
 from .errors import ReportGenerationError
 
-#: A metric citation points at one repository's snapshot on one date. The repository part is
-#: either a database `repository_id` (a mutable auto-increment key, used while drafting) or the
-#: stable `owner/name` full name (what a generated report records, so a citation survives a
-#: database rebuild). The full name is the durable anchor; the numeric id is the internal key.
+#: 一条指标引用指向某个仓库在某一天的快照。仓库那一段要么是数据库的 `repository_id`
+#: （可变的自增主键，起草阶段使用），要么是稳定的 `owner/name` 全名（生成报告记录的就是
+#: 它，这样一条引用才能熬过数据库重建）。全名是持久锚点，数字 id 只是内部主键。
 _METRIC_REF = re.compile(r"repo_snapshots:(?P<repo>[^:]+):(?P<date>\d{4}-\d{2}-\d{2})")
 _README_REF = re.compile(r"repository_contents:(?P<repo>[^:]+):readme")
 _PRIOR_REPORT_REF = re.compile(r"reports:(?P<report_id>\d+)")
 
 
 def _metric_ref(full_name: str, snapshot_date: date) -> str:
-    """Return the stable metric citation string for one repository snapshot."""
+    """返回某个仓库快照的稳定指标引用字符串。"""
     return f"repo_snapshots:{full_name}:{snapshot_date.isoformat()}"
 
 
 def _readme_ref(full_name: str) -> str:
-    """Return the stable readme citation string for one repository."""
+    """返回某个仓库的稳定 README 引用字符串。"""
     return f"repository_contents:{full_name}:readme"
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedCitation:
-    """A citation whose source row exists and is traceable."""
+    """一条源行存在且可追溯的引用。"""
 
     source_type: str
     source_ref: str
@@ -50,7 +49,7 @@ class ResolvedCitation:
 
 
 def _validated_url(source_url: str | None) -> str | None:
-    """Accept only explicit HTTPS links as report-facing URLs."""
+    """只接受显式的 HTTPS 链接作为面向报告的 URL。"""
     if source_url is None:
         return None
     if not source_url.startswith("https://"):
@@ -64,12 +63,12 @@ def _metric_source(
     repo_token: str,
     snapshot_date: date,
 ) -> tuple[Repository, RepoSnapshot] | None:
-    """Return the repository and snapshot a metric reference names, or None.
+    """返回指标引用所指的仓库与快照；找不到时返回 `None`。
 
-    A full name is resolved together with the date rather than on its own. `repositories` is
-    unique on `(source_id, provider_repo_id)`, so the same `owner/name` can exist once per data
-    source; resolving the name first and hoping the first row owns the snapshot would make a
-    citation point at whichever source happened to sort first.
+    全名必须与日期一起解析，不能单独解析。`repositories` 在
+    `(source_id, provider_repo_id)` 上唯一，所以同一个 `owner/name` 可以在每个数据源下
+    各存在一条；若先解析全名、再指望第一条记录恰好持有该快照，引用就会指向排序靠前的
+    那个数据源。
     """
     if repo_token.isdigit():
         repository = session.get(Repository, int(repo_token))
@@ -102,7 +101,7 @@ def _readme_source(
     *,
     repo_token: str,
 ) -> tuple[Repository, RepositoryContent] | None:
-    """Return the repository and cached README a readme reference names, or None."""
+    """返回 README 引用所指的仓库与缓存 README；找不到时返回 `None`。"""
     if repo_token.isdigit():
         repository = session.get(Repository, int(repo_token))
         if repository is None:
@@ -130,7 +129,7 @@ def _readme_source(
 
 
 def resolve_citation(session: Session, citation: CitationRef) -> ResolvedCitation:
-    """Resolve one citation reference to an existing database source."""
+    """把一条引用解析成数据库中已存在的源。"""
     source_url = _validated_url(citation.source_url)
     if citation.source_type == "metric":
         match = _METRIC_REF.fullmatch(citation.source_ref)

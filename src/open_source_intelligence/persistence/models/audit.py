@@ -1,4 +1,4 @@
-"""Append-only audit event model."""
+"""只追加的审计事件模型。"""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from ..base import Base, UTCDateTime, uint64_pk, unsigned_bigint, utc_now
 from .identity import User
 
-#: The values `audit_logs.result` accepts, mirroring the `result_valid` check below. Named so the
-#: audit page's filter offers exactly the values the table can hold: a filter listing a value that
-#: cannot exist returns an empty page and reads as a broken query rather than as an empty result.
+#: `audit_logs.result` 允许的取值，与下面的 `result_valid` 约束一一对应。单独命名的用意是
+#: 让审计页的筛选器只提供这张表真正存得下的值：筛选项里出现一个不可能存在的值，会返回空页面，
+#: 读起来像是查询坏了，而不是结果为空。
 AUDIT_RESULTS: tuple[str, ...] = ("success", "denied", "failed")
 
 
 class AuditLog(Base):
-    """Security and operational audit event."""
+    """一条安全与运维审计事件。"""
 
     __tablename__ = "audit_logs"
     __table_args__ = (

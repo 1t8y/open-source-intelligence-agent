@@ -1,4 +1,4 @@
-"""End-to-end tests for the bounded research Agent runtime."""
+"""守护有界研究 Agent 运行时端到端行为的用例。"""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ from open_source_intelligence.persistence.models.reporting import ReportDraft, R
 
 
 class FailingClient:
-    """Model client that always reports a transport failure."""
+    """总是报传输失败的模型客户端。"""
 
     @property
     def provider(self) -> str:
@@ -76,7 +76,7 @@ class FailingClient:
 
 
 class CrashingClient:
-    """Model client that raises an error the graph does not classify."""
+    """抛出图无法归类错误的模型客户端。"""
 
     @property
     def provider(self) -> str:
@@ -96,7 +96,7 @@ class CrashingClient:
 
 
 class RecordingClient:
-    """Offline client that also records the conversation of every call it serves."""
+    """离线客户端，同时记录它服务的每一次调用的对话。"""
 
     def __init__(self) -> None:
         self._offline = OfflineModelClient()
@@ -122,7 +122,7 @@ class RecordingClient:
 
 
 class TokenHeavyClient:
-    """Offline client that reports deterministic Token usage for budget tests."""
+    """离线客户端，为预算用例上报确定的 Token 用量。"""
 
     def __init__(self, *, prompt_tokens: int = 50, completion_tokens: int = 30) -> None:
         self._offline = OfflineModelClient()
@@ -152,13 +152,13 @@ class TokenHeavyClient:
 
 
 def _failing_section_handler(session: Session, ctx: Any, payload: Any) -> Any:
-    """Tool handler double that always fails, simulating an unwritable draft store."""
+    """总是失败的工具处理器替身，模拟一个写不进去的草稿库。"""
     del session, ctx, payload
     raise ToolExecutionError(TOOL_INTERNAL_ERROR, "draft storage unavailable")
 
 
 def _registry_with_failing_writer() -> ToolRegistry:
-    """Return the default whitelist with a `save_report_section` that always fails."""
+    """返回默认白名单，但把 `save_report_section` 换成一个总是失败的版本。"""
     default = build_default_registry()
     specs = []
     for name in default.tool_names:
@@ -268,13 +268,13 @@ def test_every_tool_call_is_attached_to_the_step_that_made_it(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A call with a null `agent_step_id` is invisible in the trajectory it belongs to.
+    """证明 `agent_step_id` 为空的调用，在它所属的轨迹里是不可见的。
 
-    The run page groups calls by `agent_step_id`. The registry commits each call as it runs (that
-    evidence must survive a crash), which happens before the node writes its `agent_steps` row — so
-    nothing set the link and every step reported 「该步骤没有工具调用」 while its summary said
-    「executed 5 tool call(s)」, and the whole run's calls were dumped into a separate
-    「未挂到步骤上的工具调用」 card that blamed deleted rows.
+    运行详情页按 `agent_step_id` 给调用分组。注册表在调用发生时就会提交（这份证据必须
+    扛得住崩溃），而这发生在节点写入自己的 `agent_steps` 行之前 —— 于是没有任何地方
+    设置这条关联，每一步都报「该步骤没有工具调用」，而它的摘要却写着
+    「executed 5 tool call(s)」，整次运行的调用则被倒进一张单独的「未挂到步骤上的
+    工具调用」卡片，还甩锅给被删掉的行。
     """
     seeded = seed_topic(workspace, repo_count=1)
     result = run_research_agent(
@@ -298,8 +298,8 @@ def test_every_tool_call_is_attached_to_the_step_that_made_it(
     assert all(call.agent_step_id is not None for call in calls)
     assert {call.agent_step_id for call in calls} <= set(steps)
 
-    # Research calls hang off the `tool` steps, section writes off a `write` step: the grouping
-    # has to match the node that actually ran them, not merely some step of the same run.
+    # 研究阶段的调用挂在 `tool` 步骤下，章节写入挂在 `write` 步骤下：分组必须对上真正
+    # 跑它们的那个节点，而不只是同一运行里的某个步骤。
     research = [call for call in calls if call.tool_name != "save_report_section"]
     writes = [call for call in calls if call.tool_name == "save_report_section"]
     assert {steps[call.agent_step_id].step_type for call in research} == {"tool"}
@@ -307,21 +307,20 @@ def test_every_tool_call_is_attached_to_the_step_that_made_it(
 
 
 def test_the_tool_budget_floor_matches_the_evidence_the_verifier_demands() -> None:
-    """`2 x candidates + 2`: a profile and metrics each, one README, one baseline query."""
+    """`2 × 候选数 + 2`：每个候选各一份画像与一组指标，再加一份 README、一次基线查询。"""
     assert evidence_tool_floor(0) == 2
     assert evidence_tool_floor(5) == 12
 
 
 def test_the_default_tool_budget_leaves_headroom_above_the_evidence_floor() -> None:
-    """The shipped default has to sit *above* the floor, not on it.
+    """证明出厂的默认值必须落在下限*之上*，而不是压在下限上。
 
-    Aligning the two looks tidy and is wrong: at the default five candidates the floor is 12, and
-    12 is exactly enough - measured, the run spends all twelve on 5 profiles, 5 metric series, one
-    prior-report query and one README, and the second README is denied with
-    `TOOL_BUDGET_EXCEEDED`. A real model wastes calls (a repeated query, a bad argument), and every
-    one of those comes straight out of the evidence bar, so a run that starts on the floor passes
-    only if it also plans perfectly. The floor's job is to stop a *too small* config from deciding
-    the outcome; the default's job is to leave room to work.
+    把两者对齐看着整齐，其实是错的：默认五个候选时下限是 12，而 12 恰好只够用 ——
+    实测下来，一次运行会把十二次全花在 5 份画像、5 组指标、1 次历史报告查询和 1 份
+    README 上，第二份 README 就被 `TOOL_BUDGET_EXCEEDED` 拒了。真实模型会浪费调用
+    （重复一次查询、参数写错），而每一次浪费都直接从证据门槛里扣，所以一次贴着下限
+    起跑的运行，只有规划也完美才过得去。下限的职责是拦住*过小*的配置去决定结果；
+    默认值的职责是留出干活的余地。
     """
     settings = build_settings()
 
@@ -332,12 +331,12 @@ def test_a_tight_tool_budget_is_lifted_to_what_the_evidence_bar_needs(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """The configured cap must not make a run that cannot possibly pass.
+    """证明配置里的上限不能制造一次注定过不了的运行。
 
-    Default candidates (5) against the old default budget (10) is exactly that: two calls per
-    candidate for profile and metrics eats the budget before a README or a baseline query, so every
-    scheduled run ended `AGENT_EVIDENCE_INCOMPLETE` and produced no report. The floor is applied at
-    run start, so a config that is too small no longer decides the outcome.
+    默认候选数（5）配旧的默认预算（10）正是这种情形：每个候选在画像与指标上要两次调用，
+    预算在读到 README 或做基线查询之前就烧光了，于是每一次定时运行都以
+    `AGENT_EVIDENCE_INCOMPLETE` 收场、产不出报告。下限在运行开始时生效，因此过小的配置
+    不再决定结果。
     """
     seeded = seed_topic(workspace, repo_count=2)
     settings = build_settings(agent_max_tool_calls=1, agent_max_candidates=2)
@@ -353,9 +352,9 @@ def test_a_tight_tool_budget_is_lifted_to_what_the_evidence_bar_needs(
     calls = session.scalars(
         select(ToolCall).where(ToolCall.agent_run_id == result.agent_run_id)
     ).all()
-    # The run got more calls than the configured budget of 1: the floor decided the ceiling, not
-    # the config. A late denial (`TOOL_BUDGET_EXCEEDED`) is fine - the model may keep proposing
-    # calls after the evidence bar is met; what matters is that the bar itself was reachable.
+    # 这次运行拿到的调用数超过了配置的预算 1：决定上限的是下限，不是配置。
+    # 之后才被拒（`TOOL_BUDGET_EXCEEDED`）没关系 —— 证据门槛达到后，模型仍可能继续
+    # 提议调用；要紧的是门槛本身够得着。
     assert len(calls) >= evidence_tool_floor(2)
     assert result.verification is not None
     assert result.verification.sufficient is True
@@ -402,7 +401,7 @@ def test_runtime_degrades_at_eighty_percent_and_records_tokens(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Crossing 80% stops exploratory planning but leaves the writing call available."""
+    """证明越过 80% 只停掉探索式规划，写作那次调用仍然保留。"""
     seeded = seed_topic(workspace, repo_count=1)
     runtime_settings = build_settings(agent_max_tokens=100)
     client = TokenHeavyClient(prompt_tokens=50, completion_tokens=30)
@@ -432,7 +431,7 @@ def test_runtime_stops_before_drafting_when_the_token_budget_is_exhausted(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A call that reaches 100% must not leave room for another model call."""
+    """证明一旦触及 100%，就不能再给下一次模型调用留余地。"""
     seeded = seed_topic(workspace, repo_count=1)
     result = run_research_agent(
         session,
@@ -454,7 +453,7 @@ def test_runtime_blocks_prompt_injection_and_marks_the_run_for_review(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """Malicious README instructions are removed before the model sees them."""
+    """证明 README 里的恶意指令会在模型看到之前被摘掉。"""
     seeded = seed_topic(workspace, repo_count=1)
     content = session.scalar(
         select(RepositoryContent).where(
@@ -589,7 +588,7 @@ def test_runtime_honours_the_configured_tool_policy(
         "get_repository_content",
     }
     assert all(call.error_code == "TOOL_ACCESS_DENIED" for call in denied)
-    # The narrowed policy cannot satisfy the evidence check, so the run needs a human.
+    # 收窄后的策略满足不了证据检查，所以这次运行需要人来处理。
     assert result.status == "needs_review"
     assert result.section_count == 0
 
@@ -598,7 +597,7 @@ def test_runtime_reports_a_failed_draft_write_as_needing_review(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A run whose sections could not be stored is not a completed report draft."""
+    """证明章节存不下来的运行，不算完成了一份报告草稿。"""
     seeded = seed_topic(workspace, repo_count=1)
     result = run_research_agent(
         session,
@@ -622,7 +621,7 @@ def test_runtime_drafts_with_the_draft_prompt(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """The writing call must run under the draft prompt, not the research prompt."""
+    """证明写作调用必须跑在 draft Prompt 下，而不是研究 Prompt。"""
     seeded = seed_topic(workspace, repo_count=1)
     client = RecordingClient()
     result = run_research_agent(
@@ -642,7 +641,7 @@ def test_runtime_drafts_with_the_draft_prompt(
     assert plan_call[0].content == load_prompt("plan", "v1")
     assert write_call[0].role == "system"
     assert write_call[0].content == load_prompt("draft", "v1")
-    # Mapping the conversation must not drop the recorded evidence trail.
+    # 映射对话时不能把记录下来的证据链丢掉。
     assert sum(1 for message in write_call if message.role == "tool") > 0
 
 
@@ -650,7 +649,7 @@ def test_runtime_leaves_no_run_stuck_in_running_when_a_node_crashes(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """An exception the graph cannot classify must still close both run records."""
+    """证明图无法归类的异常，也仍然要把两条运行记录都收尾。"""
     seeded = seed_topic(workspace, repo_count=1)
 
     with pytest.raises(RuntimeError):
@@ -676,7 +675,7 @@ def test_runtime_leaves_no_run_stuck_in_running_when_a_node_crashes(
 
 
 class CountingClient:
-    """Wrap a client and count how many completions were actually requested."""
+    """包一层客户端，统计实际被请求了多少次补全。"""
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
@@ -700,7 +699,7 @@ class CountingClient:
 
 
 class PricedClient:
-    """Delegate to a client and bill every turn at a fixed cost."""
+    """委托给内层客户端，并按固定金额给每一轮计费。"""
 
     def __init__(self, inner: Any, cost: Decimal) -> None:
         self._inner = inner
@@ -727,13 +726,12 @@ def test_a_failed_plan_is_not_overwritten_by_the_write_stage(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A plan-stage transport failure ends the run; the write stage must not paper over it.
+    """证明规划阶段的传输失败会终结运行；写作阶段不得把它糊过去。
 
-    The graph flows plan -> write unconditionally. Before the guard in `_write_node`, the write
-    stage produced `error_code=None` for whatever it salvaged, so the terminal status was decided
-    from that value: the run was recorded as `needs_review`, the retry rule keyed on
-    AGENT_MODEL_UNAVAILABLE never fired, and a second call went to an endpoint that had just
-    failed.
+    图会无条件地从 plan 走到 write。在 `_write_node` 里那道守卫出现之前，写作阶段为它
+    抢救到的任何东西都产出 `error_code=None`，终态便由那个值决定：运行被记成
+    `needs_review`，按 AGENT_MODEL_UNAVAILABLE 判定的重试规则从不触发，第二次调用又
+    打到一个刚刚失败的端点上。
     """
     seeded = seed_topic(workspace, repo_count=1)
     client = CountingClient(FailingClient())
@@ -755,10 +753,10 @@ def test_the_cost_budget_stops_research(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`agent_configs.max_cost` is a budget like tokens and loops, not a column nobody reads.
+    """证明 `agent_configs.max_cost` 是与 token、循环次数同级的预算，而不是没人读的一列。
 
-    A price table means a few expensive calls can cost more than many cheap ones, so a run that
-    only counts tokens can overrun a spend limit without ever tripping a cap.
+    有了价目表，少数几次昂贵的调用就可能比很多次便宜的调用更花钱，因此只数 token 的
+    运行可以在从不触发任何上限的情况下冲爆花费限制。
     """
     seeded = seed_topic(workspace, repo_count=2)
     client = PricedClient(OfflineModelClient(), Decimal("0.01"))
@@ -778,12 +776,11 @@ def test_the_cost_budget_stops_research(
 
 
 class RudeDraftClient:
-    """Offline client whose first draft answer is wrong in a specified way.
+    """离线客户端，它的第一份草稿会以指定方式出错。
 
-    `mode="sections"` returns a legal payload with one of six sections; `mode="schema"` returns an
-    object the payload model rejects; `mode="citationless"` returns all six sections but no
-    citations on any of them. All are things a real model does, and all used to end the run on
-    the first try.
+    `mode="sections"` 返回合法载荷，但只有六节中的一节；`mode="schema"` 返回一个载荷
+    模型会拒绝的对象；`mode="citationless"` 返回全部六节，但每一节的引用都是空的。
+    这些都是真实模型会做的事，也都曾让运行在第一次尝试上就终结。
     """
 
     def __init__(self, mode: str) -> None:
@@ -810,7 +807,7 @@ class RudeDraftClient:
         self.draft_calls += 1
         if self.draft_calls == 1:
             if self._mode == "markdown":
-                # A model that ignored the JSON contract and wrote one heading only.
+                # 一个无视 JSON 契约、只写了一个小标题的模型。
                 return ModelTurn(
                     text="## 本周摘要\n只有摘要。",
                     model="rude-v1",
@@ -835,8 +832,8 @@ class RudeDraftClient:
                     ]
                 }
             elif self._mode == "citationless":
-                # All six sections present, but every `citations` list is empty. The old write
-                # stage accepted this as complete and the generate stage then refused it.
+                # 六节都在，但每个 `citations` 列表都是空的。旧写作阶段把它当成完整的
+                # 收下，生成阶段随后拒绝它。
                 section_keys = (
                     "summary",
                     "trend",
@@ -868,11 +865,11 @@ def test_a_draft_missing_sections_is_asked_again(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A model that returns one of six sections gets a second attempt, told what was missing.
+    """证明只返回六节中一节的模型会得到第二次机会，并被明确告知缺了什么。
 
-    On a real provider this was a coin flip: the answer parses, so the old code accepted it as a
-    partial draft and parked the run in `needs_review` — after paying for the call. Re-asking with
-    the missing keys named is cheaper than a human finishing the report.
+    在真实供应商上这曾是掷硬币：回答能解析，旧代码就把它当成半份草稿收下，把运行停进
+    `needs_review` —— 而这次调用已经付过钱了。点明缺哪些键再问一次，比让人来把报告
+    补完更便宜。
     """
     seeded = seed_topic(workspace, repo_count=1)
     client = RudeDraftClient("sections")
@@ -889,10 +886,10 @@ def test_a_draft_missing_sections_is_asked_again(
     assert client.draft_calls == 2
     note = client.repair_notes[0]
     assert "上一份草稿未被接受" in note
-    # The note names what arrived, so the model can see which five sections it dropped.
+    # 提示里点明实际收到了什么，模型才看得出自己漏了哪五节。
     assert "summary" in note
     assert "trend" in note
-    # The rejected attempt was billed, so its cost has to be on the run.
+    # 被拒的那次尝试也计费了，因此它的花费必须记在这次运行上。
     assert result.estimated_cost >= Decimal("0.001")
 
 
@@ -900,7 +897,7 @@ def test_a_draft_that_fails_validation_is_asked_again(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """The schema path gets the same second chance, with the failure named."""
+    """证明 schema 这条路径同样有第二次机会，并把失败原因点出来。"""
     seeded = seed_topic(workspace, repo_count=1)
     client = RudeDraftClient("schema")
 
@@ -921,7 +918,7 @@ def test_the_draft_attempt_budget_is_finite(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A model that can never satisfy the contract must not spend the run on retries."""
+    """证明永远满足不了契约的模型，不能把这次运行耗在重试上。"""
     seeded = seed_topic(workspace, repo_count=1)
 
     class AlwaysWrongClient(RudeDraftClient):
@@ -956,11 +953,11 @@ def test_a_markdown_answer_with_one_heading_is_asked_again(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """The Markdown fallback can also arrive short, and that path is retried too.
+    """证明 Markdown 兜底路径也可能短，这条路径同样会重试。
 
-    A Markdown answer never fails validation — it is split on its headings — so the only way to
-    notice it covered one section of six is to compare the keys afterwards. The retry then names
-    the missing keys, which the parse error cannot do for this path.
+    Markdown 回答永远不会校验失败 —— 它是按小标题切开的 —— 所以想发现它只覆盖了六节中
+    的一节，唯一的办法是切完再比对键。之后的这次重试会点出缺的键，而解析错误在这条
+    路径上做不到这件事。
     """
     seeded = seed_topic(workspace, repo_count=1)
     client = RudeDraftClient("markdown")
@@ -983,11 +980,11 @@ def test_a_draft_with_all_sections_but_no_citations_is_asked_again(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """A six-section draft whose citations are all empty is not complete.
+    """证明六节齐全但引用全空的草稿不算完整。
 
-    The generate stage refuses an empty citation list, so accepting such a draft at the write
-    stage lets the run reach `completed` and then fail one step later — after the model call was
-    paid for. The retry names the empty sections, the same way a missing section is named.
+    生成阶段拒绝空引用列表，所以在写作阶段收下这样一份草稿，会让运行先走到
+    `completed`、再在下一步失败 —— 而那次模型调用已经付过钱。这次重试会点出引用为空的
+    章节，方式和点出缺失章节相同。
     """
     seeded = seed_topic(workspace, repo_count=1)
     client = RudeDraftClient("citationless")

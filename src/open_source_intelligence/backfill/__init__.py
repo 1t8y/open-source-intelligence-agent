@@ -1,4 +1,4 @@
-"""Resumable historical repository backfill."""
+"""可续跑的历史仓库回填。"""
 
 from open_source_intelligence.backfill.errors import (
     BackfillError,

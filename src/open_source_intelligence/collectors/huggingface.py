@@ -1,4 +1,4 @@
-"""Hugging Face model collector."""
+"""通过 Hugging Face Hub API 采集模型。"""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -17,7 +17,7 @@ from open_source_intelligence.collectors.types import (
 
 
 class HuggingFaceCollector:
-    """Collect models through the Hugging Face Hub API."""
+    """通过 Hugging Face Hub API 采集模型。"""
 
     provider = "huggingface"
     display_name = "Hugging Face"
@@ -37,16 +37,16 @@ class HuggingFaceCollector:
             self._headers["Authorization"] = f"Bearer {token.get_secret_value()}"
 
     def collect(self, *, limit: int) -> list[CollectedRepository]:
-        """Collect and normalize up to 100 Hugging Face models from the first page."""
+        """从第一页采集并归一化至多 100 个 Hugging Face 模型。"""
         return list(self.collect_page(page=1, per_page=limit).items)
 
     def collect_page(self, *, page: int, per_page: int) -> CollectedPage:
-        """Return one 1-based page of Hugging Face models, ordered by downloads.
+        """返回从 1 开始计数的 Hugging Face 模型页，按下载量排序。
 
-        The walk is offset-based, so the end of the list has to be discovered rather than
-        looked up: the API publishes no total, and `skip` past the end answers with an
-        empty page instead of an error. A short page is therefore the only honest signal
-        that there is no more, which costs one confirming request at the end of a walk.
+        走查基于偏移量，所以列表的尽头只能被「发现」，而不能被查到：API
+        不公布总数，而 `skip` 越过末尾会返回一个空页而不是报错。因此一个
+        不满的页是「没有更多」唯一诚实的信号，代价是每次走查结束时多一次
+        确认请求。
         """
         require_page(page)
         clamp_per_page(per_page)
@@ -71,12 +71,12 @@ class HuggingFaceCollector:
         return CollectedPage(page=page, items=items, has_more=len(items) == per_page)
 
     def describe_query(self) -> dict[str, Any]:
-        """Return the search parameters this collector pages."""
+        """返回该采集器分页遍历的搜索参数。"""
         return {"sort": "downloads", "direction": -1}
 
     @staticmethod
     def _normalize(item: dict[str, Any], observed_at: datetime) -> CollectedRepository:
-        """Normalize one Hugging Face model object."""
+        """归一化一个 Hugging Face 模型对象。"""
         model_id = item.get("id") or item.get("modelId")
         if not isinstance(model_id, str):
             raise SourceUnavailableError("Hugging Face model is missing its id")

@@ -1,1 +1,1 @@
-"""Shared configuration, logging, and error primitives."""
+"""跨层共享的配置、日志与错误原语。"""

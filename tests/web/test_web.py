@@ -1,8 +1,8 @@
-"""Integration tests for the server-rendered admin UI.
+"""守护服务端渲染的管理界面：同一条验收路径，换一条渲染通道。
 
-They drive the same acceptance path as the JSON API tests — list, read, edit, verify,
-review, publish, and roll back — through the Jinja2/HTMX pages, and check the two guards the
-UI adds on top: the cookie session and the double-submit CSRF token.
+用例走的是与 JSON API 测试相同的验收路径 —— 列表、读取、编辑、校验、评审、发布、
+回滚 —— 但经过 Jinja2 / HTMX 页面，并检查界面在此之上新增的两道守卫：Cookie 会话
+与双提交 CSRF 令牌。
 """
 
 from __future__ import annotations
@@ -45,26 +45,26 @@ BASE = "/ui/reports"
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def admin(session: Session) -> Actor:
-    """An administrator with a personal data scope."""
+    """数据范围为「个人」的管理员。"""
     return create_actor(session, username="admin", role="ADMIN")
 
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """An editor on the team data scope, able to read and write team reports."""
+    """团队数据范围上的编辑，能读写团队报告。"""
     return create_actor(session, username="editor", role="EDITOR", data_scope="team")
 
 
 @pytest.fixture()
 def viewer(session: Session) -> Actor:
-    """A read-only user with a personal data scope."""
+    """数据范围为「个人」的只读用户。"""
     return create_actor(session, username="viewer", role="VIEWER")
 
 
@@ -76,7 +76,7 @@ def _seed(
     visibility: str = "TEAM",
     prior_publication: bool = False,
 ) -> SeededReport:
-    """Build a report and optionally give its topic an earlier published report."""
+    """造一份报告，必要时再给它的主题补一份更早的已发布报告。"""
     case = build_report(session, workspace, publish_mode=publish_mode)
     configure_report(session, report_id=case.report_id, visibility=visibility)
     if prior_publication:
@@ -85,12 +85,12 @@ def _seed(
 
 
 def _token(client: TestClient) -> dict[str, str]:
-    """Return the CSRF form payload for a mutating request."""
+    """返回一个写请求要用的 CSRF 表单载荷。"""
     return {"csrf_token": csrf_value(client)}
 
 
 def _detail(session_factory: sessionmaker[Session], report_id: int) -> queries.ReportDetail:
-    """Read the aggregated report detail through a short-lived session."""
+    """用一个短命会话读出聚合后的报告详情。"""
     with session_factory() as session:
         detail = queries.get_report_detail(session, report_id=report_id)
     assert detail is not None
@@ -98,12 +98,12 @@ def _detail(session_factory: sessionmaker[Session], report_id: int) -> queries.R
 
 
 # --------------------------------------------------------------------------------------
-# Session and CSRF
+# 会话与 CSRF
 # --------------------------------------------------------------------------------------
 
 
 def test_anonymous_browsing_redirects_to_login(client: TestClient) -> None:
-    """Every page requires a session and remembers where the browser was heading."""
+    """每一页都要会话，并且记得浏览器本来想去哪。"""
     listing = client.get(BASE, follow_redirects=False)
     assert listing.status_code == 303
     assert listing.headers["location"] == "/ui/login?next=%2Fui%2Freports"
@@ -113,7 +113,7 @@ def test_anonymous_browsing_redirects_to_login(client: TestClient) -> None:
 
 
 def test_a_tampered_session_cookie_redirects_to_login(client: TestClient) -> None:
-    """An unreadable cookie is treated exactly like a missing one."""
+    """读不出来的 Cookie 与根本没有 Cookie 受到完全相同的对待。"""
     client.cookies.set(SESSION_COOKIE, "not-a-jwt")
     response = client.get(BASE, follow_redirects=False)
     assert response.status_code == 303
@@ -121,7 +121,7 @@ def test_a_tampered_session_cookie_redirects_to_login(client: TestClient) -> Non
 
 
 def test_login_page_serves_a_csrf_token(client: TestClient) -> None:
-    """The form carries a hidden token that matches the double-submit cookie."""
+    """表单里带一个隐藏令牌，它与双提交 Cookie 里的值一致。"""
     response = client.get("/ui/login")
     assert response.status_code == 200
     token = csrf_value(client)
@@ -130,7 +130,7 @@ def test_login_page_serves_a_csrf_token(client: TestClient) -> None:
 
 
 def test_login_stores_an_httponly_session_cookie(client: TestClient, editor: Actor) -> None:
-    """A successful sign-in redirects and keeps the JWT out of JavaScript's reach."""
+    """登录成功会重定向，并把 JWT 放在 JavaScript 够不到的地方。"""
     response = web_login(client, editor)
     assert response.status_code == 303
     assert response.headers["location"] == "/ui/reports"
@@ -149,7 +149,7 @@ def test_failed_login_is_audited(
     editor: Actor,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A wrong password re-renders the form and records the attempt."""
+    """密码错误会重新渲染表单，并把这次尝试记下来。"""
     token = prime_csrf(client)
     response = client.post(
         "/ui/login",
@@ -169,7 +169,7 @@ def test_failed_login_is_audited(
 
 
 def test_logout_clears_the_session(client: TestClient, editor: Actor) -> None:
-    """Signing out drops the cookie so the next page redirects again."""
+    """登出会丢掉 Cookie，于是下一页又会重定向。"""
     assert web_login(client, editor).status_code == 303
 
     response = web_logout(client)
@@ -184,7 +184,7 @@ def test_mutating_actions_reject_a_missing_csrf_token(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """An omitted token reaches the CSRF gate and renders the 403 page, not a JSON error."""
+    """缺了令牌会走到 CSRF 闸门并渲染 403 页面，而不是一个 JSON 错误。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
 
@@ -200,7 +200,7 @@ def test_mutating_actions_reject_a_mismatched_csrf_token(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """A token that does not match the cookie is refused before any service runs."""
+    """与 Cookie 对不上的令牌，在任何服务被调用之前就被拒绝。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
 
@@ -219,7 +219,7 @@ def test_refusal_inside_an_htmx_swap_is_one_line(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """A refused swap gets a message, not the 403 page: that page would nest in the target."""
+    """被拒绝的局部替换只回一句提示，而不回 403 页面：那页面会套进容器。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
 
@@ -236,14 +236,14 @@ def test_refusal_inside_an_htmx_swap_is_one_line(
 
 
 def test_static_assets_are_served_locally(client: TestClient) -> None:
-    """HTMX is vendored so the interface works without outbound network access."""
+    """HTMX 随包内置，因此界面在没有外网出口的环境里也能用。"""
     response = client.get("/ui/static/htmx.min.js")
     assert response.status_code == 200
     assert "htmx" in response.text
 
 
 # --------------------------------------------------------------------------------------
-# Access control on the pages
+# 页面上的访问控制
 # --------------------------------------------------------------------------------------
 
 
@@ -255,7 +255,7 @@ def test_report_list_hides_reports_outside_the_scope(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """The list is filtered in the query, so an unreadable title never reaches the page."""
+    """列表在查询里就被过滤，所以读不到的标题根本到不了页面上。"""
     internal = _seed(session, workspace, visibility="INTERNAL")
     private = _seed(session, workspace, visibility="PRIVATE")
     configure_report(session, report_id=private.report_id, owner_id=editor.user_id)
@@ -278,7 +278,7 @@ def test_report_list_shows_an_empty_state(
     viewer: Actor,
     client: TestClient,
 ) -> None:
-    """A user with nothing in scope gets an explicit empty state."""
+    """权限范围内什么都没有的用户，会看到一段明确的空状态。"""
     _seed(session, workspace, visibility="TEAM")
 
     assert web_login(client, viewer).status_code == 303
@@ -294,7 +294,7 @@ def test_detail_page_is_refused_outside_the_scope(
     viewer: Actor,
     client: TestClient,
 ) -> None:
-    """A `TEAM` report is invisible to a personal-scope viewer."""
+    """`TEAM` 报告对「个人」范围的只读用户不可见。"""
     case = _seed(session, workspace, visibility="TEAM")
     assert web_login(client, viewer).status_code == 303
 
@@ -306,7 +306,7 @@ def test_detail_page_is_refused_outside_the_scope(
 
 
 def test_unknown_report_renders_the_not_found_page(client: TestClient, admin: Actor) -> None:
-    """A missing report renders the 404 page rather than an API error body."""
+    """报告不存在时渲染 404 页面，而不是一个 API 错误响应体。"""
     assert web_login(client, admin).status_code == 303
 
     response = client.get(f"{BASE}/987654")
@@ -321,7 +321,7 @@ def test_read_only_role_sees_no_actions(
     viewer: Actor,
     client: TestClient,
 ) -> None:
-    """A viewer may read an `INTERNAL` report but is offered no mutating control."""
+    """只读用户读得到 `INTERNAL` 报告，但不会被提供任何写控件。"""
     case = _seed(session, workspace, visibility="INTERNAL")
     assert web_login(client, viewer).status_code == 303
 
@@ -339,7 +339,7 @@ def test_read_only_role_cannot_mutate(
     viewer: Actor,
     client: TestClient,
 ) -> None:
-    """The write-role guard rejects a viewer before the service layer runs."""
+    """写角色守卫在服务层之前就拒掉了只读用户。"""
     case = _seed(session, workspace, visibility="INTERNAL")
     assert web_login(client, viewer).status_code == 303
 
@@ -350,7 +350,7 @@ def test_read_only_role_cannot_mutate(
 
 
 def _denials_by_action(factory: sessionmaker[Session]) -> dict[str, set[str | None]]:
-    """Return the resource id each denied audit action was filed against."""
+    """返回每一种被拒动作各自记在了哪个资源 id 上。"""
     with factory() as fresh:
         rows = fresh.scalars(select(AuditLog).where(AuditLog.result == "denied")).all()
         result: dict[str, set[str | None]] = {}
@@ -367,12 +367,11 @@ def test_refused_ui_actions_are_audited(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """Every UI refusal leaves an audit row naming the action, the report, and the actor.
+    """界面上的每一次拒绝都留下一行审计，点名动作、报告和操作者。
 
-    The UI is the surface an operator actually uses, so a refusal that renders a 403 page and
-    records nothing would leave the trail holding only the JSON API's half of the story. The
-    action names are shared with the API on purpose: `auth.rbac` for a role that may not write,
-    `auth.csrf` for a token that does not match, `report.read` for a report out of scope.
+    界面才是运维者真正在用的那一面，所以一次只渲染 403 页面、什么都不记的拒绝，
+    会让审计轨迹里只剩 JSON API 那一半故事。动作名刻意与 API 共用：不能写的角色
+    记 `auth.rbac`，令牌对不上记 `auth.csrf`，报告越权记 `report.read`。
     """
     internal = _seed(session, workspace, visibility="INTERNAL")
     out_of_scope = _seed(session, workspace, visibility="PRIVATE")
@@ -397,7 +396,7 @@ def test_refused_ui_actions_are_audited(
 
 
 # --------------------------------------------------------------------------------------
-# Read
+# 读取
 # --------------------------------------------------------------------------------------
 
 
@@ -408,7 +407,7 @@ def test_detail_page_renders_evidence_and_history(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """One page carries the verdict, the citations, the versions, and the reviews."""
+    """一页里同时装着结论、引用、版本与审核。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
     client.post(f"{BASE}/{case.report_id}/verify", data=_token(client))
@@ -433,7 +432,7 @@ def test_list_supports_status_filtering(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The filter form narrows the list and keeps the selection sticky."""
+    """筛选表单会收窄列表，并让已选项保持选中。"""
     published = _seed(session, workspace)
     _seed(session, workspace)
     configure_report(session, report_id=published.report_id, status="published")
@@ -447,7 +446,7 @@ def test_list_supports_status_filtering(
 
 
 # --------------------------------------------------------------------------------------
-# Verify, review, publish
+# 校验、评审与发布
 # --------------------------------------------------------------------------------------
 
 
@@ -458,7 +457,7 @@ def test_verify_action_swaps_the_panel_and_persists_the_verdict(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """The HTMX action re-renders the panel, and the verdict survives a fresh read."""
+    """HTMX 动作会重渲染面板，而结论在重新读取之后依然在。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
 
@@ -467,8 +466,8 @@ def test_verify_action_swaps_the_panel_and_persists_the_verdict(
     assert response.status_code == 200
     assert "验证结论：passed" in response.text
 
-    # Read the row back through a second session so the assertion cannot be satisfied by the
-    # panel rendering the object it just mutated in memory.
+    # 用第二个会话把那一行读回来，这样断言就不会被「面板渲染了它刚在内存里改过的
+    # 对象」所满足。
     verification = _detail(session_factory, case.report_id).verification
     assert verification is not None
     assert verification.verdict == "passed"
@@ -485,7 +484,7 @@ def test_manual_review_and_release_through_the_ui(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """`MANUAL` queues, the review form approves, and the next attempt releases."""
+    """`MANUAL` 先排队，评审表单批准之后，下一次尝试才放行。"""
     case = _seed(
         session,
         workspace,
@@ -523,7 +522,7 @@ def test_review_can_send_a_report_back_for_changes(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """`request_changes` is the UI half of the T12 "return the report" requirement."""
+    """`request_changes` 是 T12「退回报告」那条需求在界面上的那一半。"""
     case = _seed(session, workspace, publish_mode=MANUAL, visibility="INTERNAL")
     assert web_login(client, editor).status_code == 303
     token = _token(client)
@@ -546,7 +545,7 @@ def test_publish_due_action_reports_the_sweep(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """The manual sweep reuses the same driver as the scheduled Celery task."""
+    """手动扫描复用的，正是定时 Celery 任务那套驱动。"""
     case = _seed(
         session,
         workspace,
@@ -561,7 +560,7 @@ def test_publish_due_action_reports_the_sweep(
     assert "已进入发布队列" in queued.text
     assert load_report(session_factory, case.report_id).status == "scheduled"
 
-    # Bring the withdrawal window forward instead of waiting for it to elapse.
+    # 把撤回窗口拨到过去，而不是真的等它走完。
     configure_report(session, report_id=case.report_id, publish_at=NOW - timedelta(minutes=1))
     sweep = client.post(f"{BASE}/publish-due", data=token)
 
@@ -571,7 +570,7 @@ def test_publish_due_action_reports_the_sweep(
 
 
 # --------------------------------------------------------------------------------------
-# Edit and rollback
+# 编辑与回滚
 # --------------------------------------------------------------------------------------
 
 
@@ -582,7 +581,7 @@ def test_edit_action_appends_a_version(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """Saving the form produces a new version and parks the report for re-verification."""
+    """保存表单会生成新版本，并把报告打回待复核状态。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
     original = load_report(session_factory, case.report_id).content_markdown
@@ -612,7 +611,7 @@ def test_edit_form_is_withheld_outside_the_editable_statuses(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """A published report is offered a rollback instead of a rewrite."""
+    """已发布的报告只提供回滚，不提供重写。"""
     case = _seed(session, workspace)
     configure_report(session, report_id=case.report_id, status="published")
     assert web_login(client, editor).status_code == 303
@@ -631,7 +630,7 @@ def test_rollback_action_restores_a_historical_version(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """Rolling back from the version table appends a version rather than rewinding."""
+    """从版本表里回滚是追加一个版本，而不是把历史倒带。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
     original = load_report(session_factory, case.report_id).content_markdown
@@ -665,11 +664,11 @@ def test_rollback_is_not_offered_on_the_publishing_path(
     session_factory: sessionmaker[Session],
     status: str,
 ) -> None:
-    """The button matches the server-side guard, and forcing the post cannot corrupt a page.
+    """按钮与服务端守卫一致，而硬发那个请求也弄不坏页面。
 
-    The template used to hide the button only for `failed`, so these three statuses rendered a
-    button the service refuses; the refusal then reached the panel renderer *after* the report
-    object had already been rewritten, so the page showed the wrong version and body.
+    模板曾经只在 `failed` 时隐藏按钮，于是这三种状态都会渲染出一个服务层会拒绝的
+    按钮；而那次拒绝是在报告对象已经被改写 *之后* 才到达面板渲染器的，页面于是
+    显示出错误的版本与正文。
     """
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
@@ -691,7 +690,7 @@ def test_rollback_is_not_offered_on_the_publishing_path(
         data={**_token(client), "version": 1},
     )
 
-    # A rendered refusal, not a crash, and the panel still shows the untampered report.
+    # 是一次渲染出来的拒绝，而不是崩溃；面板显示的仍是没被篡改的那份报告。
     assert forced.status_code == 200
     assert "第 2 版" in forced.text
     report = load_report(session_factory, case.report_id)
@@ -707,11 +706,11 @@ def test_published_report_offers_withdraw_and_returns_to_draft(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A published report has one way back, and the page has to offer it.
+    """已发布的报告只有一条回头路，页面必须把它给出来。
 
-    Without the button the report is stuck: `edit` needs a draft, `rollback` needs a second
-    version, and nothing else accepts `published`. The page used to render a hint telling the
-    reader to "退回修改或回滚" — two operations that cannot be reached from here.
+    没有这个按钮，报告就卡死了：`edit` 要求草稿，`rollback` 要求有第二个版本，
+    别的动作都不接受 `published`。页面曾经印一句提示，让读者「退回修改或回滚」——
+    而这两个操作从这里都走不到。
     """
     case = _seed(session, workspace)
     configure_report(session, report_id=case.report_id, status="published")
@@ -743,7 +742,7 @@ def test_withdraw_is_refused_on_a_report_that_is_not_published(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """A forced post on a draft renders the refusal and leaves the report where it was."""
+    """对草稿硬发一次撤销，会渲染出拒绝，并且报告原地不动。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
 
@@ -755,7 +754,7 @@ def test_withdraw_is_refused_on_a_report_that_is_not_published(
 
 
 # --------------------------------------------------------------------------------------
-# Home page
+# 首页
 # --------------------------------------------------------------------------------------
 
 
@@ -765,7 +764,7 @@ def test_home_renders_system_state_and_newest_report(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The landing page answers "what is it doing / newest report / how to trigger"."""
+    """落地页回答三件事：它在做什么、最近一期报告、怎么触发。"""
     case = _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
 
@@ -775,7 +774,7 @@ def test_home_renders_system_state_and_newest_report(
     assert "系统状态" in response.text
     assert "最近一期报告" in response.text
     assert f"/ui/reports/{case.report_id}" in response.text
-    # The editor has the write roles, so the trigger card is offered.
+    # 编辑持有写角色，所以触发卡片会给出来。
     assert "一键触发" in response.text
     assert "立即采集" in response.text
     assert "立即研究" in response.text
@@ -787,7 +786,7 @@ def test_home_hides_triggers_from_a_viewer(
     viewer: Actor,
     client: TestClient,
 ) -> None:
-    """A read-only viewer sees the state and the newest report, but no trigger buttons."""
+    """只读用户看得到状态与最近一期报告，但没有任何触发按钮。"""
     _seed(session, workspace)
     assert web_login(client, viewer).status_code == 303
 
@@ -807,11 +806,11 @@ def test_home_trigger_answers_htmx_with_a_fragment(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A trigger fired from the page must reply with the notice alone, not a second page.
+    """从页面上触发的动作只能回一小段提示，不能回第二个页面。
 
-    The trigger forms target `#home-trigger-result` with `hx-swap="innerHTML"`, so whatever the
-    endpoint returns is inserted *into* that card. Returning the full template put the shell —
-    sidebar included — inside the card, and the reader saw the platform nested in itself.
+    触发表单的目标是 `#home-trigger-result`，并用 `hx-swap="innerHTML"`，
+    所以端点返回什么，就会被 *塞进* 那张卡片。返回整份模板曾把外壳 —— 连侧边栏
+    在内 —— 一起塞进卡片，读者看到的是平台嵌套着自己。
     """
     _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
@@ -839,7 +838,7 @@ def test_home_trigger_without_htmx_still_renders_the_page(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A plain form post (no JavaScript) still gets a whole page back, notice included."""
+    """不带 JavaScript 的普通表单提交，仍然拿回整页，提示也照旧在里面。"""
     _seed(session, workspace)
     assert web_login(client, editor).status_code == 303
     monkeypatch.setattr(web_router, "_queue_collect", lambda settings: "abc12345def")
@@ -856,7 +855,7 @@ def test_home_without_topics_disables_the_research_tile(
     client: TestClient,
     editor: Actor,
 ) -> None:
-    """No enabled topic: the research tile points at the fix instead of offering a dead button."""
+    """没有已启用的主题时，研究卡片指向怎么修，而不是给一个按不动的按钮。"""
     assert web_login(client, editor).status_code == 303
 
     response = client.get("/ui/home")
@@ -868,7 +867,7 @@ def test_home_without_topics_disables_the_research_tile(
 
 
 def test_login_without_next_lands_on_home(client: TestClient, editor: Actor) -> None:
-    """The default post-login destination is the landing page, not the report list."""
+    """登录后没给 `next` 时，默认落到落地页，而不是报告列表。"""
     token = prime_csrf(client)
     response = client.post(
         "/ui/login",

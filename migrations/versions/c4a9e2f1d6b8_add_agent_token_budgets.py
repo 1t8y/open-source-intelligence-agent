@@ -1,4 +1,7 @@
-"""add agent token budgets and counters
+"""新增 Agent Token 预算与计数
+
+给 `agent_configs` 加 `max_tokens` 预算，给 `agent_runs` 加 prompt 与 completion 计数：
+一次运行花掉多少 Token 既能被约束，也能被记录。
 
 Revision ID: c4a9e2f1d6b8
 Revises: b3f6a1c2d4e7
@@ -17,7 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add Token budget and observed Token counters for Agent runs."""
+    """为 Agent 运行增加 Token 预算与实际消耗计数。"""
     op.add_column(
         "agent_configs",
         sa.Column("max_tokens", sa.Integer(), nullable=False, server_default="12000"),
@@ -51,7 +54,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove Token budget and counters from Agent persistence."""
+    """从 Agent 持久化中移除 Token 预算与计数。"""
     op.execute(
         sa.text("ALTER TABLE `agent_runs` DROP CHECK `ck_agent_runs_completion_tokens_nonnegative`")
     )

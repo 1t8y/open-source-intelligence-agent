@@ -1,4 +1,4 @@
-"""Topic-scope authorization checks shared by the read-only tools."""
+"""只读工具共用的主题范围授权检查。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .errors import ToolExecutionError
 
 
 def repository_is_authorized(session: Session, ctx: ToolContext, repo_id: int) -> bool:
-    """Return whether the repository belongs to an authorized topic."""
+    """判断仓库是否归属于某个已授权主题。"""
     if not ctx.authorized_topic_ids:
         return False
     stmt = (
@@ -28,7 +28,7 @@ def repository_is_authorized(session: Session, ctx: ToolContext, repo_id: int) -
 
 
 def load_authorized_repository(session: Session, ctx: ToolContext, repo_id: int) -> Repository:
-    """Load a repository or fail with the contract error code for the caller."""
+    """加载仓库；失败时按契约错误码把错误抛给调用方。"""
     repository = session.get(Repository, repo_id)
     if repository is None:
         raise ToolExecutionError(TOOL_NOT_FOUND, "repository not found")

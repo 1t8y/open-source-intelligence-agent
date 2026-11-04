@@ -1,4 +1,4 @@
-"""Schema contract tests for the whitelisted Agent tools."""
+"""守护白名单 Agent 工具 schema 契约的用例。"""
 
 from datetime import UTC, date, datetime
 
@@ -24,7 +24,7 @@ NOW = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
 
 
 def test_tool_result_envelope_round_trips() -> None:
-    """Every tool result carries ok, data, error, and meta."""
+    """证明每个工具结果都带 ok、data、error 与 meta。"""
     result = ToolResult[list[MetricPoint]](
         ok=True,
         data=[MetricPoint(snapshot_date=date(2026, 10, 12), stars=5, forks=1)],
@@ -43,19 +43,19 @@ def test_tool_result_envelope_round_trips() -> None:
 
 
 def test_tool_error_rejects_unknown_fields() -> None:
-    """The envelope refuses fields that are not part of the contract."""
+    """证明信封会拒绝不属于契约的字段。"""
     with pytest.raises(ValidationError):
         ToolError(code="X", message="m", retryable=False, unexpected=1)  # type: ignore[call-arg]
 
 
 def test_query_metrics_rejects_inverted_window() -> None:
-    """start must not be after end."""
+    """证明 start 不得晚于 end。"""
     with pytest.raises(ValidationError):
         QueryRepoMetricsInput(repo_id=1, start=NOW, end=datetime(2026, 10, 1, tzinfo=UTC))
 
 
 def test_query_metrics_rejects_over_long_window() -> None:
-    """A window longer than the maximum is refused, not truncated."""
+    """证明超过上限的时间窗会被拒绝，而不是被截断。"""
     with pytest.raises(ValidationError):
         QueryRepoMetricsInput(
             repo_id=1,
@@ -72,13 +72,13 @@ def test_query_metrics_rejects_over_long_window() -> None:
 
 
 def test_inputs_reject_unknown_fields() -> None:
-    """Unknown parameters must never reach a query."""
+    """证明未知参数绝不能走到查询里。"""
     with pytest.raises(ValidationError):
         QueryRepoMetricsInput(repo_id=1, start=NOW, end=NOW, repo_ids=[1, 2])  # type: ignore[call-arg]
 
 
 def test_inputs_reject_wrong_types() -> None:
-    """Strict validation refuses coercible but wrong types."""
+    """证明严格校验会拒绝「能强转但类型不对」的输入。"""
     with pytest.raises(ValidationError):
         QueryRepoMetricsInput(repo_id="1", start=NOW, end=NOW)  # type: ignore[arg-type]
     with pytest.raises(ValidationError):
@@ -86,7 +86,7 @@ def test_inputs_reject_wrong_types() -> None:
 
 
 def test_content_char_bounds() -> None:
-    """max_chars is limited to 500-12000 and defaults to 6000."""
+    """证明 max_chars 限定在 500–12000，默认 6000。"""
     assert GetRepositoryContentInput(repo_id=1).max_chars == 6000
     with pytest.raises(ValidationError):
         GetRepositoryContentInput(repo_id=1, max_chars=499)
@@ -95,7 +95,7 @@ def test_content_char_bounds() -> None:
 
 
 def test_content_snippet_must_be_untrusted() -> None:
-    """External content cannot be returned as trusted."""
+    """证明外部内容不能被当作可信内容返回。"""
     with pytest.raises(ValidationError):
         ContentSnippet(
             repo_id=1,
@@ -108,7 +108,7 @@ def test_content_snippet_must_be_untrusted() -> None:
 
 
 def test_section_key_whitelist() -> None:
-    """Only report template sections may be saved."""
+    """证明只允许保存报告模板里的章节。"""
     assert "summary" in REPORT_SECTION_KEYS
     with pytest.raises(ValidationError):
         SaveReportSectionInput(
@@ -119,7 +119,7 @@ def test_section_key_whitelist() -> None:
 
 
 def test_section_content_and_digest_bounds() -> None:
-    """Content and digest lengths are enforced at the contract boundary."""
+    """证明正文与摘要的长度在契约边界上就被强制执行。"""
     with pytest.raises(ValidationError):
         SaveReportSectionInput(
             section_key="summary",
@@ -142,7 +142,7 @@ def test_section_content_and_digest_bounds() -> None:
 
 
 def test_citation_source_type_is_validated() -> None:
-    """Citations must use the documented source types."""
+    """证明引用必须使用文档里列出的来源类型。"""
     with pytest.raises(ValidationError):
         SaveReportSectionInput(
             section_key="summary",
@@ -153,7 +153,7 @@ def test_citation_source_type_is_validated() -> None:
 
 
 def test_prior_report_limit_bounds() -> None:
-    """limit is bounded to 1-20."""
+    """证明 limit 限定在 1–20。"""
     assert SearchPriorReportsInput(topic_id=1, before=NOW).limit == 10
     with pytest.raises(ValidationError):
         SearchPriorReportsInput(topic_id=1, before=NOW, limit=0)
@@ -162,7 +162,7 @@ def test_prior_report_limit_bounds() -> None:
 
 
 def test_standard_error_codes_are_frozen() -> None:
-    """The documented error code set must not silently change."""
+    """证明文档化的错误码集合不得悄悄变化。"""
     assert set(STANDARD_ERROR_CODES) == {
         "TOOL_INVALID_ARGUMENT",
         "TOOL_ACCESS_DENIED",

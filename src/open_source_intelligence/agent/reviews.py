@@ -1,8 +1,8 @@
-"""Human conclusions about runs that stopped without a report.
+"""对「没有产出报告就停下」的运行所下的人工结论。
 
-A `needs_review` run is terminal. Nothing downstream can approve it, because it produced no draft
-to approve; the only honest question a reviewer answers is "is this explanation enough, or does it
-need another attempt". This module is where that answer lands.
+一次 `needs_review` 运行就是终态。下游没有任何东西能批准它，因为它没有产出可供
+批准的草稿；复核者唯一诚实要回答的问题是「这个解释够不够，还是需要再跑一次」。
+本模块就是这些答案的落点。
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from open_source_intelligence.persistence.models.agent import (
 )
 from open_source_intelligence.security.audit import record_audit_event
 
-#: The only run status a review applies to. A `completed` run already produced a report - the
-#: human decision belongs to that report, not here; `failed` broke before it had anything to read.
+#: 复核只适用于这一种运行状态。`completed` 运行已经产出了报告 —— 人工决定属于
+#: 那份报告，而不在这里；`failed` 则在有任何可读内容之前就崩了。
 REVIEWABLE_RUN_STATUS = "needs_review"
 
 
@@ -36,11 +36,11 @@ def record_run_review(
     comment: str | None = None,
     now: datetime | None = None,
 ) -> AgentRunReview:
-    """Append one human conclusion to a run that stopped for review.
+    """给一次因待复核而停下的运行追加一条人工结论。
 
-    The verdict deliberately does not touch `AgentRun.status`. The run still has no report
-    afterwards - relabelling it would claim a draft exists. What changes is that the next reader
-    can see this row was already read, and what the reader concluded.
+    结论刻意不去动 `AgentRun.status`。运行之后依然没有报告 —— 改标签就等于
+    宣称已有草稿。变的是：下一个读者能看到这一行已经被读过，以及读的人得出
+    了什么结论。
     """
     if verdict not in AGENT_RUN_REVIEW_VERDICTS:
         allowed = ", ".join(AGENT_RUN_REVIEW_VERDICTS)
@@ -85,7 +85,7 @@ def record_run_review(
 
 
 def list_run_reviews(session: Session, *, run_id: int) -> tuple[AgentRunReview, ...]:
-    """Return one run's reviews, oldest first, so the page can show the history."""
+    """按从旧到新的顺序返回一次运行的复核记录，页面才能展示历史。"""
     return tuple(
         session.scalars(
             select(AgentRunReview)
@@ -100,11 +100,10 @@ def latest_run_reviews(
     *,
     run_ids: Sequence[int],
 ) -> dict[int, AgentRunReview]:
-    """Return the newest review per run for a page of runs, in one read.
+    """一次读取就为整页运行各取最新一条复核记录。
 
-    Batched on purpose: the ledger shows 20 rows and asking per row is one query per row. Ties on
-    `id` cannot happen (it is the primary key), so "last one wins while scanning ascending" is
-    exactly "newest".
+    特意做成批量：台账一页 20 行，逐行去问就是一行一次查询。`id` 上不可能出现
+    并列（它是主键），所以「按升序扫描时最后一条胜出」恰好等于「最新」。
     """
     if not run_ids:
         return {}

@@ -1,4 +1,4 @@
-"""Tests for resumable backfill jobs and the walk that advances them."""
+"""守护可续跑的回填任务，以及推进它们的分页遍历。"""
 
 from datetime import UTC, datetime, timedelta
 
@@ -42,7 +42,7 @@ TOTAL_PAGES = 7
 
 
 class FakeClock:
-    """A clock that advances only when something sleeps on it."""
+    """只在有人于其上休眠时才前进的时钟。"""
 
     def __init__(self) -> None:
         self.now = 500.0
@@ -57,7 +57,7 @@ class FakeClock:
 
 
 class PagedStub:
-    """A paged source with a fixed number of pages that can fail on one of them."""
+    """页数固定、且可以指定某一页失败的分页来源。"""
 
     provider = "github"
     display_name = "GitHub"
@@ -101,7 +101,7 @@ class PagedStub:
 
 
 class OneShotStub:
-    """A collector that answers `collect` but cannot be walked."""
+    """只实现 `collect`、无法分页遍历的采集器。"""
 
     provider = "github"
     display_name = "GitHub"
@@ -112,18 +112,18 @@ class OneShotStub:
 
 
 def build_pacer() -> tuple[FakeClock, RateLimiter]:
-    """Build a limiter pacing on a fake clock, at two seconds per request."""
+    """构造一个跑在假时钟、每两次请求间隔两秒的节流器。"""
     clock = FakeClock()
     return clock, RateLimiter(per_minute=30, clock=clock.time, sleep=clock.sleep)
 
 
 def repository_count(session: Session) -> int:
-    """Return how many repositories the walk has ingested."""
+    """返回这趟遍历已入库的仓库数。"""
     return session.scalar(select(func.count()).select_from(Repository)) or 0
 
 
 def backfill_runs(session: Session) -> list[PipelineRun]:
-    """Return the run rows the walk wrote, oldest first."""
+    """按从旧到新返回遍历写下的运行行。"""
     return list(
         session.scalars(
             select(PipelineRun).where(PipelineRun.run_type == "backfill").order_by(PipelineRun.id)
@@ -131,11 +131,11 @@ def backfill_runs(session: Session) -> list[PipelineRun]:
     )
 
 
-# ------------------------------------------------------------------------ job lifecycle
+# ------------------------------------------------------------------------ 任务生命周期
 
 
 def test_a_new_job_starts_before_its_first_page(session: Session) -> None:
-    """The cursor begins at page 1 and nothing has been ingested."""
+    """游标从第 1 页开始，此时还没有任何数据入库。"""
     job = create_job(
         session, provider="github", query={"q": "llm"}, target_pages=4, per_page=10, now=NOW
     )
@@ -155,7 +155,7 @@ def test_a_new_job_starts_before_its_first_page(session: Session) -> None:
 def test_a_job_outside_the_bounds_is_refused(
     session: Session, target_pages: int, per_page: int
 ) -> None:
-    """The application refuses what the CHECK constraints would reject."""
+    """CHECK 约束会拒绝的取值，应用层要先一步拒掉。"""
     with pytest.raises(BackfillLimitError):
         create_job(
             session,
@@ -168,7 +168,7 @@ def test_a_job_outside_the_bounds_is_refused(
 
 
 def test_the_first_claim_keeps_attempt_one_and_records_when_it_started(session: Session) -> None:
-    """`attempt` counts from one, matching the run ledger's own convention."""
+    """`attempt` 从 1 开始计，与运行账本的惯例一致。"""
     job = create_job(session, provider="github", query={}, now=NOW)
 
     claim_job(session, job, now=NOW)
@@ -180,7 +180,7 @@ def test_the_first_claim_keeps_attempt_one_and_records_when_it_started(session: 
 
 
 def test_a_second_claim_counts_as_a_second_attempt(session: Session) -> None:
-    """Resuming a walk after a failure is a new attempt over the same cursor."""
+    """失败后再续跑，是在同一个游标上开始新的一次尝试。"""
     job = create_job(session, provider="github", query={}, now=NOW)
     claim_job(session, job, now=NOW)
     finish_job(session, job, status="failed", error_code="COLLECTOR_FAILED", now=NOW)
@@ -192,7 +192,7 @@ def test_a_second_claim_counts_as_a_second_attempt(session: Session) -> None:
 
 
 def test_claiming_a_job_with_a_live_heartbeat_is_refused(session: Session) -> None:
-    """A running job belongs to the walk that holds it."""
+    """运行中的任务属于正握着它的那趟遍历。"""
     job = create_job(session, provider="github", query={}, now=NOW)
     claim_job(session, job, now=NOW)
 
@@ -203,7 +203,7 @@ def test_claiming_a_job_with_a_live_heartbeat_is_refused(session: Session) -> No
 
 
 def test_a_stale_heartbeat_lets_another_walk_take_over(session: Session) -> None:
-    """A walk whose process died must not strand the job forever."""
+    """进程已经死掉的遍历，不能把任务永远搁在那里。"""
     job = create_job(session, provider="github", query={}, now=NOW)
     claim_job(session, job, now=NOW)
 
@@ -215,7 +215,7 @@ def test_a_stale_heartbeat_lets_another_walk_take_over(session: Session) -> None
 
 
 def test_the_heartbeat_tracks_the_last_page_that_committed(session: Session) -> None:
-    """A live walk keeps its claim fresh for free, one page at a time."""
+    """活着的遍历每提交一页，就顺手把持有标记续期一次。"""
     job = create_job(session, provider="github", query={}, target_pages=3, now=NOW)
     claim_job(session, job, now=NOW)
 
@@ -226,7 +226,7 @@ def test_the_heartbeat_tracks_the_last_page_that_committed(session: Session) -> 
 
 
 def test_claiming_a_finished_job_is_refused(session: Session) -> None:
-    """Nothing is left to walk once every page landed."""
+    """每一页都落地之后，就没有可遍历的了。"""
     job = create_job(session, provider="github", query={}, target_pages=1, now=NOW)
     claim_job(session, job, now=NOW)
     advance_job(session, job, page=1, item_count=3, now=NOW)
@@ -237,7 +237,7 @@ def test_claiming_a_finished_job_is_refused(session: Session) -> None:
 
 
 def test_advancing_out_of_order_is_refused(session: Session) -> None:
-    """A cursor that skipped a page would silently drop that page's rows."""
+    """游标跳过一页，那一页的数据就会被悄悄丢掉。"""
     job = create_job(session, provider="github", query={}, now=NOW)
     claim_job(session, job, now=NOW)
 
@@ -246,7 +246,7 @@ def test_advancing_out_of_order_is_refused(session: Session) -> None:
 
 
 def test_cancelling_keeps_the_cursor_so_the_job_stays_resumable(session: Session) -> None:
-    """A cancelled job is a paused one, not a discarded one."""
+    """取消的任务是暂停，而不是作废。"""
     job = create_job(session, provider="github", query={}, target_pages=5, now=NOW)
     claim_job(session, job, now=NOW)
     advance_job(session, job, page=1, item_count=3, now=NOW)
@@ -262,7 +262,7 @@ def test_cancelling_keeps_the_cursor_so_the_job_stays_resumable(session: Session
 
 
 def test_the_summary_reports_what_a_resume_command_would_need(session: Session) -> None:
-    """`pages_remaining` and `resumable` are the two facts an operator acts on."""
+    """`pages_remaining` 与 `resumable` 是运维据此行动的两个事实。"""
     job = create_job(session, provider="github", query={}, target_pages=4, now=NOW)
     claim_job(session, job, now=NOW)
     advance_job(session, job, page=1, item_count=2, now=NOW)
@@ -276,7 +276,7 @@ def test_the_summary_reports_what_a_resume_command_would_need(session: Session) 
 
 
 def test_the_job_list_filters_by_provider_and_status(session: Session) -> None:
-    """Operators look for the failed walk, not for every walk."""
+    """运维要找的是失败的那趟遍历，而不是全部遍历。"""
     create_job(session, provider="github", query={}, now=NOW)
     other = create_job(session, provider="huggingface", query={}, now=NOW)
     claim_job(session, other, now=NOW)
@@ -288,11 +288,11 @@ def test_the_job_list_filters_by_provider_and_status(session: Session) -> None:
         list_jobs(session, status="nonsense")
 
 
-# ------------------------------------------------------------------------- walking
+# ------------------------------------------------------------------------- 遍历
 
 
 def test_a_walk_ingests_every_page_and_closes_the_job(session: Session) -> None:
-    """The happy path: the budget is spent, the cursor ends past it, the job succeeds."""
+    """顺利路径：预算用尽、游标停在预算之后，任务成功。"""
     _, limiter = build_pacer()
     stub = PagedStub()
 
@@ -311,11 +311,10 @@ def test_a_walk_ingests_every_page_and_closes_the_job(session: Session) -> None:
 
 
 def test_an_interrupted_walk_resumes_where_it_stopped(session: Session) -> None:
-    """The headline guarantee: the cursor survives the failure that stopped the walk.
+    """最要紧的那条保证：游标能熬过打断遍历的那次失败。
 
-    The first walk dies on page 3. Everything it had already ingested stays, the cursor
-    points at the page that failed, and the job is still resumable - so the second walk
-    starts at page 3 rather than at page 1.
+    第一趟遍历在第 3 页阵亡。它已经入库的数据全部留下，游标指在失败的那一页上，
+    任务仍然可续跑 —— 于是第二趟从第 3 页开始，而不是第 1 页。
     """
     _, limiter = build_pacer()
     failing = PagedStub(fail_on=3)
@@ -350,7 +349,7 @@ def test_an_interrupted_walk_resumes_where_it_stopped(session: Session) -> None:
 
 
 def test_a_walk_records_one_run_row_per_attempt_linked_to_its_job(session: Session) -> None:
-    """Each attempt is a separate run, so the retry trail stays visible."""
+    """每次尝试都是独立的一条运行，重试轨迹才留得住。"""
     _, limiter = build_pacer()
     with pytest.raises(BackfillWalkFailed):
         start_backfill(
@@ -375,7 +374,7 @@ def test_a_walk_records_one_run_row_per_attempt_linked_to_its_job(session: Sessi
 
 
 def test_a_failed_page_is_recorded_on_the_job_and_on_the_run(session: Session) -> None:
-    """Both records agree, so neither has to be read to interpret the other."""
+    """两份记录彼此一致，读其中一份不必再去看另一份。"""
     _, limiter = build_pacer()
 
     with pytest.raises(BackfillWalkFailed):
@@ -396,7 +395,7 @@ def test_a_failed_page_is_recorded_on_the_job_and_on_the_run(session: Session) -
 
 
 def test_the_failure_is_audited_as_well_as_recorded(session: Session) -> None:
-    """A walk that failed must leave an audit trail, not only a run row."""
+    """失败的遍历必须留下审计轨迹，而不只是一条运行行。"""
     _, limiter = build_pacer()
     with pytest.raises(BackfillWalkFailed):
         start_backfill(
@@ -416,7 +415,7 @@ def test_the_failure_is_audited_as_well_as_recorded(session: Session) -> None:
 
 
 def test_a_successful_walk_is_audited_once(session: Session) -> None:
-    """The success path audits the walk, not each page."""
+    """成功路径审计的是整趟遍历，而不是每一页。"""
     _, limiter = build_pacer()
 
     start_backfill(
@@ -432,7 +431,7 @@ def test_a_successful_walk_is_audited_once(session: Session) -> None:
 
 
 def test_a_source_that_runs_out_early_closes_the_job_as_exhausted(session: Session) -> None:
-    """A budget larger than the history is not an error; the history is simply shorter."""
+    """预算大于历史长度不算错误，只是历史短一些而已。"""
     _, limiter = build_pacer()
 
     outcome = start_backfill(
@@ -447,7 +446,7 @@ def test_a_source_that_runs_out_early_closes_the_job_as_exhausted(session: Sessi
 
 
 def test_a_single_page_source_stops_after_one_request(session: Session) -> None:
-    """`has_more` false on the first page means there is no second request to spend."""
+    """首页的 `has_more` 为假，意味着没有第二次请求可花。"""
     _, limiter = build_pacer()
     stub = PagedStub(total_pages=1)
 
@@ -460,11 +459,11 @@ def test_a_single_page_source_stops_after_one_request(session: Session) -> None:
     assert outcome.pages_this_attempt == 1
 
 
-# ----------------------------------------------------------------------- pacing
+# ----------------------------------------------------------------------- 节流
 
 
 def test_a_walk_paces_exactly_one_interval_between_pages(session: Session) -> None:
-    """Five pages cost four intervals, and the walk reports them."""
+    """五页只花四个间隔，而且遍历会把它报出来。"""
     clock, limiter = build_pacer()
 
     outcome = start_backfill(
@@ -476,10 +475,10 @@ def test_a_walk_paces_exactly_one_interval_between_pages(session: Session) -> No
 
 
 def test_reported_pacing_counts_only_this_walk(session: Session) -> None:
-    """A limiter reused across a resume must not credit the second walk with the first's wait.
+    """跨续跑复用的节流器，不能把第一趟的等待记到第二趟头上。
 
-    The outcome describes one attempt. Reading the limiter's running total would have the
-    resumed walk claim every second the interrupted one spent being polite to the source.
+    结果描述的是单次尝试。若直接读节流器的累计值，续跑那趟就会把被中断那趟
+    为了礼让来源而花掉的每一秒都算成自己的。
     """
     _, limiter = build_pacer()
     with pytest.raises(BackfillWalkFailed):
@@ -503,7 +502,7 @@ def test_reported_pacing_counts_only_this_walk(session: Session) -> None:
 def test_the_walk_defaults_to_the_budget_configured_on_the_source(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The rate limit in the data source row is the one the walk enforces."""
+    """遍历实际执行的，是数据源行里配置的那个速率上限。"""
     captured: list[int] = []
     real = RateLimiter
 
@@ -519,20 +518,20 @@ def test_the_walk_defaults_to_the_budget_configured_on_the_source(
     assert captured == [30], "the source's own rate_limit_per_minute must be the default"
 
 
-# ------------------------------------------------------------------ refusals and edges
+# ------------------------------------------------------------------ 拒绝与边界
 
 
 def test_a_collector_that_cannot_page_is_refused(session: Session) -> None:
-    """A one-shot source cannot be walked, and saying so beats paging it once."""
+    """一次性来源无从遍历，明说这一点比勉强翻一页要好。"""
     with pytest.raises(BackfillUnsupportedCollector, match="cannot be walked"):
         start_backfill(session, collector=OneShotStub(), target_pages=2, per_page=2, now=NOW)
 
 
 def test_walking_the_same_pages_twice_does_not_duplicate_repositories(session: Session) -> None:
-    """Ingestion stays idempotent on (source, provider_repo_id), so a replayed page is free.
+    """入库在 (source, provider_repo_id) 上保持幂等，重放一页不必付出代价。
 
-    This is what makes the crash window between a page's rows and its cursor harmless: even a
-    second job that walks the same history updates the same rows rather than adding a copy.
+    正因如此，「一页的数据已经写入、游标还没推进」之间的崩溃窗口才无害：即便是
+    另一个任务重走同一段历史，也只是更新同样的行，而不是多出一份拷贝。
     """
     _, limiter = build_pacer()
     stub = PagedStub()
@@ -549,7 +548,7 @@ def test_walking_the_same_pages_twice_does_not_duplicate_repositories(session: S
 
 
 def test_a_walk_that_has_budget_left_but_no_pages_is_refused_up_front(session: Session) -> None:
-    """Better a clear refusal than a walk that immediately reports success doing nothing."""
+    """宁可干脆拒绝，也不要让一趟什么都没做的遍历立刻报成功。"""
     job = create_job(session, provider="github", query={}, target_pages=2, now=NOW)
     claim_job(session, job, now=NOW)
     advance_job(session, job, page=1, item_count=1, now=NOW)
@@ -561,7 +560,7 @@ def test_a_walk_that_has_budget_left_but_no_pages_is_refused_up_front(session: S
 
 
 def test_the_package_exports_the_public_surface() -> None:
-    """The module's `__all__` is the contract other layers import against."""
+    """模块的 `__all__` 就是其它层赖以导入的契约。"""
     for name in (
         "BackfillJobBusy",
         "BackfillJobNotFound",

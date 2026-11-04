@@ -1,4 +1,4 @@
-"""Tests for the FastAPI health endpoint."""
+"""守护健康检查端点：探活响应、文档开关与根路径跳转都按对外契约行事。"""
 
 from fastapi.testclient import TestClient
 
@@ -8,7 +8,7 @@ from open_source_intelligence.core.config import Settings
 
 
 def build_settings() -> Settings:
-    """Create deterministic test settings without reading a local .env file."""
+    """构造确定性的测试配置，不去读本地 `.env` 文件。"""
     return Settings(
         _env_file=None,
         app_env="test",
@@ -20,7 +20,7 @@ def build_settings() -> Settings:
 
 
 def test_health_returns_service_contract() -> None:
-    """The liveness endpoint should return service identity and version."""
+    """证明探活端点给出的是服务身份与版本，而不是一个空的状态码。"""
     with TestClient(create_app(build_settings())) as client:
         response = client.get("/health")
 
@@ -33,7 +33,10 @@ def test_health_returns_service_contract() -> None:
 
 
 def test_docs_can_be_disabled() -> None:
-    """Disabled docs must not expose Swagger or ReDoc routes."""
+    """证明关掉文档开关后，`/docs` 与 `/redoc` 两条路由都必须消失。
+
+    只要其中一条还活着，就等于在生产环境里留了一个不需要鉴权的接口清单。
+    """
     settings = build_settings().model_copy(update={"docs_enabled": False})
     with TestClient(create_app(settings)) as client:
         assert client.get("/docs").status_code == 404
@@ -41,7 +44,7 @@ def test_docs_can_be_disabled() -> None:
 
 
 def test_root_redirects_to_docs_for_browser_preview() -> None:
-    """The root URL should open the interactive documentation."""
+    """证明浏览器打开根路径时，会被带到可交互的文档页。"""
     with TestClient(create_app(build_settings())) as client:
         response = client.get("/", follow_redirects=False)
 
@@ -50,7 +53,10 @@ def test_root_redirects_to_docs_for_browser_preview() -> None:
 
 
 def test_root_redirects_to_health_when_docs_are_disabled() -> None:
-    """A docs-disabled deployment should still expose a browser-safe root."""
+    """证明关掉文档的部署里，根路径仍会落到一个浏览器能安全访问的地址。
+
+    此时若还指向 `/docs`，访客会撞上一个 404 —— 根路径本身就是部署的对外门面。
+    """
     settings = build_settings().model_copy(update={"docs_enabled": False})
     with TestClient(create_app(settings)) as client:
         response = client.get("/", follow_redirects=False)

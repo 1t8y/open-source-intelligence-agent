@@ -6,11 +6,11 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $projectRoot
 
-# The smoke prints its payload as UTF-8 with `ensure_ascii=False`, because a report title is
-# Chinese ('<topic> 开源技术情报周报（<date>）'). A native command's stdout is decoded using the
-# console code page rather than UTF-8, so without this the title arrives as mangled bytes and
-# `ConvertFrom-Json` fails part-way through the string. Both sides are pinned rather than one:
-# `PYTHONIOENCODING` decides what the child *writes*, the console encoding what PowerShell *reads*.
+# smoke 脚本以 `ensure_ascii=False` 按 UTF-8 打印其载荷，因为报告标题是中文
+# （'<topic> 开源技术情报周报（<date>）'）。原生命令的 stdout 会按控制台代码页而非 UTF-8
+# 解码，若不这样做，标题就会以乱码字节的形式到达，`ConvertFrom-Json` 会在字符串中间解析
+# 失败。两端都要固定而不是只固定一端：`PYTHONIOENCODING` 决定子进程*写入*什么，
+# 控制台编码决定 PowerShell *读取*什么。
 $previousOutputEncoding = [Console]::OutputEncoding
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = 'utf-8'
@@ -81,8 +81,8 @@ Write-Host '==> Run the T14 evaluation smoke on MySQL'
 $smokeOutput = docker @composeArgs run --rm --no-deps @mountArgs /workspace/scripts/t14_mysql_smoke.py
 Assert-LastCommandSucceeded 'T14 MySQL smoke'
 
-# The smoke drives the real application, so its stdout also carries the application log;
-# the payload is the last JSON object it prints.
+# smoke 脚本驱动的是真实应用，因此其 stdout 同时带有应用日志；
+# 载荷是它打印的最后一个 JSON 对象。
 $smokeJson = $smokeOutput |
     Where-Object { $_.TrimStart().StartsWith('{') } |
     Select-Object -Last 1
@@ -96,7 +96,7 @@ Assert-Equal $smoke.eval_enabled $true 'evaluation subsystem is enabled'
 Assert-Equal $smoke.eval_regression_tolerance '0.02' 'regression tolerance'
 Assert-Equal ($smoke.target_contract -join ',') $targetContract 'the five documented targets'
 
-# Criterion 1: a dataset version is frozen, replayable, and not overwritable.
+# 判据 1：数据集版本是冻结的、可重放的、不可覆盖的。
 Assert-Equal $smoke.dataset_name 'weekly-agent-quality' 'shipped dataset name'
 Assert-Equal $smoke.dataset_version 'v1' 'shipped dataset version'
 Assert-Equal $smoke.discovered_dataset_files 1 'dataset files discovered on disk'
@@ -109,7 +109,7 @@ Assert-Equal $smoke.conflict_code 'DATASET_VERSION_CONFLICT' 'changed content un
 Assert-Equal ($smoke.case_keys -join ',') 'growth-surge,injection-readme,missing-readme' 'shipped case keys'
 Assert-Equal $smoke.case_count 3 'shipped case count'
 
-# Criterion 2: one sweep covers every variant and stores its own summary.
+# 判据 2：一次扫描覆盖全部变体并存储各自的摘要。
 Assert-Equal $smoke.runs_before 0 'no run exists before the sweep'
 Assert-Equal $smoke.runs_added 5 'one run row per variant'
 Assert-Equal $smoke.runs_after 5 'run rows after the sweep'
@@ -135,7 +135,7 @@ foreach ($target in @('agent_full', 'agent_no_verifier', 'agent_no_tools', 'agen
     }
 }
 
-# Criterion 3: the candidate is measured against the baseline, the controls against the candidate.
+# 判据 3：候选者以基线为参照衡量，对照组以候选者为参照衡量。
 Assert-Equal $null $smoke.baseline_reference 'the baseline has no reference'
 Assert-Equal ($smoke.baseline_deltas.PSObject.Properties | Measure-Object).Count 0 'the baseline has no deltas'
 Assert-Equal $smoke.agent_reference 'baseline_single_prompt' 'the Agent is measured against the baseline'
@@ -159,7 +159,7 @@ Assert-Equal ($smoke.regressions -join ',') 'agent_no_verifier,agent_no_tools' '
 Assert-Equal ($smoke.failed_gates.PSObject.Properties | Measure-Object).Count 3 'variants that miss the absolute targets'
 Assert-Equal ($smoke.gated_metrics -join ',') 'citation_coverage,factual_consistency,task_completion' 'gated metrics'
 
-# Criterion 4: the metrics are computed from the database, not from a model.
+# 判据 4：指标由数据库计算得出，而不是由模型得出。
 Assert-Equal $smoke.baseline_citation_coverage '0.0000' 'a single prompt cites nothing'
 Assert-Equal $null $smoke.baseline_source_accuracy 'the baseline claims no citations'
 Assert-Equal $null $smoke.baseline_tool_success_rate 'the baseline calls no tools'
@@ -190,7 +190,7 @@ Assert-Equal $smoke.agent_cost '0.000000' 'the offline stub reports no cost'
 Assert-Equal $smoke.agent_latency_non_negative $true 'latency is recorded'
 Assert-Equal $smoke.documented_targets.tool_success_rate '0.98' 'documented tool success goal is on the report'
 
-# Criterion 5: results are idempotent, and a re-run adds a run rather than a duplicate.
+# 判据 5：结果是幂等的，重跑会新增一次运行而不是产生重复。
 Assert-Equal $smoke.compare_adds_no_run $true 'a comparison does not execute anything'
 Assert-Equal $smoke.rerun_added_runs 1 'a re-run adds exactly one run row'
 Assert-Equal $smoke.newest_baseline_is_new $true 'the re-run is a new row, not an edit'
@@ -199,7 +199,7 @@ Assert-Equal $smoke.results_added 3 'a re-run adds one result per case, not per 
 Assert-Equal $smoke.compare_stable_metrics $true 'rebuilding the report reproduces the metrics'
 Assert-Equal $smoke.compare_stable_deltas $true 'rebuilding the report reproduces the deltas'
 
-# Criterion 6: a broken case is evidence, not a crash.
+# 判据 6：损坏的用例是证据，不是崩溃。
 Assert-Equal $smoke.broken_run_status 'failed' 'a wholly failed run is recorded as failed'
 Assert-Equal $smoke.broken_case_count 1 'the broken dataset has one case'
 Assert-Equal $smoke.broken_failed_cases 1 'the broken case is counted as a failure'
@@ -211,7 +211,7 @@ Assert-Equal ($smoke.broken_gate_failures -join ',') '' 'an unmeasured variant h
 Assert-Equal $smoke.broken_candidate_scored 0 'the broken candidate scored nothing'
 Assert-Equal $smoke.broken_passed $false 'an unmeasured candidate cannot pass'
 
-# Criterion 7: the CLI and the API agree with the runner.
+# 判据 7：CLI 和 API 与 runner 的结论一致。
 Assert-Equal $smoke.cli_list_has_shipped $true 'the CLI lists the shipped dataset'
 Assert-Equal $smoke.cli_shipped_dataset_id $smoke.dataset_id 'the CLI resolves the same dataset id'
 Assert-Equal $smoke.cli_shipped_case_count 3 'the CLI reports the shipped case count'

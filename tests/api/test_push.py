@@ -1,9 +1,7 @@
-"""Integration tests for the push API.
+"""守护推送 API：投递白名单、单次投递、投递流水与重试扫描的完整链路。
 
-They cover the T13 surface end to end over HTTP: the delivery allowlist, one report delivery,
-the delivery trail, and the retry driver — plus the refusal mapping and access control that
-guard all of it. The default `push_delivery="offline"` transport is used throughout, so these
-tests exercise the real route, service, and persistence stack without touching a network.
+用例用 HTTP 跑完 T13 这条链路，并覆盖守着它的拒绝映射与访问控制。全程使用默认的
+`push_delivery="offline"` 传输，走的是真实路由、服务与持久化层，却不碰网络。
 """
 
 from __future__ import annotations
@@ -26,26 +24,26 @@ PUSH = "/api/v1/push"
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def admin(session: Session) -> Actor:
-    """An administrator, who may both read every report and push."""
+    """管理员：既能读全部报告，也能推送。"""
     return create_actor(session, username="push-admin", role="ADMIN")
 
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """An editor on the team scope, holding the other write role."""
+    """团队数据范围上的编辑，持有另一个可写角色。"""
     return create_actor(session, username="push-editor", role="EDITOR", data_scope="team")
 
 
 @pytest.fixture()
 def viewer(session: Session) -> Actor:
-    """A read-only user, who must not be able to push at all."""
+    """只读用户：完全不该有推送能力。"""
     return create_actor(session, username="push-viewer", role="VIEWER")
 
 
@@ -57,7 +55,7 @@ def _seed_failed_push(
     version: int = 1,
     attempt: int = 1,
 ) -> ReportPush:
-    """Plant a failed delivery row, standing in for a transport that refused the last try."""
+    """埋一行失败的投递，顶替一个上次拒绝了的传输通道。"""
     row = ReportPush(
         report_id=report_id,
         target_id=target_id,
@@ -82,7 +80,7 @@ def _seed_failed_push(
 
 
 # --------------------------------------------------------------------------------------
-# Allowlist
+# 白名单
 # --------------------------------------------------------------------------------------
 
 
@@ -92,7 +90,7 @@ def test_the_allowlist_lists_enabled_targets_only(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """A disabled destination is not offered to an operator."""
+    """被停用的目标不会出现在运维者可选的清单里。"""
     live = workspace.add_push_target(name="ops-email")
     workspace.add_push_target(name="retired-email", destination="old@example.com", enabled=False)
 
@@ -112,7 +110,7 @@ def test_the_allowlist_can_be_filtered_by_channel(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """The channel filter narrows the list, and an unused channel yields nothing."""
+    """渠道筛选会收窄清单，而没人使用的渠道则返回空。"""
     workspace.add_push_target(name="ops-email")
     hooks = workspace.add_push_target(
         name="ops-webhook",
@@ -129,7 +127,7 @@ def test_the_allowlist_can_be_filtered_by_channel(
 
 
 # --------------------------------------------------------------------------------------
-# Delivery
+# 投递
 # --------------------------------------------------------------------------------------
 
 
@@ -140,7 +138,7 @@ def test_a_delivery_is_recorded_and_visible_in_the_trail(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """One push writes one sent row and one audit entry, and the trail reports the counts."""
+    """一次推送写下一条 `sent` 记录和一条审计，流水里的计数也如实反映。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
 
@@ -182,7 +180,7 @@ def test_a_repeat_request_replays_instead_of_sending_twice(
     client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    """The same (report, version, target) triple is delivered at most once."""
+    """同一个（报告、版本、目标）三元组最多只投递一次。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
     headers = auth_headers(client, admin)
@@ -198,7 +196,7 @@ def test_a_repeat_request_replays_instead_of_sending_twice(
 
     trail = client.get(f"{PUSH}/records", params={"report_id": report.id}, headers=headers)
     assert len(trail.json()["items"]) == 1
-    # Only the first delivery is audited: a replay never reaches the transport.
+    # 只有第一次投递进审计：重放根本走不到传输层。
     assert audit_trail(session_factory).count(("report.push", "success")) == 1
 
 
@@ -208,7 +206,7 @@ def test_a_published_report_can_be_pushed(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """`published` is the other status a push is allowed from."""
+    """`published` 是另一条允许推送的状态。"""
     report = seed_pushable_report(session, workspace, status=PUBLISHED)
     target = workspace.add_push_target()
 
@@ -228,7 +226,7 @@ def test_a_report_that_is_not_approved_is_refused_with_409(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """Only an approved or published report may leave the building."""
+    """只有通过审核或已发布的报告才允许出门。"""
     report = seed_pushable_report(session, workspace, status="draft")
     target = workspace.add_push_target()
 
@@ -248,7 +246,7 @@ def test_a_confidential_report_without_approval_is_refused_with_409(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """Sensitive material needs a recorded human approval before it can go out."""
+    """敏感材料必须先有一份留痕的人工批准，才可能被发出去。"""
     report = seed_pushable_report(session, workspace, sensitivity="CONFIDENTIAL")
     target = workspace.add_push_target(allow_confidential=True)
 
@@ -268,7 +266,7 @@ def test_a_target_off_the_allowlist_is_refused_with_400(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """An unknown destination id is a bad request, not a delivery failure."""
+    """未知的目标 id 是请求有问题，而不是投递失败。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
 
     response = client.post(
@@ -287,7 +285,7 @@ def test_a_channel_that_does_not_match_the_target_is_refused_with_400(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """The channel is not taken on trust: it has to agree with the allowlist row."""
+    """渠道不能被凭空信任：它必须与白名单那一行对得上。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
 
@@ -307,7 +305,7 @@ def test_a_private_report_needs_a_cleared_target(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """A target that was never cleared for `PRIVATE` reports is refused."""
+    """没有为 `PRIVATE` 报告放行过的目标，一律拒绝。"""
     report = seed_pushable_report(session, workspace, status=APPROVED, visibility="PRIVATE")
     target = workspace.add_push_target()
 
@@ -327,7 +325,7 @@ def test_an_unknown_report_is_refused_with_404(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """A missing report is answered as Problem Details rather than an internal error."""
+    """报告不存在时答的是 Problem Details，而不是一个内部错误。"""
     target = workspace.add_push_target()
 
     response = client.post(
@@ -346,7 +344,7 @@ def test_an_unsupported_channel_is_a_validation_error(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """The channel is a closed set, so anything else fails before the service is reached."""
+    """渠道是闭集，所以别的值在到达服务层之前就该失败。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
 
@@ -367,7 +365,7 @@ def test_pushing_reports_unavailable_when_the_feature_is_off(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Turning the feature off answers `503`, which tells a caller to come back later."""
+    """关掉这个功能答 `503`，它告诉调用方过一会儿再来。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
     monkeypatch.setattr(
@@ -387,7 +385,7 @@ def test_pushing_reports_unavailable_when_the_feature_is_off(
 
 
 # --------------------------------------------------------------------------------------
-# Retry driver
+# 重试扫描
 # --------------------------------------------------------------------------------------
 
 
@@ -397,7 +395,7 @@ def test_the_retry_driver_redelivers_a_failed_push(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """A failed row with budget left is redelivered by the sweep, on the same row."""
+    """还有预算的失败行会被扫描重新投递，而且仍落在同一行上。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
     failed = _seed_failed_push(session, report_id=report.id, target_id=target.id)
@@ -427,7 +425,7 @@ def test_the_retry_driver_is_a_no_op_without_failed_rows(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """Nothing to retry is a successful, empty sweep."""
+    """没有可重试的行，就是一次成功但为空的扫描。"""
     response = client.post(f"{PUSH}/retry", headers=auth_headers(client, admin))
 
     assert response.status_code == 200, response.text
@@ -445,7 +443,7 @@ def test_the_retry_driver_skips_rows_that_are_out_of_budget(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """A row that already spent the retry budget is left alone rather than retried forever."""
+    """已经用完重试预算的行放着不动，而不是被无限重试。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
     _seed_failed_push(session, report_id=report.id, target_id=target.id, attempt=3)
@@ -461,7 +459,7 @@ def test_records_can_be_filtered_by_status(
     admin: Actor,
     client: TestClient,
 ) -> None:
-    """The status filter is how an operator isolates the backlog."""
+    """运维者靠状态筛选把积压单独拎出来。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
     failed = _seed_failed_push(session, report_id=report.id, target_id=target.id)
@@ -476,7 +474,7 @@ def test_records_can_be_filtered_by_status(
 
 
 # --------------------------------------------------------------------------------------
-# Access control
+# 访问控制
 # --------------------------------------------------------------------------------------
 
 
@@ -486,7 +484,7 @@ def test_a_read_only_role_cannot_push(
     viewer: Actor,
     client: TestClient,
 ) -> None:
-    """Pushing is a write action, so a `VIEWER` is refused before any guard runs."""
+    """推送是写动作，因此 `VIEWER` 在任何守卫之前就被拒了。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
 
@@ -501,7 +499,7 @@ def test_a_read_only_role_cannot_push(
 
 
 def test_the_push_endpoints_require_authentication(client: TestClient) -> None:
-    """No token means `401` on the action, the allowlist, the trail, and the sweep."""
+    """没有令牌：推送、白名单、流水、扫描四处都答 `401`。"""
     action = client.post(f"{BASE}/1/push", json={"channel": "email", "target_id": 1})
     assert action.status_code == 401
     assert client.get(f"{PUSH}/targets").status_code == 401
@@ -515,7 +513,7 @@ def test_an_editor_can_push_a_report_it_can_read(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The other write role is allowed too, provided the report itself is readable."""
+    """另一个写角色也放行，前提是这份报告本身对它可读。"""
     report = seed_pushable_report(session, workspace, status=APPROVED)
     target = workspace.add_push_target()
 
@@ -534,11 +532,10 @@ def test_the_delivery_ledger_is_filtered_by_the_report_acl(
     workspace: Workspace,
     client: TestClient,
 ) -> None:
-    """A delivery row is report metadata, so it needs the report ACL, not only a role check.
+    """投递行属于报告元数据，所以要过报告 ACL，光有角色检查不够。
 
-    The row names a report's title, version, destination and error text. Filtering by role alone
-    let an editor read all of that for a PRIVATE report they could not open — and the retry driver
-    would even re-send it for them.
+    这一行里写着报告标题、版本、目标和错误文本。只按角色过滤时，编辑能读到自己
+    打不开的 `PRIVATE` 报告的全部这些内容 —— 重试扫描甚至会替他重新发一遍。
     """
     owner = create_actor(session, username="push-owner", role="EDITOR", data_scope="team")
     other = create_actor(session, username="push-other", role="EDITOR", data_scope="team")

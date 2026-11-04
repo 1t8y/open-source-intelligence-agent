@@ -1,12 +1,11 @@
-"""Client-side pacing for a walk over a rate-limited public API.
+"""在限流的公共 API 上走查时提供客户端节流。
 
-A daily collection asks a source one question, so pacing it is pointless. A backfill asks
-the same source twenty questions in a row, which is what turns a polite client into a
-throttled one - so the walk is what carries the limiter.
+每日采集只向源问一个问题，给它限速没有意义。回填会连着向同一个源问二十个
+问题，正是这一点把一个有礼貌的客户端变成被限流的客户端 —— 所以是把限速器
+挂在走查上。
 
-The clock and the sleeper are injected rather than imported for one reason: a rate limiter
-that can only be proven by waiting makes every future test run slower, and a test that
-sleeps to prove pacing is a test nobody keeps.
+时钟与 sleep 都靠注入而不是直接导入，只为一个理由：一个只能靠等待来证明的
+限速器，会让此后每次测试都变慢；而靠 sleep 证明节流的测试，没人会保留。
 """
 
 import time
@@ -18,12 +17,11 @@ SECONDS_PER_MINUTE: Final[float] = 60.0
 
 
 class RateLimiter:
-    """Enforce a minimum interval between calls to one request budget.
+    """约束同一请求预算下相邻两次调用之间的最小间隔。
 
-    The limiter is deliberately *not* a token bucket: it does not allow a burst and then
-    refill. A backfill's whole risk is sustained load, so the simplest correct policy is
-    one that never exceeds the configured rate at any instant - the first call is free and
-    every later call is at least `60 / per_minute` seconds after the previous one.
+    限速器刻意*不是*令牌桶：它不允许先突发再补充。回填的全部风险就是持续
+    负载，所以最简单的正确策略是在任何时刻都不超过配置的速率 —— 第一次
+    调用免费，此后每次调用都至少在上一次之后 `60 / per_minute` 秒。
     """
 
     def __init__(
@@ -43,27 +41,26 @@ class RateLimiter:
 
     @property
     def per_minute(self) -> int:
-        """Return the configured request budget."""
+        """返回配置的请求预算。"""
         return round(SECONDS_PER_MINUTE / self._interval)
 
     @property
     def interval_seconds(self) -> float:
-        """Return the enforced minimum spacing between two requests."""
+        """返回两次请求之间强制的最小间隔。"""
         return self._interval
 
     @property
     def total_waited_seconds(self) -> float:
-        """Return how long this limiter has held callers back in total."""
+        """返回该限速器累计挡住了调用方多长时间。"""
         return self._total_waited
 
     def wait(self) -> float:
-        """Block until the next request is allowed and return the seconds spent.
+        """阻塞到下一次请求被允许，并返回本次等待的秒数。
 
-        The release time is advanced by the interval rather than read back from the clock.
-        Reading it back would let a caller that overslept earn credit towards its next
-        request, which is exactly the burst the limiter exists to prevent; taking the
-        larger of the two keeps that property while still not double-charging a slow
-        sleeper for time it truly spent.
+        释放时间按间隔向前推进，而不是从时钟重新读回。读回会让睡过头的
+        调用方为下一次请求攒下信用，而那正是限速器要防的突发；取两者中
+        较大的一个，既保住了这条性质，又不会让慢的睡眠者为自己确实花掉
+        的时间被重复计费。
         """
         now = self._clock()
         if self._last_release is None:

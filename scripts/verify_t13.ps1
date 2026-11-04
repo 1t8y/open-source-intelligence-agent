@@ -6,11 +6,11 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $projectRoot
 
-# The smoke prints its payload as UTF-8 with `ensure_ascii=False`, because a report title is
-# Chinese ('<topic> 开源技术情报周报（<date>）'). A native command's stdout is decoded using the
-# console code page rather than UTF-8, so without this the title arrives as mangled bytes and
-# `ConvertFrom-Json` fails part-way through the string. Both sides are pinned rather than one:
-# `PYTHONIOENCODING` decides what the child *writes*, the console encoding what PowerShell *reads*.
+# smoke 脚本以 `ensure_ascii=False` 按 UTF-8 打印其载荷，因为报告标题是中文
+# （'<topic> 开源技术情报周报（<date>）'）。原生命令的 stdout 会按控制台代码页而非 UTF-8
+# 解码，若不这样做，标题就会以乱码字节的形式到达，`ConvertFrom-Json` 会在字符串中间解析
+# 失败。两端都要固定而不是只固定一端：`PYTHONIOENCODING` 决定子进程*写入*什么，
+# 控制台编码决定 PowerShell *读取*什么。
 $previousOutputEncoding = [Console]::OutputEncoding
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = 'utf-8'
@@ -79,8 +79,8 @@ Write-Host '==> Run the T13 email/Webhook push smoke on MySQL'
 $smokeOutput = docker @composeArgs run --rm --no-deps @mountArgs /workspace/scripts/t13_mysql_smoke.py
 Assert-LastCommandSucceeded 'T13 MySQL smoke'
 
-# The smoke drives the real application, so its stdout also carries the application log;
-# the payload is the last JSON object it prints.
+# smoke 脚本驱动的是真实应用，因此其 stdout 同时带有应用日志；
+# 载荷是它打印的最后一个 JSON 对象。
 $smokeJson = $smokeOutput |
     Where-Object { $_.TrimStart().StartsWith('{') } |
     Select-Object -Last 1
@@ -91,7 +91,7 @@ $smoke = $smokeJson | ConvertFrom-Json
 
 Assert-Equal $smoke.push_delivery 'offline' 'default delivery transport'
 
-# Criterion 1: only an approved or published report may be pushed.
+# 判据 1：只有已审批或已发布的报告才能推送。
 Assert-Equal $smoke.cli_draft_push_code 'PUSH_BLOCKED' 'draft push refusal'
 Assert-Equal $smoke.cli_pending_push_code 'PUSH_BLOCKED' 'scheduled push refusal'
 Assert-Equal $smoke.report_b_pending_push_code 'PUSH_BLOCKED' 'pending_review push refusal'
@@ -99,7 +99,7 @@ Assert-Equal $smoke.cli_verify_verdict 'passed' 'verification before approval'
 Assert-Equal $smoke.cli_approved_status 'approved' 'report reaches approved through the real review'
 Assert-Equal $smoke.cli_first_push_delivered $true 'approved report is pushable'
 
-# Criterion 2: only an allowlisted destination receives anything.
+# 判据 2：只有列入白名单的目标才会收到任何内容。
 Assert-Equal $smoke.enabled_target_count 4 'enabled allowlist size'
 Assert-Equal $smoke.webhook_target_count 1 'webhook channel filter'
 Assert-Equal $smoke.cli_disabled_target_code 'PUSH_TARGET_NOT_ALLOWED' 'disabled target refusal'
@@ -107,7 +107,7 @@ Assert-Equal $smoke.cli_mismatched_channel_code 'PUSH_TARGET_NOT_ALLOWED' 'chann
 Assert-Equal $smoke.cli_unknown_target_code 'PUSH_TARGET_NOT_ALLOWED' 'unknown target refusal'
 Assert-Equal $smoke.ui_unknown_target_code $true 'unknown target refusal through the UI'
 
-# Criterion 3: sensitive material needs an approval *and* a cleared target.
+# 判据 3：敏感材料既需要审批*又*需要已放行的目标。
 Assert-Equal $smoke.report_d_code 'PUSH_APPROVAL_REQUIRED' 'CONFIDENTIAL without approval'
 Assert-Equal $smoke.report_d_rows 0 'refused delivery writes no row'
 Assert-Equal $smoke.report_b_blocked_code 'PUSH_BLOCKED' 'sensitive report before approval'
@@ -116,7 +116,7 @@ Assert-Equal $smoke.report_b_uncleared_code 'PUSH_TARGET_NOT_ALLOWED' 'cleared-t
 Assert-Equal $smoke.report_b_delivered $true 'cleared target receives the sensitive report'
 Assert-Equal $smoke.report_b_rows 1 'one delivery row for the sensitive report'
 
-# Criterion 4: delivery is idempotent and recorded.
+# 判据 4：投递是幂等的且被记录。
 Assert-Equal $smoke.api_first_push_status 'sent' 'first HTTP delivery'
 Assert-Equal $smoke.api_first_push_delivered $true 'first HTTP delivery reached the target'
 Assert-Equal $smoke.api_first_push_attempt 1 'first HTTP delivery attempt count'
@@ -134,7 +134,7 @@ Assert-Equal $smoke.viewer_push_status 403 'read-only role cannot push'
 Assert-Equal $smoke.viewer_retry_status 403 'read-only role cannot drive the sweep'
 Assert-Equal $smoke.viewer_targets_status 403 'read-only role cannot read the allowlist'
 
-# Criterion 5: a failed delivery is retryable on the same row.
+# 判据 5：失败的投递可在同一行上重试。
 Assert-Equal $smoke.failed_records_before 3 'failed deliveries awaiting a retry'
 Assert-Equal $smoke.sweep_attempted 1 'HTTP sweep attempts the eligible row'
 Assert-Equal $smoke.sweep_delivered 1 'HTTP sweep redelivers'
@@ -155,7 +155,7 @@ $redelivered = $smoke.rows_after_sweep | Where-Object { $_.target_id -eq $smoke.
 Assert-Equal $redelivered.status 'sent' 'redelivered row is sent'
 Assert-Equal $redelivered.attempt 2 'redelivered row advanced in place'
 
-# Criterion 6: a release fans out automatically.
+# 判据 6：发布自动扇出。
 Assert-Equal $smoke.release_scheduled_status 'scheduled' 'MANUAL report is scheduled first'
 Assert-Equal $smoke.release_count 1 'the due sweep releases the report'
 Assert-Equal $smoke.report_a_status 'published' 'report ends published'
@@ -165,7 +165,7 @@ Assert-Equal $smoke.report_a_auto_pushes 3 'auto-push records one entry per new 
 Assert-Equal ($smoke.report_a_channels -join ',') 'email,webhook' 'auto-push spans both channels'
 Assert-Equal ($smoke.report_a_statuses -join ',') 'sent' 'every auto-push is sent'
 
-# The UI adds the CSRF and write-role guards on top of the API.
+# UI 在 API 之上加了 CSRF 和写角色防护。
 Assert-Equal $smoke.ui_session_cookie $true 'UI session cookie'
 Assert-Equal $smoke.ui_editor_login_status 303 'editor UI login'
 Assert-Equal $smoke.ui_viewer_login_status 303 'viewer UI login'

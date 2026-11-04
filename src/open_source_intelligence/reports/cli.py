@@ -1,7 +1,7 @@
-"""Command-line entry point for report generation, verification, publishing, and pushing.
+"""提供报告生成、验证、发布与推送的命令行入口。
 
-`--agent-run-id` on its own still means "generate", which keeps the T10 entry point
-working; every later stage of the publishing chain is addressed with `--action`.
+单独给 `--agent-run-id` 仍然表示「生成」，T10 的入口因此照旧可用；发布链路上后续的每
+个阶段都用 `--action` 指定。
 """
 
 import argparse
@@ -40,7 +40,7 @@ PUSH_CHANNELS = ("email", "webhook")
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the action, its target, and the optional review payload."""
+    """解析动作、动作的目标，以及可选的评审载荷。"""
     parser = argparse.ArgumentParser(description="Generate, verify, publish, and push reports")
     parser.add_argument("--action", choices=ACTIONS, default="generate")
     parser.add_argument("--agent-run-id", type=int)
@@ -56,14 +56,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def _required(value: int | None, flag: str) -> int:
-    """Return a required numeric flag or exit with a usable message."""
+    """返回必填的数字选项，缺失时以可读的提示退出。"""
     if value is None:
         raise SystemExit(f"{flag} is required for this action")
     return value
 
 
 def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
-    """Execute one CLI action against the given session."""
+    """在给定会话上执行一个 CLI 动作。"""
     if args.action == "publish-due":
         if args.limit < 1:
             raise SystemExit("--limit must be at least 1")
@@ -115,7 +115,7 @@ def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run one action and print a JSON summary."""
+    """执行一个动作并打印 JSON 摘要。"""
     args = parse_args()
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
@@ -124,9 +124,8 @@ def main() -> None:
         with session_factory() as session:
             payload = run_action(args, session)
     except (ReportGenerationError, ReportPublishError, PushError) as exc:
-        # `code` is the same stable identifier the API answers with, so a script can branch on
-        # the failure instead of matching on message text. It stays `null` for the few errors
-        # that carry no code of their own.
+        # `code` 与 API 应答里的稳定标识符同源，脚本可以按失败分支，而不必匹配消息文本。
+        # 少数自身不带 code 的错误，这里仍然是 `null`。
         print(
             json.dumps(
                 {"action": args.action, "code": getattr(exc, "code", None), "error": str(exc)},

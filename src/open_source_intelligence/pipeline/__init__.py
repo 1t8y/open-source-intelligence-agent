@@ -1,1 +1,1 @@
-"""Deterministic data pipeline services for snapshots and ranking."""
+"""提供快照与排序的确定性数据流水线服务。"""

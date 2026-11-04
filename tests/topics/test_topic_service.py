@@ -1,20 +1,21 @@
-"""Service-level tests for topic writes.
+"""主题写入的服务层用例。
 
-`topics/service.py` is the only writer of `topics`, and `test_topic_routes.py` exercises it through
-the API. These tests pin the parts the API cannot reach or cannot tell apart:
+`topics/service.py` 是 `topics` 唯一的写入方，`test_topic_routes.py`
+则通过 API 用它。
+这里的用例钉住 API 触不到、也分辨不出的那几处：
 
-* **A write that never passes through a Pydantic model is refused the same way.** The module's own
-  docstring says the operations are reachable from a script and from the operations UI, and neither
-  of those goes through the request boundary - so the trim rule and the blank-name rule have to
-  hold here, not only there.
-* **An `IntegrityError` is not automatically a name conflict.** The first version of this module
-  caught every one and raised `TopicNameConflict`, which turns a broken insert into advice to pick
-  a different name. The regression test below is the probe that found it.
-* **"Cannot delete" is decided by counting, not by catching the database's refusal.** Which tables
-  count is therefore a decision this module makes and a test has to state.
+* **不经过 Pydantic 模型的写入，也必须以同样的方式被拒。** 模块自己的 docstring
+  说这些操作可以从脚本和运维界面调用，而这两条路都不经过请求边界 ——
+  所以去空白规则与空名规则在这里也得成立，不能只在那边成立。
+* **`IntegrityError` 不自动等于名字冲突。** 这个模块的第一版把所有
+  `IntegrityError` 都捕获下来抛 `TopicNameConflict`，
+  等于把一次坏掉的插入变成「换一个名字吧」的建议。
+  下面的回归用例正是揪出它的探针。
+* **「不能删」是数出来的，不是靠捕获数据库的拒绝。** 因此哪些表算数
+  是本模块要做的决定，也就必须有测试把它写清楚。
 
-The three failures are told apart by `code`, because that is what `api/errors.py` maps to a status
-and what a caller branches on.
+三种失败靠 `code` 区分，因为 `api/errors.py` 正是拿它映射状态码，
+调用方也正是按它分支。
 """
 
 from __future__ import annotations
@@ -39,19 +40,19 @@ from open_source_intelligence.topics import (
     update_topic,
 )
 
-#: The account fixture's username, kept here so two test modules in this package cannot collide
-#: when they seed the same in-memory database shape.
+#: 账号夹具的用户名放在这里，免得本包的两个测试模块
+#: 在灌同一种内存数据库形态时撞车。
 ADMIN_USERNAME = "topic-service-admin"
 
 
 @pytest.fixture()
 def admin(session: Session) -> Actor:
-    """The account whose `actor_id` every write here is attributed to."""
+    """这里每一次写入都记在它名下的那个账号。"""
     return create_actor(session, username=ADMIN_USERNAME, role="ADMIN")
 
 
 def _create(session: Session, admin: Actor, name: str, **values: object) -> Topic:
-    """Create one topic through the service, with the calls the assertions need kept short."""
+    """经由服务创建一个主题，把断言要用到的调用压短。"""
     return create_topic(
         session,
         actor_id=admin.user_id,
@@ -62,7 +63,7 @@ def _create(session: Session, admin: Actor, name: str, **values: object) -> Topi
 
 
 def _rows(session: Session, action: str, result: str | None = None) -> list[AuditLog]:
-    """Return the audit rows for one action, optionally of one result, in insertion order."""
+    """按插入顺序返回某个动作的审计行，可选只取某种结果。"""
     statement = select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.id)
     if result is not None:
         statement = statement.where(AuditLog.result == result)
@@ -70,12 +71,12 @@ def _rows(session: Session, action: str, result: str | None = None) -> list[Audi
 
 
 # --------------------------------------------------------------------------------------
-# create
+# 创建
 # --------------------------------------------------------------------------------------
 
 
 def test_create_writes_the_row_and_its_audit(session: Session, admin: Actor) -> None:
-    """A successful create leaves a row attributed to the actor and one `success` audit row."""
+    """证明创建成功会留下归在操作者名下的一行，以及一条 `success` 审计行。"""
     topic = _create(session, admin, "vector-db")
 
     assert topic.id is not None
@@ -95,22 +96,22 @@ def test_create_writes_the_row_and_its_audit(session: Session, admin: Actor) -> 
 
 
 def test_create_attributes_the_row_to_the_actor(session: Session, admin: Actor) -> None:
-    """`created_by` is the required column with no default, so the service has to write it.
+    """证明 `created_by` 由服务写入，因为它是必填且无默认值的列。
 
-    Leaving it to the database makes every insert fail, and because the failure is an
-    `IntegrityError` the old handler reported it as a taken name. The assertion is separate from
-    the audit one above so that a regression names the field that broke rather than the row count.
+    留给数据库的话每次插入都会失败，而这个失败是 `IntegrityError`，
+    旧的处理逻辑会把它报成「名字已被占用」。这条断言与上面那条审计断言分开写，
+    是为了让回归指向出错的那个字段，而不是指向行数。
     """
     topic = _create(session, admin, "attributed")
     assert topic.created_by == admin.user_id
 
 
 def test_a_direct_call_records_no_request_id(session: Session, admin: Actor) -> None:
-    """A script has no request, so the column is null and that is the truthful value.
+    """证明脚本没有请求，于是该列为空 —— 这才是诚实的取值。
 
-    The counterpart of the route test: `request_id` is threaded in by whoever has one rather than
-    looked up, which is what keeps this module usable outside HTTP without inventing a correlation
-    id that nothing else in the trail would share.
+    这是路由侧用例的另一半：`request_id` 由手里有它的调用方传进来，
+    而不是查出来，这才让本模块在 HTTP 之外也能用，
+    而不必编造一个轨迹里没人会共享的关联 id。
     """
     _create(session, admin, "no-request")
     assert _rows(session, "topic.create", "success")[0].request_id is None
@@ -120,7 +121,7 @@ def test_a_direct_call_records_no_request_id(session: Session, admin: Actor) -> 
 
 
 def test_a_supplied_request_id_is_stored(session: Session, admin: Actor) -> None:
-    """When the caller does have a correlation id, it reaches the row."""
+    """证明调用方手里真有关联 id 时，它会落到行上。"""
     topic = create_topic(
         session,
         actor_id=admin.user_id,
@@ -147,12 +148,12 @@ def test_a_supplied_request_id_is_stored(session: Session, admin: Actor) -> None
 
 
 def test_create_trims_the_name_before_it_stores_it(session: Session, admin: Actor) -> None:
-    """The stored form is the trimmed form, which is what makes the uniqueness check meaningful."""
+    """证明落库的是去过空白的形式，唯一性检查才因此有意义。"""
     assert _create(session, admin, "  向量数据库  ").name == "向量数据库"
 
 
 def test_create_only_writes_the_values_the_caller_sent(session: Session, admin: Actor) -> None:
-    """The column defaults stay the single definition of what a new topic looks like."""
+    """证明列默认值仍是「新主题长什么样」的唯一出处。"""
     topic = _create(session, admin, "partial", min_stars=250, languages=["Rust"])
 
     assert topic.min_stars == 250
@@ -164,7 +165,7 @@ def test_create_only_writes_the_values_the_caller_sent(session: Session, admin: 
 
 
 def test_create_refuses_a_blank_name_and_names_nothing(session: Session, admin: Actor) -> None:
-    """A name of spaces is a refusal, and there is no topic for the audit row to point at."""
+    """证明只有空格的名字会被拒，而且没有主题可供审计行指向。"""
     with pytest.raises(TopicNameBlank) as raised:
         _create(session, admin, "   ")
 
@@ -178,7 +179,7 @@ def test_create_refuses_a_blank_name_and_names_nothing(session: Session, admin: 
 
 
 def test_create_refuses_a_taken_name_and_audits_the_refusal(session: Session, admin: Actor) -> None:
-    """The refusal is in the trail: only it can answer "who else wanted this name"."""
+    """证明拒绝会留进轨迹：只有它才能回答「还有谁想要这个名字」。"""
     _create(session, admin, "taken")
     with pytest.raises(TopicNameConflict) as raised:
         _create(session, admin, "taken")
@@ -194,13 +195,13 @@ def test_create_refuses_a_taken_name_and_audits_the_refusal(session: Session, ad
 def test_create_does_not_relabel_an_unrelated_integrity_error(
     session: Session, admin: Actor
 ) -> None:
-    """A constraint violation that is not the unique name is re-raised, not renamed.
+    """证明不是唯一名约束的违规会原样抛出，而不是被改成别的名字。
 
-    `publish_mode` carries a CHECK constraint, so a value outside the enum is a broken write rather
-    than a taken name. The endpoint cannot produce this - the request model constrains the field -
-    which is exactly why it matters here: the direct caller has no model to translate the answer,
-    and "409 TOPIC_NAME_CONFLICT" sends it off to choose a different name for a problem that has
-    nothing to do with names.
+    `publish_mode` 带 CHECK 约束，所以枚举之外的值是一次坏写入，
+    而不是名字被占了。
+    端点造不出这种情况 —— 请求模型约束了这个字段 —— 这恰恰是它在这里要紧的原因：
+    直接调用方没有模型替他翻译答案，而「409 TOPIC_NAME_CONFLICT」
+    会让它去为一个跟名字毫无关系的问题换个名字。
     """
     with pytest.raises(IntegrityError):
         create_topic(
@@ -215,12 +216,12 @@ def test_create_does_not_relabel_an_unrelated_integrity_error(
 
 
 # --------------------------------------------------------------------------------------
-# update
+# 更新
 # --------------------------------------------------------------------------------------
 
 
 def test_update_applies_only_the_fields_it_was_given(session: Session, admin: Actor) -> None:
-    """`values` is what the caller sent, and the fields it omits keep their values."""
+    """证明 `values` 就是调用方发来的内容，没提到的字段保持原值。"""
     topic = _create(session, admin, "upd", description="before", min_stars=10)
 
     updated, changed = update_topic(
@@ -237,10 +238,10 @@ def test_update_applies_only_the_fields_it_was_given(session: Session, admin: Ac
 
 
 def test_update_names_the_api_field_and_not_the_column(session: Session, admin: Actor) -> None:
-    """`changed_fields` describes the request; `languages_json` is a storage detail.
+    """证明 `changed_fields` 描述的是请求，而 `languages_json` 只是存储细节。
 
-    The topic list's egress drops the `_json` suffix for the same reason, so a caller reading the
-    audit row sees the field name it sent rather than one it never mentioned.
+    主题列表的出口出于同样的理由去掉了 `_json` 后缀，
+    这样读审计行的调用方看到的是自己发过去的字段名，而不是自己从没提过的名字。
     """
     topic = _create(session, admin, "upd-names")
 
@@ -264,7 +265,7 @@ def test_update_of_an_unchanged_value_is_a_success_with_no_change(
     session: Session,
     admin: Actor,
 ) -> None:
-    """A repeated PATCH is idempotent, not a conflict."""
+    """证明重复提交同一个 PATCH 是幂等，而不是冲突。"""
     topic = _create(session, admin, "same")
 
     updated, changed = update_topic(
@@ -279,7 +280,7 @@ def test_update_of_an_unchanged_value_is_a_success_with_no_change(
 
 
 def test_update_clears_a_list_with_an_empty_one(session: Session, admin: Actor) -> None:
-    """Submitting `[]` and `null` mean the same thing, so the second PATCH changes nothing."""
+    """证明提交 `[]` 与 `null` 含义相同，所以第二次 PATCH 什么都不改。"""
     topic = _create(session, admin, "cleared", keywords=["agent", "llm"])
 
     updated, changed = update_topic(
@@ -305,11 +306,11 @@ def test_update_rolls_the_whole_request_back_when_the_name_is_taken(
     session: Session,
     admin: Actor,
 ) -> None:
-    """A refused PATCH changes nothing, including the fields that were fine on their own.
+    """证明被拒的 PATCH 什么都不改，包括那些单看本来没问题的字段。
 
-    The rename is checked after the loop, so `min_stars` is already staged on the instance when the
-    conflict is found. Without the rollback it would be committed along with the refusal's audit
-    row, and a request that got a `409` would have changed the row anyway.
+    改名是在循环之后才检查的，所以发现冲突时 `min_stars` 已经暂存在实例上了。
+    不回滚的话，它会跟着这次拒绝的审计行一起提交，
+    于是一个拿到了 `409` 的请求，反而把行改掉了。
     """
     _create(session, admin, "first")
     second = _create(session, admin, "second")
@@ -334,7 +335,7 @@ def test_update_rolls_the_whole_request_back_when_the_name_is_taken(
 
 
 def test_update_refuses_a_blank_name(session: Session, admin: Actor) -> None:
-    """A PATCH that would leave the topic nameless is refused, and the old name survives."""
+    """证明会把主题改到没名字的 PATCH 会被拒，旧名字留下来。"""
     topic = _create(session, admin, "upd-blank")
 
     with pytest.raises(TopicNameBlank):
@@ -356,14 +357,14 @@ def test_update_of_a_missing_topic_is_not_found_and_unrecorded(
     session: Session,
     admin: Actor,
 ) -> None:
-    """Nothing existed, so nothing was refused."""
+    """证明什么都不存在时也谈不上被拒绝。"""
     with pytest.raises(TopicNotFound):
         update_topic(session, actor_id=admin.user_id, topic_id=987654, values={"enabled": False})
     assert session.scalars(select(AuditLog)).all() == []
 
 
 # --------------------------------------------------------------------------------------
-# delete
+# 删除
 # --------------------------------------------------------------------------------------
 
 
@@ -371,12 +372,11 @@ def test_reference_counts_names_every_recording_table(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """The refusal's message is only useful if it is complete, and the order is part of it.
+    """证明拒绝时的消息只有写得全才有用，而顺序也是它的一部分。
 
-    The four labels are the four tables with a `RESTRICT` foreign key to `topics.id` that record
-    what the topic produced. They are listed explicitly rather than discovered so that the same
-    refusal reads the same way on every deployment, which is what makes it worth writing into the
-    contract's example.
+    这四个标签对应四张对 `topics.id` 有 `RESTRICT` 外键、
+    并且记录主题产出了什么的表。它们是显式列出而不是自动发现的，
+    这样同一次拒绝在每个部署上读起来都一样，也才值得写进契约的示例。
     """
     topic = workspace.add_topic(name="counted")
     session.commit()
@@ -392,7 +392,7 @@ def test_delete_refuses_a_topic_that_recorded_history(
     workspace: Workspace,
     admin: Actor,
 ) -> None:
-    """A topic with a past is disabled, not deleted, and the refusal says which tables hold it."""
+    """证明有历史的主题是被停用而不是被删除，拒绝消息还要说明是哪几张表拦着。"""
     topic = workspace.add_topic(name="has-history")
     workspace.add_agent_run(topic.id)
     session.commit()
@@ -422,11 +422,11 @@ def test_delete_removes_an_unreferenced_topic_and_reports_the_links_it_took(
     workspace: Workspace,
     admin: Actor,
 ) -> None:
-    """Deleting a topic and deleting its ranking are two effects, so both are reported.
+    """证明删主题与删它的排名是两件事，所以两个结果都要报出来。
 
-    The candidate links are one ranking pass's output rather than history, so they go with the
-    topic. The count is what tells the caller that happened, and the link rows have to be gone:
-    a returned count of 1 with the row still present would be a number nobody could act on.
+    候选关联是一轮排名的产物而不是历史，所以跟着主题一起走。
+    计数就是把这件事告诉调用方的东西，而关联行必须真的没了：
+    返回 1 而那一行还在，就是一个谁都没法据以行动的数目。
     """
     topic = workspace.add_topic(name="no-history")
     source = workspace.add_source()
@@ -452,7 +452,7 @@ def test_delete_of_a_missing_topic_is_not_found_and_unrecorded(
     session: Session,
     admin: Actor,
 ) -> None:
-    """Same as the update case: a miss is not a refusal."""
+    """与更新那条一致：查不到不等于被拒绝。"""
     with pytest.raises(TopicNotFound):
         delete_topic(session, actor_id=admin.user_id, topic_id=987654)
     assert session.scalars(select(AuditLog)).all() == []

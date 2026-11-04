@@ -1,4 +1,7 @@
-"""add unique data source type
+"""为数据源类型添加唯一约束
+
+`data_sources` 里每个供应商只允许一行：采集侧按 `source_type` 查配置，出现重复行时
+「该用哪一条」就变成了随机选择。
 
 Revision ID: 8f2c1d4a6b70
 Revises: 3a0741ee1cd5
@@ -16,7 +19,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Ensure each provider has only one configured data source row."""
+    """确保每个供应商只有一行数据源配置。"""
     op.create_unique_constraint(
         "uq_data_sources_source_type",
         "data_sources",
@@ -25,7 +28,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove the provider uniqueness constraint."""
+    """移除供应商唯一约束。"""
     op.drop_constraint(
         "uq_data_sources_source_type",
         "data_sources",

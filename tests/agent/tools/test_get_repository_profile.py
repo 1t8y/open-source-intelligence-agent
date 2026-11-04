@@ -1,4 +1,4 @@
-"""Tests for `get_repository_profile`: master data, ACL, and credential safety."""
+"""守护 `get_repository_profile` 的用例：主数据、ACL 与凭据安全。"""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _seed(workspace: Workspace):
 
 
 def test_returns_profile_with_provider_and_topics(workspace: Workspace) -> None:
-    """The profile exposes provider, counters, and topics."""
+    """证明画像会给出供应商、计数与主题。"""
     topic, repository, run = _seed(workspace)
     registry = build_default_registry()
 
@@ -56,7 +56,7 @@ def test_returns_profile_with_provider_and_topics(workspace: Workspace) -> None:
 
 
 def test_profile_never_exposes_credentials(workspace: Workspace) -> None:
-    """No credential-looking field is part of the profile payload."""
+    """证明画像载荷里没有任何看着像凭据的字段。"""
     topic, repository, run = _seed(workspace)
     registry = build_default_registry()
 
@@ -88,7 +88,7 @@ def test_profile_never_exposes_credentials(workspace: Workspace) -> None:
 
 
 def test_unauthorized_repository_is_denied(workspace: Workspace) -> None:
-    """A repository outside the authorized topics is denied."""
+    """证明不在授权主题内的仓库会被拒绝。"""
     topic, repository, run = _seed(workspace)
     other = workspace.add_topic(name="Other")
     registry = build_default_registry()
@@ -106,7 +106,7 @@ def test_unauthorized_repository_is_denied(workspace: Workspace) -> None:
 
 
 def test_missing_repository_returns_not_found(workspace: Workspace) -> None:
-    """Unknown repositories report TOOL_NOT_FOUND."""
+    """证明不存在的仓库返回 TOOL_NOT_FOUND。"""
     topic = workspace.add_topic()
     run = workspace.add_agent_run(topic.id)
     registry = build_default_registry()

@@ -1,4 +1,4 @@
-"""Declarative base, SQL type conventions, and shared timestamp fields."""
+"""声明式基类、SQL 类型约定与共享时间戳字段。"""
 
 from datetime import UTC, datetime
 from typing import Annotated
@@ -19,25 +19,25 @@ NAMING_CONVENTION = {
 
 
 def unsigned_bigint() -> BigInteger:
-    """Return a portable BIGINT that is unsigned on MySQL."""
+    """返回一个可移植的 `BIGINT`，在 MySQL 上为无符号类型。"""
     mysql_type = mysql.BIGINT(unsigned=True)
     return BigInteger().with_variant(mysql_type, "mysql").with_variant(Integer(), "sqlite")
 
 
 def unsigned_smallint() -> SmallInteger:
-    """Return a portable SMALLINT that is unsigned on MySQL."""
+    """返回一个可移植的 `SMALLINT`，在 MySQL 上为无符号类型。"""
     mysql_type = mysql.SMALLINT(unsigned=True)
     return SmallInteger().with_variant(mysql_type, "mysql").with_variant(Integer(), "sqlite")
 
 
 def medium_text() -> Text:
-    """Return a portable TEXT column that maps to MEDIUMTEXT on MySQL."""
+    """返回一个可移植的 `TEXT` 列，在 MySQL 上映射为 `MEDIUMTEXT`。"""
     mysql_type = mysql.MEDIUMTEXT()
     return Text().with_variant(mysql_type, "mysql")
 
 
 def utc_now() -> datetime:
-    """Return the current timezone-aware UTC timestamp."""
+    """返回当前带时区的 UTC 时间戳。"""
     return datetime.now(UTC)
 
 
@@ -52,13 +52,13 @@ uint16_pk = Annotated[
 
 
 class UTCDateTime(TypeDecorator[datetime]):
-    """Persist aware UTC timestamps as naive MySQL DATETIME values."""
+    """把带时区的 UTC 时间戳存为无时区的 MySQL `DATETIME` 值。"""
 
     impl = DateTime
     cache_ok = True
 
     def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[datetime]:
-        """Use microsecond precision on MySQL and standard DATETIME elsewhere."""
+        """在 MySQL 上使用微秒精度，其它方言使用标准 `DATETIME`。"""
         if dialect.name == "mysql":
             mysql_type = mysql.DATETIME(fsp=6)
             return dialect.type_descriptor(mysql_type)
@@ -69,7 +69,7 @@ class UTCDateTime(TypeDecorator[datetime]):
         value: datetime | None,
         dialect: Dialect,
     ) -> datetime | None:
-        """Normalize aware timestamps to UTC before writing."""
+        """写入前把带时区的时间戳统一换算到 UTC。"""
         del dialect
         if value is None:
             return None
@@ -82,7 +82,7 @@ class UTCDateTime(TypeDecorator[datetime]):
         value: datetime | None,
         dialect: Dialect,
     ) -> datetime | None:
-        """Attach UTC to timestamps read from the database."""
+        """为从数据库读出的时间戳补上 UTC 时区。"""
         del dialect
         if value is None:
             return None
@@ -90,13 +90,13 @@ class UTCDateTime(TypeDecorator[datetime]):
 
 
 class Base(DeclarativeBase):
-    """Base class shared by all ORM models."""
+    """所有 ORM 模型共用的基类。"""
 
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 class TimestampMixin:
-    """Provide database-managed creation and update timestamps."""
+    """提供由数据库管理的创建与更新时间戳。"""
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),

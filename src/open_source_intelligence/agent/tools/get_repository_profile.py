@@ -1,4 +1,4 @@
-"""`get_repository_profile` implementation: master data and latest counters."""
+"""`get_repository_profile` 的实现：主数据与最新计数。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def get_repository_profile(
     ctx: ToolContext,
     payload: GetRepositoryProfileInput,
 ) -> ToolOutcome:
-    """Return the repository profile without exposing any credentials."""
+    """返回仓库画像，全程不暴露任何凭据。"""
     repository = load_authorized_repository(session, ctx, payload.repo_id)
     source = session.get(DataSource, repository.source_id)
     profile = RepositoryProfile(

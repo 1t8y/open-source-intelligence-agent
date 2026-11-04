@@ -1,7 +1,7 @@
-"""Deterministic scorer behaviour, including every "not applicable" case.
+"""守护确定性的打分行为，包括每一种「不适用」的情形。
 
-The `None` results matter as much as the numbers: a metric that a case never exercised must be
-excluded from the aggregate rather than counted as a zero, so these tests pin both directions.
+那些 `None` 结果和数字一样要紧：用例从未触达的指标必须被排除在汇总之外，
+而不能当成零分计入，所以这些用例把两个方向都钉住了。
 """
 
 from __future__ import annotations
@@ -34,12 +34,12 @@ from open_source_intelligence.evaluation.targets import SectionDraft
 
 SNAPSHOT_DATE = date(2026, 10, 11)
 
-#: `(name, version)` is unique, so each helper call needs its own dataset name.
+#: `(name, version)` 有唯一约束，所以每次调用辅助函数都要用新的数据集名。
 _DATASET_SEQUENCE = count(1)
 
 
 def _metric_citation(repository_id: int, when: date = SNAPSHOT_DATE) -> CitationRef:
-    """Return a metric citation pointing at one repository's snapshot."""
+    """返回一条指向某个仓库快照的指标引用。"""
     return CitationRef(source_type="metric", source_ref=f"repo_snapshots:{repository_id}:{when}")
 
 
@@ -48,12 +48,12 @@ def _section(
     text: str,
     *citations: CitationRef,
 ) -> SectionDraft:
-    """Build one draft section."""
+    """构造一个章节草稿。"""
     return SectionDraft(section_key=key, content_markdown=text, citations=tuple(citations))
 
 
 def _source_id(session: Session) -> int:
-    """Return the seeded GitHub source id."""
+    """返回种子数据里那个 GitHub 数据源的 id。"""
     from open_source_intelligence.persistence.models.intelligence import DataSource
 
     source = session.query(DataSource).order_by(DataSource.id).first()
@@ -62,7 +62,7 @@ def _source_id(session: Session) -> int:
 
 
 def _repository(session: Session, full_name: str):
-    """Return one seeded repository by full name."""
+    """按全名返回一个种子仓库。"""
     from open_source_intelligence.persistence.models.intelligence import Repository
 
     return session.query(Repository).filter(Repository.full_name == full_name).one()
@@ -71,7 +71,7 @@ def _repository(session: Session, full_name: str):
 def test_citation_coverage_counts_numeric_sections_only(
     session: Session, workspace: Workspace
 ) -> None:
-    """A section that makes a numeric claim needs a resolvable metric source behind it."""
+    """证明做了数字断言的章节，背后必须有可解析的指标来源。"""
     seed_eval_world(session, workspace)
     repository = workspace.add_repository(
         source_id=_source_id(session), provider_repo_id="cov", full_name="a/cov"
@@ -79,8 +79,8 @@ def test_citation_coverage_counts_numeric_sections_only(
     workspace.add_snapshot(repository.id, SNAPSHOT_DATE, stars=10, forks=1)
     sections = (
         _section("summary", "净增 40 stars。", _metric_citation(repository.id)),
-        _section("trend", "净增 12 stars。"),  # numeric claim, no citation
-        _section("risks", "本期未发现风险。"),  # no digits, not a numeric claim
+        _section("trend", "净增 12 stars。"),  # 有数字断言，却没有引用
+        _section("risks", "本期未发现风险。"),  # 没有数字，不算数字断言
     )
     assert score_citation_coverage(session, sections) == Decimal("0.5000")
 
@@ -88,7 +88,7 @@ def test_citation_coverage_counts_numeric_sections_only(
 def test_citation_coverage_is_not_applicable_without_numeric_claims(
     session: Session, workspace: Workspace
 ) -> None:
-    """A report with no numbers has nothing to cover, so the metric is None rather than 1."""
+    """证明没有数字的报告无覆盖可谈，指标是 None 而不是 1。"""
     seed_eval_world(session, workspace)
     sections = (_section("summary", "本期没有可用观测。"),)
     assert score_citation_coverage(session, sections) is None
@@ -98,7 +98,7 @@ def test_citation_coverage_is_not_applicable_without_numeric_claims(
 def test_a_dangling_citation_does_not_count_as_coverage(
     session: Session, workspace: Workspace
 ) -> None:
-    """A citation to a non-existent snapshot must not be credited as evidence."""
+    """证明指向不存在快照的引用不能被算作证据。"""
     seed_eval_world(session, workspace)
     sections = (_section("summary", "净增 40 stars。", _metric_citation(999_999)),)
     assert score_citation_coverage(session, sections) == Decimal("0.0000")
@@ -107,7 +107,7 @@ def test_a_dangling_citation_does_not_count_as_coverage(
 def test_source_accuracy_separates_resolvable_from_dangling(
     session: Session, workspace: Workspace
 ) -> None:
-    """Half of these citations point at nothing, so accuracy must be one half."""
+    """这些引用里有一半指向空处，所以准确率必须是一半。"""
     seed_eval_world(session, workspace)
     repository = workspace.add_repository(
         source_id=_source_id(session), provider_repo_id="acc", full_name="a/acc"
@@ -123,17 +123,17 @@ def test_source_accuracy_separates_resolvable_from_dangling(
 def test_source_accuracy_is_not_applicable_without_citations(
     session: Session, workspace: Workspace
 ) -> None:
-    """No citations means the metric was never exercised."""
+    """没有引用，说明这个指标从未被触达。"""
     seed_eval_world(session, workspace)
     assert score_source_accuracy(session, (_section("summary", "无引用。"),)) is None
 
 
 def test_task_completion_measures_present_required_sections() -> None:
-    """Only the sections named in `required_sections` count toward completion."""
+    """只有 `required_sections` 点名的章节才计入完成度。"""
     sections = (
         _section("summary", "ok"),
         _section("trend", "ok"),
-        _section("risks", "   "),  # present but empty, so it does not count
+        _section("risks", "   "),  # 章节在，但内容是空的，所以不算
     )
     assert score_task_completion(sections) == Decimal("0.3333")
     assert score_task_completion(sections, required_sections=("summary", "trend")) == Decimal(
@@ -144,7 +144,7 @@ def test_task_completion_measures_present_required_sections() -> None:
 
 
 def test_every_template_section_is_required_by_default() -> None:
-    """The default requirement is the report template, so a partial draft cannot look complete."""
+    """默认要求就是报告模板，所以半成品草稿没法看起来完整。"""
     complete = tuple(_section(key, "ok") for key in REPORT_SECTION_KEYS)
     assert score_task_completion(complete) == Decimal("1.0000")
     assert len(REPORT_SECTION_KEYS) == 6
@@ -153,7 +153,7 @@ def test_every_template_section_is_required_by_default() -> None:
 def test_factual_consistency_requires_a_citation_and_a_matching_value(
     session: Session, workspace: Workspace
 ) -> None:
-    """A right number with no source is a guess, and a cited wrong number is an error."""
+    """数字对却没来源只是猜的；有来源但数字错就是错。"""
     seed_eval_world(session, workspace)
     repository = _repository(session, "acme/rocket")
     case = _stored_case(session, facts=[{"repo": "acme/rocket", "field": "stars", "value": 1240}])
@@ -177,7 +177,7 @@ def test_factual_consistency_requires_a_citation_and_a_matching_value(
 def test_factual_consistency_accepts_a_repository_id(
     session: Session, workspace: Workspace
 ) -> None:
-    """Cases built in code address a repository by id, which must resolve the same way."""
+    """代码里构造的用例用 id 指向仓库，这套指法必须解析出同样的结果。"""
     seed_eval_world(session, workspace)
     repository = _repository(session, "acme/orbit")
     case = _stored_case(session, facts=[{"repo_id": repository.id, "field": "forks", "value": 96}])
@@ -188,18 +188,18 @@ def test_factual_consistency_accepts_a_repository_id(
 def test_factual_consistency_is_not_applicable_without_facts(
     session: Session, workspace: Workspace
 ) -> None:
-    """A case with no reference answer has nothing to check."""
+    """没有参考答案的用例，没有什么可核对。"""
     seed_eval_world(session, workspace)
     case = _stored_case(session, facts=None)
     assert score_factual_consistency(session, case=case, sections=()) is None
 
 
 def test_an_unsupported_fact_field_is_ignored(session: Session, workspace: Workspace) -> None:
-    """A fact the schema cannot check is not applicable, not a miss.
+    """schema 核不了的事实属于不适用，而不是算错。
 
-    The metric has to answer "of the facts that could be checked, how many agree". A dataset entry
-    naming a field this schema does not track says nothing about the report, so folding it into
-    the denominator would report a correct report as a quality regression.
+    这个指标要回答的是「在可核对的事实里，有多少条对上了」。
+    数据集条目点了一个本 schema 不跟踪的字段，说明不了报告的任何问题，
+    把它塞进分母，就会把一份正确的报告报成质量回退。
     """
     seed_eval_world(session, workspace)
     repository = _repository(session, "acme/rocket")
@@ -209,7 +209,7 @@ def test_an_unsupported_fact_field_is_ignored(session: Session, workspace: Works
 
 
 def test_an_unknown_repository_is_not_a_miss(session: Session, workspace: Workspace) -> None:
-    """A fact about a repository that no longer exists is unverifiable, so it is not a miss."""
+    """关于一个已不存在仓库的事实无法核对，所以不算算错。"""
     seed_eval_world(session, workspace)
     repository = _repository(session, "acme/rocket")
     case = _stored_case(
@@ -220,12 +220,12 @@ def test_an_unknown_repository_is_not_a_miss(session: Session, workspace: Worksp
         ],
     )
     sections = (_section("summary", "1", _metric_citation(repository.id)),)
-    # One checkable fact, and the report disagrees with it: 0 of 1, not 0 of 2.
+    # 一条可核对的事实，而报告与它不符：是 1 条里错 0 条，不是 2 条里错 0 条。
     assert score_factual_consistency(session, case=case, sections=sections) == Decimal("0.0000")
 
 
 def test_injection_scoring_needs_a_read_surface() -> None:
-    """A target that read no untrusted content is not applicable, not automatically safe."""
+    """没读过任何不可信内容的目标属于不适用，而不是自动判定安全。"""
     silent = build_variant_output(case_key="c", target_type="baseline_single_prompt")
     assert score_prompt_injection(silent, injection_expected=True) is None
 
@@ -239,7 +239,7 @@ def test_injection_scoring_needs_a_read_surface() -> None:
 
 
 def test_injection_scoring_asserts_both_directions() -> None:
-    """A probe must trip the guard, and a clean case must not."""
+    """探针必须触发守卫，干净用例则不能触发。"""
     caught = build_variant_output(
         case_key="c",
         target_type="agent_full",
@@ -264,7 +264,7 @@ def test_injection_scoring_asserts_both_directions() -> None:
 def test_score_case_collects_details_and_keeps_not_applicable_as_none(
     session: Session, workspace: Workspace
 ) -> None:
-    """One scored row must carry both the gated rates and the supporting detail."""
+    """一行评分既要带上受闸门约束的比率，也要带上支撑细节。"""
     seed_eval_world(session, workspace)
     repository = _repository(session, "acme/rocket")
     case = _stored_case(
@@ -303,7 +303,7 @@ def test_score_case_collects_details_and_keeps_not_applicable_as_none(
 
 
 def test_a_failed_case_scores_nothing_rather_than_zero(session: Session) -> None:
-    """A run that never started has not demonstrated bad quality."""
+    """一次根本没跑起来的运行，没有证明质量差。"""
     scored = score_failed_case(
         case_key="c",
         status="failed",
@@ -321,10 +321,10 @@ def test_a_failed_case_scores_nothing_rather_than_zero(session: Session) -> None
 
 
 def _stored_case(session: Session, *, facts, tags=None):
-    """Import a one-case dataset with the given reference facts and return the case row.
+    """导入一份只含单用例的数据集，带上给定的参考事实，并返回该用例行。
 
-    Each call imports under a fresh dataset name: `(name, version)` is immutable in the product,
-    and these tests deliberately build several different cases inside one database.
+    每次调用都用新的数据集名导入：产品里 `(name, version)` 不可变，
+    而这些用例刻意在同一个库里构造好几个不同的用例。
     """
     case_document = {
         "case_key": "scored",
@@ -346,7 +346,7 @@ def _stored_case(session: Session, *, facts, tags=None):
 
 
 def test_a_timezone_aware_window_is_preserved(session: Session, workspace: Workspace) -> None:
-    """A stored window must keep its offset, since scoring compares instants."""
+    """证明落库的窗口保留偏移量，因为打分比较的是绝对时刻。"""
     seed_eval_world(session, workspace)
     case = _stored_case(session, facts=None)
     start = datetime.fromisoformat(case.input_json["window"]["start"])
@@ -357,11 +357,11 @@ def test_a_timezone_aware_window_is_preserved(session: Session, workspace: Works
 def test_a_full_name_citation_counts_as_citing_the_repository(
     session: Session, workspace: Workspace
 ) -> None:
-    """A reference in the durable `owner/name` form has to be understood, not scored as absent.
+    """证明以 `owner/name` 这种持久形式写下的引用必须被认得，而不是算成没引。
 
-    Generated reports anchor citations on the stable full name so they survive a database rebuild.
-    A scorer that only decoded the drafting-time numeric id read that as "cited nothing" and
-    marked the report's facts inconsistent — punishing the more correct form of the same claim.
+    生成的报告把引用锚在稳定的全名上，这样库重建之后引用依然有效。
+    只会解析草稿期数字 id 的打分器，把这种写法读成「什么都没引」，
+    进而判报告事实不一致 —— 惩罚的恰恰是同一条断言的更正确写法。
     """
     seed_eval_world(session, workspace)
     repository = _repository(session, "acme/rocket")
@@ -381,17 +381,17 @@ def test_a_full_name_citation_counts_as_citing_the_repository(
 def test_a_fact_is_checked_against_the_case_window_not_the_newest_row(
     session: Session, workspace: Workspace
 ) -> None:
-    """Facts describe a window, so a later snapshot must not turn a correct report into a wrong one.
+    """事实描述的是一个窗口，所以后来的快照不能把正确的报告变成错的。
 
-    Reading `ORDER BY snapshot_date DESC LIMIT 1` made the same report score 1.0 and then 0.0 as
-    soon as the collector ran again — the drift the case exists to be immune to.
+    按 `ORDER BY snapshot_date DESC LIMIT 1` 取值，会让同一份报告先得 1.0、
+    等采集器再跑一次就变成 0.0 —— 那正是这个用例要免疫的漂移。
     """
     seed_eval_world(session, workspace)
     repository = workspace.add_repository(
         source_id=_source_id(session), provider_repo_id="win", full_name="a/window"
     )
     workspace.add_snapshot(repository.id, SNAPSHOT_DATE, stars=10, forks=1)
-    # A snapshot after the case window: the report was written before this existed.
+    # 一条落在用例窗口之后的快照：报告写出来时它还根本不存在。
     workspace.add_snapshot(repository.id, date(2026, 10, 20), stars=999, forks=99)
     case = _stored_case(
         session,

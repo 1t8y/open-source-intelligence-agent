@@ -1,4 +1,4 @@
-"""Seeding helpers shared by the Agent runtime tests."""
+"""Agent 运行时测试共用的种子数据辅助。"""
 
 from __future__ import annotations
 
@@ -15,14 +15,14 @@ LAST_SNAPSHOT_DATE = date(2026, 10, 11)
 
 @dataclass(slots=True)
 class SeededTopic:
-    """A topic with its ranked candidate repositories."""
+    """一个主题及其按排名排列的候选仓库。"""
 
     topic: Topic
     repositories: list[Repository]
 
 
 def seed_topic(workspace: Workspace, *, repo_count: int = 2) -> SeededTopic:
-    """Create a topic with ranked candidates, a metric series, and cached README content."""
+    """构造一个主题，附带候选排名、指标序列与缓存的 README 内容。"""
     topic = workspace.add_topic()
     source = workspace.add_source()
     repositories: list[Repository] = []

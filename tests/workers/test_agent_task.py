@@ -1,4 +1,4 @@
-"""Tests for the research Agent Celery task registration."""
+"""守护研究 Agent 的 Celery 任务注册。"""
 
 from open_source_intelligence.core.config import Settings
 from open_source_intelligence.workers import tasks as _tasks  # noqa: F401
@@ -14,7 +14,7 @@ from open_source_intelligence.workers.celery_app import (
 
 
 def build_settings() -> Settings:
-    """Create deterministic Celery test settings."""
+    """构造一套确定的 Celery 测试配置。"""
     return Settings(
         _env_file=None,
         app_env="test",
@@ -26,7 +26,7 @@ def build_settings() -> Settings:
 
 
 def test_research_agent_task_is_registered() -> None:
-    """The runtime is reachable from the worker through a named Celery task."""
+    """证明 Worker 能通过一个有名字的 Celery 任务触达运行时。"""
     app = create_celery_app(build_settings())
 
     assert RESEARCH_AGENT_TASK in app.tasks
@@ -34,10 +34,10 @@ def test_research_agent_task_is_registered() -> None:
 
 
 def test_research_agent_is_not_scheduled_automatically() -> None:
-    """The Agent spends real model budget, so Beat does not trigger it on its own.
+    """证明 Beat 不会自己去触发 Agent，因为它要烧真实的模型预算。
 
-    Automatic orchestration is wired once the report and publishing stages exist. The
-    publishing sweep and the push retry sweep are exempt because neither spends model budget.
+    自动编排要等报告与发布阶段就位后才接线。发布清扫与推送重试清扫不受此限，
+    因为两者都不花模型预算。
     """
     schedule = build_beat_schedule(build_settings())
     scheduled_tasks = {entry["task"] for entry in schedule.values()}

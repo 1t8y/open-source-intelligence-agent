@@ -1,10 +1,8 @@
-"""Run T7 Agent tool layer smoke checks against MySQL.
+"""针对 MySQL 跑 T7 的 Agent 工具层冒烟。
 
-The script seeds a temporary user, topics, repositories, content, an Agent run
-chain, and a prior report, then invokes all five whitelisted tools through the
-real registry. It verifies schema handling, ACL denial, truncation, the
-untrusted marker, draft idempotency, read-only behaviour, and tool call
-recording on a real database rather than in-memory SQLite.
+脚本先播下一个临时用户、若干主题与仓库、正文、一条 Agent 运行链和一份往期报告，
+再通过真正的注册表调用全部五个白名单工具。它在真实数据库上（而不是内存 SQLite 里）
+核对 schema 处理、ACL 拒绝、截断、不可信标记、草稿幂等、只读行为以及工具调用记录。
 """
 
 import argparse
@@ -59,7 +57,7 @@ NOW = datetime.now(UTC)
 
 
 def cleanup_verification_records(session: Session) -> None:
-    """Remove every record created by a previous T7 smoke run."""
+    """删掉上一轮 T7 冒烟留下的全部记录。"""
     topic_ids = list(
         session.scalars(
             select(Topic.id).where(Topic.name.in_((AUTHORIZED_TOPIC, OUT_OF_SCOPE_TOPIC)))
@@ -106,7 +104,7 @@ def cleanup_verification_records(session: Session) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run T7 Agent tool smoke checks")
     parser.add_argument(
         "--cleanup-only",
@@ -117,7 +115,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _seed_source(session: Session) -> DataSource:
-    """Return an existing data source or create a verification-only one."""
+    """返回已有的数据源；没有就建一个专供验证用的。"""
     source = session.scalar(select(DataSource).order_by(DataSource.id).limit(1))
     if source is None:
         source = DataSource(
@@ -133,7 +131,7 @@ def _seed_source(session: Session) -> DataSource:
 
 
 def main() -> None:
-    """Invoke every whitelisted tool on real MySQL and assert the contract."""
+    """在真实 MySQL 上逐个调用白名单工具，并断言契约成立。"""
     args = parse_args()
     settings = get_settings()
     engine = create_database_engine(settings.database_url)

@@ -1,9 +1,8 @@
-"""Tests for rendering report bodies: Markdown in, sanitized HTML out.
+"""守护报告正文的渲染：Markdown 进来，净化后的 HTML 出去。
 
-The body used to reach the page inside a `<pre>`, so a reader saw `## 重点项目` and `**加粗**`
-literally — the interface was showing the file format. Rendering it is one half; the other half is
-that the body quotes repository READMEs, which are third-party text, so nothing in the source may
-become live markup.
+正文曾经被塞进 `<pre>` 里送到页面，读者看到的是 `## 重点项目` 和 `**加粗**` 的
+原样 —— 界面在展示文件格式。渲染只是其中一半；另一半是正文里引用着仓库 README，
+那是第三方文本，所以来源里的任何东西都不能变成活的标记。
 """
 
 from __future__ import annotations
@@ -36,14 +35,14 @@ BODY = """## 重点项目
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def editor(session: Session) -> Actor:
-    """An editor, who may read every report in these fixtures."""
+    """编辑：这些夹具里的每一份报告它都读得到。"""
     return create_actor(session, username="md-editor", role="EDITOR", data_scope="team")
 
 
@@ -62,13 +61,13 @@ def test_headings_tables_and_rules_are_structure_not_text() -> None:
     assert "<table>" in html
     assert "<th>仓库</th>" in html
     assert "<hr" in html
-    # The syntax characters are consumed by the renderer; they must not survive as content.
+    # 语法字符被渲染器消耗掉了，不能再作为内容留在页面上。
     assert "## 重点项目" not in html
     assert "|---|" not in html
 
 
 def test_html_in_the_source_is_escaped_not_executed() -> None:
-    """A quoted README must not be able to put markup on the page."""
+    """被引用的 README 不能把任何标记放进页面。"""
     html = str(render_markdown(BODY))
 
     assert "<script>" not in html
@@ -96,7 +95,7 @@ def test_the_report_page_renders_the_body(
     assert page.status_code == 200
     assert "<h2>重点项目</h2>" in page.text
     assert "<strong>morulot/rea</strong>" in page.text
-    # The raw syntax no longer leaks into the page.
+    # 原始语法不再泄漏到页面上。
     assert "## 重点项目" not in page.text
     assert "&lt;script&gt;" in page.text
 
@@ -107,7 +106,7 @@ def test_the_share_page_renders_it_the_same_way(
     editor: Actor,
     client: TestClient,
 ) -> None:
-    """The public page must not be the one place that still shows raw Markdown."""
+    """公开页面不能成为唯一还在显示原始 Markdown 的地方。"""
     from open_source_intelligence.reports.sharing import create_share_link
 
     report = seed_pushable_report(session, workspace, status=PUBLISHED, sensitivity="PUBLIC")
@@ -121,14 +120,14 @@ def test_the_share_page_renders_it_the_same_way(
     assert page.status_code == 200
     assert "<h2>重点项目</h2>" in page.text
     assert "## 重点项目" not in page.text
-    # The shell has its own <script> tags, so the assertion is on the escaped body, not on the page.
+    # 页面外壳自带 `<script>` 标签，所以断言打在转义后的正文上，而不是整个页面。
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page.text
 
 
 def test_a_rollback_reason_carries_its_version_through_the_label() -> None:
-    """`rollback_to_v3` is generated, so it is translated by rule rather than by table entry."""
+    """`rollback_to_v3` 是生成出来的，所以按规则翻译，而不是查表。"""
     assert _label("rollback_to_v3") == "回滚到 v3"
     assert _label("generated_from_agent_draft") == "由 Agent 草稿生成"
     assert _label("approve") == "通过"
-    # An identifier with no label falls through unchanged rather than becoming blank.
+    # 没有对应标签的标识符原样落下，而不是变成空白。
     assert _label("agent_no_tools") == "agent_no_tools"

@@ -1,4 +1,7 @@
-"""add resumable backfill jobs and the backfill run type
+"""新增可续跑的回填任务与 backfill 运行类型
+
+`backfill_jobs` 逐页记录游标与进度，被中断的遍历可以从下一页继续；`pipeline_runs`
+的运行类型枚举同时接纳 `backfill`。
 
 Revision ID: c8b4e6f2a013
 Revises: f1a7c9d3b582
@@ -42,28 +45,25 @@ BACKFILL_CHECKS: tuple[tuple[str, str], ...] = (
 
 
 def utc_datetime() -> sa.DateTime:
-    """Return the project MySQL UTC DATETIME type."""
+    """返回项目统一的 MySQL UTC `DATETIME` 类型。"""
     return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 def uint64() -> sa.BigInteger:
-    """Return the project unsigned BIGINT type."""
+    """返回项目统一的无符号 `BIGINT` 类型。"""
     return sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 def upgrade() -> None:
-    """Create the backfill job table and register the backfill run type.
+    """创建回填任务表，并登记 `backfill` 运行类型。
 
-    `backfill_jobs` is the resumable unit of work: the cursor (`next_page`) and the
-    two counters are committed after every page, so a walk that loses its process
-    resumes at the page it had not finished instead of re-crawling its history.
-    Replaying a page would not corrupt anything - ingestion is idempotent on
-    (source, provider_repo_id) - but replaying twenty of them is what turns a
-    network blip into a duplicate crawl.
+    `backfill_jobs` 是可续跑的工作单元：游标（`next_page`）与两个计数在每页之后提交，
+    因此丢失进程的遍历会从未完成的那一页继续，而不是把历史重爬一遍。重放一页不会破坏
+    数据 —— 摄取在 `(source, provider_repo_id)` 上是幂等的 —— 但连重放二十页，就会把
+    一次网络抖动变成一次重复抓取。
 
-    `backfill` is registered as a *global* run type, which is why the row that
-    records the walk needs no `topic_id`. It lands in the same `pipeline_runs`
-    ledger as every other stage so a walk is visible where all other work is.
+    `backfill` 注册为*全局*运行类型，所以记录遍历的那行不需要 `topic_id`。它和所有
+    其它阶段落在同一本 `pipeline_runs` 台账里，遍历因此能在同一处被看到。
     """
     op.create_table(
         "backfill_jobs",
@@ -122,8 +122,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the backfill job table and unregister the backfill run type."""
-    # The narrower CHECK would reject the run rows this revision allowed, so they go first.
+    """删除回填任务表，并注销 `backfill` 运行类型。"""
+    # 收窄后的 `CHECK` 会拒绝本次修订放行的运行行，所以先把它们删掉。
     op.execute(sa.text("DELETE FROM `pipeline_runs` WHERE `run_type` = 'backfill'"))
     op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{TOPIC_SCOPE_CHECK}`"))
     op.execute(

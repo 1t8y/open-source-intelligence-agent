@@ -1,4 +1,6 @@
-"""add open_issues to repositories
+"""为仓库增加 open_issues 计数
+
+`repositories` 增加可空的未决 issue 数，快照写入方才有可读的来源。
 
 Revision ID: c6f3d5a8b2e4
 Revises: b7e2c4d9f1a3
@@ -17,11 +19,10 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add the nullable `open_issues` counter to `repositories`.
+    """为 `repositories` 增加可空的 `open_issues` 计数。
 
-    The `repo_snapshots.open_issues` column has existed since the schema landed but was never
-    populated: the snapshot writer hard-coded None because the `repositories` row carried no
-    such counter. This column is the source the snapshot writer now reads from.
+    `repo_snapshots.open_issues` 自建表起就存在，却从未被填过值：`repositories` 行没有
+    这个计数，快照写入方只能硬编码 `None`。本列就是快照写入方现在读取的来源。
     """
     op.add_column(
         "repositories",
@@ -37,7 +38,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the counter and its check constraint."""
+    """删除该计数及其检查约束。"""
     op.execute(
         sa.text(
             "ALTER TABLE `repositories` DROP CONSTRAINT `ck_repositories_open_issues_nonnegative`"

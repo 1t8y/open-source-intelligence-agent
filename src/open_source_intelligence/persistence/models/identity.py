@@ -1,4 +1,4 @@
-"""User, role, and role-assignment models."""
+"""用户、角色与角色分配的模型。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from ..base import (
 
 
 class User(Base, TimestampMixin):
-    """Application user account."""
+    """应用的用户账号。"""
 
     __tablename__ = "users"
     __table_args__ = (
@@ -38,7 +38,7 @@ class User(Base, TimestampMixin):
 
 
 class Role(Base):
-    """Stable role definition such as ADMIN, EDITOR, or VIEWER."""
+    """稳定的角色定义，例如 `ADMIN`、`EDITOR` 或 `VIEWER`。"""
 
     __tablename__ = "roles"
     __table_args__ = (CheckConstraint("code IN ('ADMIN', 'EDITOR', 'VIEWER')", name="code_valid"),)
@@ -54,7 +54,7 @@ class Role(Base):
 
 
 class UserRole(Base):
-    """Association table assigning roles to users."""
+    """把角色分配给用户的关联表。"""
 
     __tablename__ = "user_roles"
 

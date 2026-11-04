@@ -1,4 +1,4 @@
-"""Report push: email and webhook delivery of approved reports."""
+"""报告推送：把已批准的报告通过邮件与 Webhook 投递出去。"""
 
 from .channels import (
     CHANNELS,

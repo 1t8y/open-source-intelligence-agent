@@ -1,8 +1,8 @@
-"""Versioned prompt assets loaded from the repository `prompts/` directory.
+"""从仓库的 `prompts/` 目录加载带版本的 Prompt 资产。
 
-Prompt files follow `prompts/<stage>_<version>.md`. Adding a new prompt version means
-adding a file and pointing `AGENT_PROMPT_VERSION` at it, so every Agent run can be traced
-back to the exact instructions that produced it.
+Prompt 文件遵循 `prompts/<stage>_<version>.md` 命名。新增一个 Prompt 版本
+意味着加一个文件并把 `AGENT_PROMPT_VERSION` 指向它，这样每次 Agent 运行都能
+追溯到产出它的那份确切指令。
 """
 
 from __future__ import annotations
@@ -17,18 +17,18 @@ PROMPT_STAGES: tuple[PromptStage, ...] = ("plan", "draft")
 
 
 def _candidate_bases() -> tuple[Path, ...]:
-    """Return every directory that may contain the prompt folder."""
+    """返回所有可能包含 Prompt 目录的目录。"""
     bases = [Path.cwd()]
     bases.extend(Path(__file__).resolve().parents)
     return tuple(bases)
 
 
 def resolve_prompts_dir(configured: str | None = None) -> Path:
-    """Locate the prompt directory for repository, test, and container layouts.
+    """为仓库、测试与容器三种布局定位 Prompt 目录。
 
-    An explicit `AGENT_PROMPTS_DIR` wins. Otherwise the working directory and every
-    ancestor of this module are probed, which covers both a repository checkout and the
-    `/app` working directory used by the container image.
+    显式给出 `AGENT_PROMPTS_DIR` 时以它为准。否则会探测工作目录以及本模块
+    的每一级祖先目录，这样既覆盖仓库检出，也覆盖容器镜像使用的 `/app`
+    工作目录。
     """
     if configured:
         candidate = Path(configured).expanduser()
@@ -44,7 +44,7 @@ def resolve_prompts_dir(configured: str | None = None) -> Path:
 
 @cache
 def load_prompt(stage: str, version: str, directory: str | None = None) -> str:
-    """Return the text of one versioned prompt asset."""
+    """返回某一版本 Prompt 资产的文本。"""
     if stage not in PROMPT_STAGES:
         raise ValueError(f"unknown prompt stage: {stage}")
     path = resolve_prompts_dir(directory) / f"{stage}_{version}.md"
@@ -57,5 +57,5 @@ def load_prompt(stage: str, version: str, directory: str | None = None) -> str:
 
 
 def clear_prompt_cache() -> None:
-    """Clear the prompt cache for tests and environment reloads."""
+    """清空 Prompt 缓存，供测试和环境变量重载使用。"""
     load_prompt.cache_clear()

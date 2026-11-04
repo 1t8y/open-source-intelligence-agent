@@ -1,4 +1,4 @@
-"""Stable `agent_runs.error_code` values, the run-review refusal, and their plain sentences."""
+"""稳定的 `agent_runs.error_code` 取值与运行复核拒绝异常，及其直白文案。"""
 
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ AGENT_ERROR_CODES = (
     AGENT_PROMPT_INJECTION,
 )
 
-#: Error codes that mean "a human should look at this" rather than "the run broke".
+#: 表示「需要人工看一眼」而非「运行崩了」的错误码。
 #:
-#: This lives next to the codes rather than in `agent/runtime.py` because both the runtime (to
-#: decide the terminal status) and the graph (to stop after a fatal upstream failure) need it,
-#: and the graph cannot import the runtime: the runtime is what builds the graph.
+#: 放在错误码旁边而不是 `agent/runtime.py`，是因为运行时（用来决定终态）和
+#: 图（用来在致命的上游失败后停下）都需要它，而图无法导入运行时：图正是由运行时
+#: 构建出来的。
 REVIEW_REQUIRED_CODES = frozenset(
     {
         AGENT_BUDGET_EXCEEDED,
@@ -39,11 +39,11 @@ REVIEW_REQUIRED_CODES = frozenset(
 
 
 class AgentRunReviewError(Exception):
-    """Raised when a run review is refused: the run is gone, or its status has nothing to review.
+    """运行复核被拒绝时抛出：运行不存在，或其状态无可复核之处。
 
-    One class for both because the caller in the interface does the same thing either way - it
-    shows the message and leaves the page as it was. `reason` is what lets the interface say why
-    in its own words: the layers above translate a code, they do not forward a service sentence.
+    两种情况共用一个类，因为界面侧的调用方无论哪种都做同一件事 —— 展示消息、
+    页面保持原样。`reason` 让界面用自己的话说明原因：上层翻译的是错误码，而不是
+    转发一句服务层的文案。
     """
 
     code = "AGENT_RUN_REVIEW_REJECTED"
@@ -53,9 +53,9 @@ class AgentRunReviewError(Exception):
         self.reason = reason
 
 
-#: One plain sentence per code, for the run page. Kept next to the codes so a new code cannot be
-#: added without someone noticing that the page has nothing to say about it: the page falls back to
-#: "未知原因" and the reader is left guessing, which is exactly what these sentences exist to stop.
+#: 每个错误码一句直白说明，供运行页面使用。与错误码放在一起，新增错误码时
+#: 就无法不注意到页面还没有话可说：页面会回落到「未知原因」，读者只能靠猜 ——
+#: 而这些句子存在的意义正是终结这种猜测。
 AGENT_ERROR_HINTS: dict[str, str] = {
     AGENT_NO_CANDIDATES: "这个主题没有可研究的候选仓库（候选池是空的，或候选都被排除了）。",
     AGENT_MODEL_UNAVAILABLE: "模型端不可达或超时，这一次没有拿到任何产出。",

@@ -1,14 +1,13 @@
-"""Parse the model's draft response into validated report sections.
+"""把模型的草稿响应解析成通过校验的报告章节。
 
-The model is asked for a JSON document, but a real model occasionally ignores the shape and
-answers in plain Markdown. Both are accepted here: JSON is parsed first (it carries the
-citations the traceability checks need), and a Markdown fallback splits the answer on its
-headings when no JSON object is present. The fallback is the "not fully formatted is fine"
-contract — the report stays concise and readable, and a section that carries no citation is
-flagged for human review rather than blowing up the whole run.
+我们要求模型给出 JSON 文档，但真实模型偶尔会无视格式，直接用 Markdown 作答。两种
+都接受：先解析 JSON（它带有可追溯性检查所需的引用），当响应里没有 JSON
+对象时，再走 Markdown 兜底，按标题切分答案。兜底对应的是「格式不完美
+也行」的契约 —— 报告保持简洁易读，某个章节没带引用时会被标记为待人工
+复核，而不是让整轮运行炸掉。
 
-Field names mirror `SaveReportSectionInput` in `agent/tools/contracts.py`;
-`tests/agent/test_writing.py` pins that alignment so the two contracts cannot drift apart.
+字段名对齐 `agent/tools/contracts.py` 里的 `SaveReportSectionInput`；
+`tests/agent/test_writing.py` 钉住这条对齐关系，两份契约就无法各自漂移。
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ from open_source_intelligence.agent.tools.contracts import (
 
 _FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
-#: Chinese / English heading the model may use to start a section, mapped to the canonical key.
+#: 模型可用来开启章节的中英文标题，映射到规范键名。
 _SECTION_HEADINGS: dict[str, str] = {
     "summary": "summary",
     "摘要": "summary",
@@ -52,15 +51,15 @@ _HEADING_PATTERN = re.compile(r"^#{1,4}\s*(.+?)\s*$", re.MULTILINE)
 
 
 class DraftPayloadError(ValueError):
-    """Raised when a model draft response cannot be validated."""
+    """模型草稿响应无法通过校验时抛出。"""
 
 
 class DraftSection(BaseModel):
-    """One validated draft section produced by the model.
+    """模型产出的、已通过校验的一个草稿章节。
 
-    Deliberately tolerant (`extra="ignore"`): a model that adds a `report_meta` or `title`
-    field is not a reason to reject an otherwise usable draft. Unknown fields are dropped and
-    the known ones are kept, so the failure rate tracks the real content, not the envelope.
+    故意宽容（`extra="ignore"`）：模型多加一个 `report_meta` 或 `title`
+    字段，不足以否掉一份本来能用的草稿。未知字段被丢弃，已知字段被保留，
+    于是失败率反映的是内容本身，而不是外层信封。
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -72,14 +71,14 @@ class DraftSection(BaseModel):
     @field_validator("section_key")
     @classmethod
     def validate_section_key(cls, value: str) -> str:
-        """Only report template sections may be drafted."""
+        """只有报告模板里的章节可以被起草。"""
         if value not in REPORT_SECTION_KEYS:
             raise ValueError(f"section_key must be one of: {', '.join(REPORT_SECTION_KEYS)}")
         return value
 
 
 class DraftPayload(BaseModel):
-    """The top-level object a model response may contain."""
+    """模型响应可能包含的顶层对象。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -87,7 +86,7 @@ class DraftPayload(BaseModel):
 
 
 def _json_candidates(text: str) -> tuple[str, ...]:
-    """Return progressively more forgiving slices of the response that may hold JSON."""
+    """返回响应里可能藏着 JSON 的切片，宽松程度依次递增。"""
     candidates = [text]
     fenced = _FENCE_PATTERN.search(text)
     if fenced is not None:
@@ -100,7 +99,7 @@ def _json_candidates(text: str) -> tuple[str, ...]:
 
 
 def _extract_json(text: str) -> Any:
-    """Return the first JSON value that parses out of a model response."""
+    """返回从模型响应中解析出的第一个 JSON 值。"""
     for candidate in _json_candidates(text.strip()):
         try:
             return json.loads(candidate)
@@ -110,22 +109,21 @@ def _extract_json(text: str) -> Any:
 
 
 def _split_markdown_sections(text: str) -> list[DraftSection]:
-    """Split a plain-Markdown answer into sections keyed by its headings.
+    """把纯 Markdown 的回答按标题切分成章节。
 
-    This is the fallback for a model that ignored the JSON contract and wrote a normal
-    report. Each `## heading` becomes a section; a heading that maps to a known key is kept,
-    and a block with no heading is attached to the first known section. Sections carry no
-    citations, so the run is flagged for review by the verify stage rather than published
-    with fabricated evidence.
+    这是给「无视 JSON 契约、直接写了份正常报告」的模型准备的兜底。每个
+    `## heading` 成为一个章节；能映射到已知键名的标题被保留，而没有标题的
+    段落会挂到第一个已知章节上。这些章节不带引用，因此会在 `verify` 阶段
+    被标记为待复核，而不是带着捏造的证据发布出去。
     """
     stripped = text.strip()
     if not stripped:
         raise DraftPayloadError("model response was empty")
 
-    # Find heading positions; anything before the first heading is a preamble to drop.
+    # 先标出各标题的位置；第一个标题之前的内容属于导语，直接丢掉。
     matches = list(_HEADING_PATTERN.finditer(stripped))
     if not matches:
-        # No headings at all: treat the whole answer as a single summary block.
+        # 一个标题都没有：把整篇回答当成单个摘要块。
         return [DraftSection(section_key="summary", content_markdown=stripped[:MAX_SECTION_CHARS])]
 
     sections: list[DraftSection] = []
@@ -140,10 +138,9 @@ def _split_markdown_sections(text: str) -> list[DraftSection]:
             continue
         sections.append(DraftSection(section_key=key, content_markdown=body[:MAX_SECTION_CHARS]))
     if not sections:
-        # Headings, but none of them is a report section: the model answered about something else
-        # (a plan, an apology, a tool trace). Returning an empty list would be recorded as "0
-        # sections saved, recoverable content" and sent to a human for review, when the honest
-        # reading is that no draft arrived at all.
+        # 有标题，但没有一个是报告章节：模型答的是别的东西（一份计划、一句道歉、
+        # 一段工具轨迹）。返回空列表会被记为「保存了 0 个章节，内容可
+        # 恢复」并送人工复核，而诚实的读法是：根本没有草稿到达。
         raise DraftPayloadError(
             "model response contained headings but no recognised report section"
         )
@@ -151,7 +148,7 @@ def _split_markdown_sections(text: str) -> list[DraftSection]:
 
 
 def _dedupe_keep_first(sections: list[DraftSection]) -> list[DraftSection]:
-    """Keep the first section per key, preserving order, so a repeated heading does not double."""
+    """每个键只保留第一个章节并保持顺序，重复的标题因此不会重复计入。"""
     seen: set[str] = set()
     ordered: list[DraftSection] = []
     for section in sections:
@@ -163,11 +160,11 @@ def _dedupe_keep_first(sections: list[DraftSection]) -> list[DraftSection]:
 
 
 def parse_draft_payload(text: str) -> list[DraftSection]:
-    """Validate a model draft response and return one section per template slot.
+    """校验模型草稿响应，并为每个模板槽位返回一个章节。
 
-    JSON is the primary contract and must contain each section exactly once. When the model
-    answered in Markdown instead, the answer is split on headings; missing sections are left
-    absent (the caller decides whether that is reviewable) rather than invented here.
+    JSON 是主契约，必须每个章节恰好出现一次。若模型改用 Markdown
+    作答，则按标题切分；缺失的章节就保持缺失（由调用方判断这是否可
+    复核），而不是在这里编造出来。
     """
     try:
         raw = _extract_json(text)

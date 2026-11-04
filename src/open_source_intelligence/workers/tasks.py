@@ -1,4 +1,4 @@
-"""Celery tasks for the deterministic pipeline and worker health verification."""
+"""确定性流水线与 Worker 健康校验的 Celery 任务。"""
 
 from __future__ import annotations
 
@@ -54,27 +54,27 @@ from open_source_intelligence.workers.celery_app import (
 
 
 def resolve_business_date(value: str | None, settings: Settings) -> date:
-    """Resolve an explicit business date or today in the configured timezone."""
+    """解析显式的业务日期，或返回配置时区下的今天。"""
     if value:
         return date.fromisoformat(value)
     return datetime.now(ZoneInfo(settings.app_timezone)).date()
 
 
 def pipeline_retry_countdown(*, retries: int, settings: Settings) -> int:
-    """Return exponential backoff seconds before the next pipeline attempt."""
-    # 1 << retries is 2**retries with an int result that mypy can follow.
+    """返回下一次流水线尝试前的指数退避秒数。"""
+    # 1 << retries 就是 2**retries，且结果是 mypy 能跟上的 int。
     return settings.pipeline_retry_backoff_seconds * (1 << retries)
 
 
 @shared_task(name="open_source_intelligence.workers.tasks.healthcheck")  # type: ignore[misc]
 def healthcheck() -> dict[str, str]:
-    """Return a stable payload proving worker execution."""
+    """返回证明 Worker 确实执行过的稳定载荷。"""
     return {"status": "ok", "task": "healthcheck"}
 
 
 @shared_task(name="open_source_intelligence.workers.tasks.collect_sources")  # type: ignore[misc]
 def collect_sources(provider: str = "all", limit: int = 5) -> dict[str, object]:
-    """Collect one repository batch and return provider counts and errors."""
+    """采集一批仓库，并返回各供应商计数与错误。"""
     if provider not in {"github", "huggingface", "all"}:
         raise ValueError("provider must be github, huggingface, or all")
     if not 1 <= limit <= 100:
@@ -108,16 +108,15 @@ def run_daily_pipeline(
     limit: int | None = None,
     business_date: str | None = None,
 ) -> dict[str, Any]:
-    """Run collect, snapshot, rank, and contents once, retrying transient stage failures.
+    """执行一次采集、快照、排序与正文处理，并重试瞬时的阶段失败。
 
-    Each attempt writes its own PipelineRun records, so the retry trail stays
-    visible: attempt 1 fails, attempt 2 succeeds, and both remain queryable.
+    每次尝试都写入自己的 PipelineRun 记录，因此重试轨迹保持可见：第 1 次失败、第 2 次成功，
+    两次都可查询。
 
-    When `AGENT_AUTO_RESEARCH_ENABLED` is on, the batch then dispatches one research run per
-    eligible topic (see `pipeline/research_dispatch.py`). Dispatching is deliberately *outside*
-    `run_daily_pipeline`: that function is the deterministic half and is called by drills and
-    tests that must not queue model calls as a side effect. The selection runs inside the same
-    session so it reads the rank rows this batch just wrote.
+    当 `AGENT_AUTO_RESEARCH_ENABLED` 打开时，该批次随后会为每个符合条件的主题派发一次研究
+    运行（见 `pipeline/research_dispatch.py`）。派发被刻意放在 `run_daily_pipeline` *之外*：
+    那个函数是确定性的一半，会被演练和测试调用，而那些调用绝不能顺带排队模型请求。选择逻辑
+    在同一个会话内运行，因此它能读到本批次刚写入的排序行。
     """
     if provider not in {"github", "huggingface", "all"}:
         raise ValueError("provider must be github, huggingface, or all")
@@ -166,9 +165,8 @@ def run_daily_pipeline(
         engine.dispose()
     payload: dict[str, Any] = result.to_dict()
     payload["task"] = DAILY_PIPELINE_TASK
-    # `None` rather than `{}` when the switch is off: "we did not look" and "we looked and found
-    # nothing" are different facts, and a payload that renders both as an empty dict erases the
-    # difference for whoever reads the result later.
+    # 开关关闭时用 `None` 而不是 `{}`：「我们没去看」与「我们看了但没找到」是两件不同的
+    # 事实，而把两者都渲染成空字典的载荷，会替后来读结果的人抹掉这个区别。
     payload["research_dispatched"] = dispatch_payload
     return payload
 
@@ -180,11 +178,10 @@ def _dispatch_research(
     settings: Settings,
     app: Any,
 ) -> dict[str, Any]:
-    """Select today's research targets and queue one task per topic.
+    """选出今天的研究目标，并为每个主题排队一个任务。
 
-    `app.send_task` by name rather than importing the bound task and calling `.delay`: the daily
-    task must not depend on the research module being importable at call time (it pulls in the
-    model adapters), and sending by name is what lets a worker pick it up on any process.
+    按名称调用 `app.send_task`，而不是导入绑定任务再调 `.delay`：日常任务不能在调用时依赖
+    研究模块可导入（它会拉起模型适配器），而按名称发送才能让任意进程上的 worker 接手它。
     """
     selection = select_research_targets(
         session,
@@ -210,7 +207,7 @@ def _dispatch_research(
 
 
 def _optional_datetime(value: str | None) -> datetime | None:
-    """Parse an optional ISO 8601 timestamp from a task payload."""
+    """从任务载荷中解析一个可选的 ISO 8601 时间戳。"""
     return None if value is None else datetime.fromisoformat(value)
 
 
@@ -223,11 +220,10 @@ def run_research_agent(
     window_end: str | None = None,
     max_candidates: int | None = None,
 ) -> dict[str, Any]:
-    """Run one bounded research Agent for a topic.
+    """为一个主题运行一次有界的研究 Agent。
 
-    Transient model transport failures are retried with the shared pipeline backoff. Every
-    other outcome is returned as-is, because a draft that needs review is a result, not an
-    error: only model transport problems are worth retrying.
+    瞬时的模型传输失败会按共享的流水线退避重试。其他任何结果都原样返回，因为一份待评审的
+    草稿是结果而不是错误：只有模型的传输问题才值得重试。
     """
     if topic_id <= 0:
         raise ValueError("topic_id must be positive")
@@ -249,8 +245,8 @@ def run_research_agent(
                 window_end=_optional_datetime(window_end),
                 max_candidates=max_candidates,
             )
-            # A draft on its own is not a report: without this edge the daily chain ended at
-            # `report_drafts`, so nothing was verified, nothing was published, and no mail went out.
+            # 草稿本身不是报告：缺了这条边，日常链路就停在 `report_drafts`，
+            # 于是没有任何东西被校验、没有任何东西被发布、也没有邮件发出。
             if settings.agent_auto_report_enabled and result.report_draft_id is not None:
                 report_summary = finish_run_report(session, agent_run_id=result.agent_run_id)
     finally:
@@ -274,12 +270,11 @@ def run_research_agent(
 
 @shared_task(name=PUBLISH_DUE_TASK)  # type: ignore[misc]
 def publish_due_reports(limit: int = PUBLISH_BATCH_LIMIT) -> dict[str, Any]:
-    """Release the reports whose withdrawal window has elapsed.
+    """释放撤回窗口已到期的报告。
 
-    The sweep is idempotent: a report is only released while it is `scheduled` and past its
-    `publish_at`, so a repeated run finds nothing left to do. A report that turns out to
-    violate the publish policy is marked `failed` with its stable error code instead of
-    aborting the batch.
+    清扫是幂等的：报告只有在处于 `scheduled` 且已过 `publish_at` 时才会被释放，因此重复
+    运行会发现无事可做。被判定违反发布策略的报告会带着稳定错误码被标记为 `failed`，而不是
+    中止整批。
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -303,12 +298,11 @@ def publish_due_reports(limit: int = PUBLISH_BATCH_LIMIT) -> dict[str, Any]:
 
 @shared_task(name=PUSH_RETRY_TASK)  # type: ignore[misc]
 def retry_failed_pushes(limit: int = PUSH_BATCH_LIMIT) -> dict[str, Any]:
-    """Retry the report pushes whose transport refused them earlier.
+    """重试那些此前被传输层拒收的报告推送。
 
-    Retrying here rather than in the publishing sweep keeps the two concerns apart: a release
-    that is due must not wait behind a mail server, and a delivery that failed has to be
-    retried on its own schedule. The sweep is idempotent, because a push row only stays a
-    candidate while it is `failed` and still inside its retry budget.
+    在这里重试而不是放进发布清扫，让两件事彼此分开：一次到期的发布不必排在邮件服务器后面，
+    而一次失败的投递必须按自己的节奏重试。清扫是幂等的，因为推送行只有在处于 `failed` 且
+    仍在重试预算内时才会保持为候选。
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -345,16 +339,14 @@ def run_backfill(
     per_page: int = DEFAULT_PER_PAGE,
     job_id: int | None = None,
 ) -> dict[str, Any]:
-    """Walk one provider's paged history, retrying from the cursor it stopped at.
+    """走完某个供应商的分页历史，并从它停下的游标处重试。
 
-    A retry resumes the same job instead of creating a new one, which is the entire return
-    on persisting the cursor per page: an attempt that dies on page 7 of 20 costs page 7,
-    while a retry that opened a second job would spend the same rate-limit budget re-reading
-    pages 1 through 6.
+    重试会续跑同一个作业，而不是新建一个，这正是逐页持久化游标的全部回报：一次死在第 7 页
+    （共 20 页）的尝试只损失第 7 页，而一次另开作业的重试会把同样的限流预算又花在重读第 1
+    到第 6 页上。
 
-    `job_id` is set only by a retry. When it is present, `target_pages` and `per_page` are
-    ignored because the job row already carries them - a retry must not be able to widen a
-    budget the operator chose.
+    `job_id` 只在重试时被设置。它存在时 `target_pages` 与 `per_page` 会被忽略，因为作业行
+    已经携带了它们 —— 重试绝不能放宽操作员选定的预算。
     """
     if provider not in {"github", "huggingface"}:
         raise ValueError("provider must be github or huggingface")

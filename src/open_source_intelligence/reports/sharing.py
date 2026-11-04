@@ -1,15 +1,13 @@
-"""Bearer links that make one published PUBLIC report readable without a login.
+"""发放持有者链接，让一份已发布的 PUBLIC 报告无需登录即可阅读。
 
-The gate is `sensitivity`, not `visibility`. The two vocabularies answer different questions:
-`visibility` says who inside the system may read a report, `sensitivity` says whether the
-content may leave the organisation. A share link is an address with no login behind it, so it
-is the second question that has to be asked. Gating on `visibility` would have been the
-natural mistake - `INTERNAL` means "every authenticated user", which reads as "safe to hand
-out" right up until a link makes it readable by everyone with the URL.
+闸门看的是 `sensitivity`，不是 `visibility`。这两套词汇回答的是不同的问题：`visibility`
+说明系统内部谁可以读这份报告，`sensitivity` 说明内容能否离开组织。分享链接是一个背后
+没有登录的地址，所以要问的是第二个问题。按 `visibility` 设闸会是最自然的错误 ——
+`INTERNAL` 的意思是「任何已认证用户」，读起来像「可以放心发出去」，直到一条链接让它
+变得任何拿到 URL 的人都能读。
 
-Only `sha256(token)` is stored. The plaintext exists in exactly one place: the return value of
-`create_share_link`, which the caller renders once. This is what keeps a table dump from being
-a set of working credentials.
+只存 `sha256(token)`。明文只出现在一个地方：`create_share_link` 的返回值，由调用方
+渲染一次。正是这一点，让一份表导出不至于变成一组可用的凭据。
 """
 
 from __future__ import annotations
@@ -26,55 +24,53 @@ from sqlalchemy.orm import Session
 from open_source_intelligence.persistence.models.reporting import Report, ReportShareLink
 from open_source_intelligence.security.audit import record_audit_event
 
-#: The only sensitivity that may leave the building through a link.
+#: 唯一允许通过链接带出组织的敏感级别。
 SHAREABLE_SENSITIVITY = "PUBLIC"
 
-#: Only published reports may be shared. A draft or a report under review is not a statement
-#: the organisation has agreed to, and a link cannot be recalled from a reader's browser cache
-#: the way an internal page can be taken down.
+#: 只有已发布的报告才能分享。草稿或仍在评审的报告还不是组织认可过的说法，而一条链接
+#: 无法像内部页面那样被下线，也从读者的浏览器缓存里收不回来。
 SHAREABLE_STATUS = "published"
 
-#: 32 bytes -> 43 urlsafe characters. Enumerable only by guessing 2^256 values.
+#: 32 字节 -> 43 个 URL 安全字符。只能靠猜 2^256 个值来枚举。
 SHARE_TOKEN_BYTES = 32
 
 SHARE_PATH_PREFIX = "/share/"
 
-#: A week. Long enough to be useful in a weekly-report workflow, short enough that a link
-#: forwarded into a group chat stops working on its own.
+#: 一周。在周报工作流里够用，又短到被转发进群聊的链接会自己失效。
 DEFAULT_SHARE_TTL_HOURS = 168
 MAX_SHARE_TTL_HOURS = 8760
 
 
 class ShareError(ValueError):
-    """Base class for share-link failures carrying a stable `code`."""
+    """携带稳定 `code` 的分享链接失败基类。"""
 
     code = "SHARE_ERROR"
 
 
 class ShareLinkNotFound(ShareError):
-    """Raised when the addressed share link (or its report) does not exist."""
+    """当指定的分享链接（或其报告）不存在时抛出。"""
 
     code = "NOT_FOUND"
 
 
 class ShareSensitivityRefused(ShareError):
-    """Raised when a report whose sensitivity is not `PUBLIC` is offered for sharing.
+    """当一份敏感级别不是 `PUBLIC` 的报告被拿去分享时抛出。
 
-    This is the guard that keeps a new public door from opening onto internal content.
+    这道守卫的作用，是别让一扇新开的公开门通向内部内容。
     """
 
     code = "SHARE_SENSITIVITY_REFUSED"
 
 
 class ShareNotPublished(ShareError):
-    """Raised when a `PUBLIC` report has not reached `published` yet."""
+    """当一份 `PUBLIC` 报告尚未到达 `published` 时抛出。"""
 
     code = "SHARE_NOT_PUBLISHED"
 
 
 @dataclass(frozen=True, slots=True)
 class ShareLinkCreated:
-    """The one and only time a plaintext token leaves this module."""
+    """明文令牌离开本模块的唯一一次。"""
 
     share_id: int
     token: str
@@ -82,7 +78,7 @@ class ShareLinkCreated:
     expires_at: datetime | None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload including the plaintext token."""
+        """返回可转 JSON 的载荷，其中包含明文令牌。"""
         return {
             "share_id": self.share_id,
             "token": self.token,
@@ -93,7 +89,7 @@ class ShareLinkCreated:
 
 @dataclass(frozen=True, slots=True)
 class ShareLinkSummary:
-    """Listable view of a share link. Deliberately has no token field."""
+    """分享链接的可列表视图。刻意不含令牌字段。"""
 
     share_id: int
     created_by: int | None
@@ -105,11 +101,11 @@ class ShareLinkSummary:
 
     @property
     def revoked(self) -> bool:
-        """Return whether the link has been explicitly revoked."""
+        """返回该链接是否已被显式撤销。"""
         return self.revoked_at is not None
 
     def is_active(self, now: datetime | None = None) -> bool:
-        """Return whether the link would resolve right now (report-side checks excluded)."""
+        """返回该链接此刻是否还能解析（不含报告侧的检查）。"""
         if self.revoked_at is not None:
             return False
         if self.expires_at is None:
@@ -117,7 +113,7 @@ class ShareLinkSummary:
         return self.expires_at > (now or datetime.now(UTC))
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload. Never includes a token, by construction."""
+        """返回可转 JSON 的载荷。构造上绝不包含令牌。"""
         return {
             "share_id": self.share_id,
             "created_by": self.created_by,
@@ -135,23 +131,23 @@ class ShareLinkSummary:
 
 @dataclass(frozen=True, slots=True)
 class SharedReport:
-    """A report resolved through a live share token."""
+    """通过一个有效分享令牌解析出的报告。"""
 
     report: Report
     share_id: int
 
 
 def hash_share_token(token: str) -> str:
-    """Return the stored digest of a plaintext token.
+    """返回明文令牌在库里存储的摘要。
 
-    The single definition of "what a token looks like in the database". Both the writer and
-    the reader call this, so they cannot drift into agreeing on a format nobody else has.
+    这是「令牌在数据库里长什么样」的唯一定义。写侧和读侧都调用它，两者就不可能各自
+    漂移成一种没有第三个人认可的格式。
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _normalize_ttl(ttl_hours: int | None) -> int | None:
-    """Validate a requested lifetime, treating `None` as "no expiry"."""
+    """校验请求的有效期，把 `None` 视为「不过期」。"""
     if ttl_hours is None:
         return None
     if not 1 <= ttl_hours <= MAX_SHARE_TTL_HOURS:
@@ -160,7 +156,7 @@ def _normalize_ttl(ttl_hours: int | None) -> int | None:
 
 
 def _require_shareable(report: Report) -> None:
-    """Refuse a report whose sensitivity or status disqualifies it from a public address."""
+    """拒绝敏感级别或状态不具备公开地址资格的报告。"""
     if report.sensitivity != SHAREABLE_SENSITIVITY:
         raise ShareSensitivityRefused(
             f"report {report.id} has sensitivity {report.sensitivity!r}; only "
@@ -181,12 +177,12 @@ def create_share_link(
     ttl_hours: int | None = DEFAULT_SHARE_TTL_HOURS,
     now: datetime | None = None,
 ) -> ShareLinkCreated:
-    """Mint a bearer link for one published `PUBLIC` report.
+    """为一份已发布的 `PUBLIC` 报告铸造一条持有者链接。
 
-    Raises:
-        ShareLinkNotFound: the report does not exist.
-        ShareSensitivityRefused: the report's sensitivity is not `PUBLIC`.
-        ShareNotPublished: the report is `PUBLIC` but not published.
+    抛出：
+        ShareLinkNotFound：报告不存在。
+        ShareSensitivityRefused：报告的敏感级别不是 `PUBLIC`。
+        ShareNotPublished：报告是 `PUBLIC`，但尚未发布。
     """
     report = session.get(Report, report_id)
     if report is None:
@@ -234,12 +230,12 @@ def resolve_share_token(
     *,
     now: datetime | None = None,
 ) -> SharedReport | None:
-    """Resolve a plaintext token to its report, or `None` for every kind of miss.
+    """把明文令牌解析成对应报告；任何一种落空都返回 `None`。
 
-    "Every kind" is the point. A wrong token, a revoked link, an expired link, a report that
-    was retracted or is no longer `PUBLIC` - all return `None` so the route can answer one
-    identical `404`. Distinguishing them would let a random-string holder ask "did this report
-    ever exist", which is exactly the question an outsider should not be able to answer.
+    「任何一种」正是重点。错误的令牌、已撤销的链接、已过期的链接、被撤回或不再是
+    `PUBLIC` 的报告 —— 一律返回 `None`，路由才能给出同一个 `404`。若把它们区分开，
+    一个拿着随机字符串的人就能反问「这份报告到底存不存在」，而这恰恰是外部人不该能
+    回答的问题。
     """
     if not token:
         return None
@@ -259,9 +255,8 @@ def resolve_share_token(
     if report.sensitivity != SHAREABLE_SENSITIVITY:
         return None
 
-    # A successful read is the only thing this path writes. It is not audited: the reader has
-    # no identity, so an audit row would record "somebody, anonymous, read something" once per
-    # refresh and bury the operator actions that do carry an actor.
+    # 一次成功的读取是这条路径唯一的写入。它不进审计：读者没有身份，审计行只会每刷新
+    # 一次就记一条「某人、匿名、读了点什么」，把真正带操作者的运维动作埋掉。
     link.access_count += 1
     link.last_accessed_at = moment
     session.commit()
@@ -276,12 +271,11 @@ def revoke_share_link(
     actor_id: int | None,
     now: datetime | None = None,
 ) -> bool:
-    """Revoke one link. Returns whether this call performed the revocation.
+    """撤销一条链接。返回本次调用是否真的执行了撤销。
 
-    Idempotent on purpose: revoking an already-revoked link returns `False` and changes
-    nothing, because the caller's intent ("make sure it stops working") is already satisfied.
-    A second revocation is not an error and not a write, so it is not audited either - the
-    audit trail keeps the moment the link actually stopped working.
+    刻意做成幂等：撤销一条已撤销的链接返回 `False` 且不做任何改动，因为调用方的意图
+    （「确保它不再工作」）已经满足了。第二次撤销既不是错误也不是写入，所以同样不进
+    审计 —— 审计轨迹保留的是链接真正失效的那一刻。
     """
     link = session.scalar(
         select(ReportShareLink).where(
@@ -309,7 +303,7 @@ def revoke_share_link(
 
 
 def list_share_links(session: Session, *, report_id: int) -> list[ShareLinkSummary]:
-    """Return every link ever minted for a report, newest first, without plaintext tokens."""
+    """返回某份报告历史上铸造过的所有链接，最新的在前，不含明文令牌。"""
     rows = session.scalars(
         select(ReportShareLink)
         .where(ReportShareLink.report_id == report_id)

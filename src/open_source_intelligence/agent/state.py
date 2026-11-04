@@ -1,8 +1,8 @@
-"""Bounded Agent state shared across the research graph nodes.
+"""研究图各节点共享的、有上界的 Agent 状态。
 
-The shape mirrors `ARCHITECTURE.md` §8.2. Scalar fields are replaced by each node, while
-plan, evidence, and section lists accumulate through the `operator.add` reducer so a node
-only ever returns its own contribution.
+结构对齐 `ARCHITECTURE.md` §8.2。标量字段由各节点整体替换，而计划、证据
+与章节列表通过 `operator.add` reducer 累加，因此每个节点只需返回自己的
+那份贡献。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ ResearchIntent = Literal["profile", "metrics", "prior_reports", "content"]
 
 
 class ResearchTask(StrictModel):
-    """One planned research action recorded in the run trail."""
+    """记录在运行轨迹里的一条已计划研究动作。"""
 
     task_index: int
     intent: ResearchIntent
@@ -30,7 +30,7 @@ class ResearchTask(StrictModel):
 
 
 class ToolObservation(StrictModel):
-    """One raw tool outcome carried from the tool node into the observe node."""
+    """从 `tool` 节点带入 `observe` 节点的一次原始工具结果。"""
 
     tool_name: str
     repo_id: int | None = None
@@ -43,7 +43,7 @@ class ToolObservation(StrictModel):
 
 
 class EvidenceRef(StrictModel):
-    """One tool observation summarized for the run trail."""
+    """为运行轨迹汇总的一条工具观测。"""
 
     tool_name: str
     repo_id: int | None = None
@@ -56,7 +56,7 @@ class EvidenceRef(StrictModel):
 
 
 class VerificationResult(StrictModel):
-    """Outcome of the evidence-coverage check that gates report writing."""
+    """证据覆盖度检查的结果，这道闸决定报告能否开写。"""
 
     sufficient: bool
     reason: str
@@ -68,7 +68,7 @@ class VerificationResult(StrictModel):
 
 
 class AgentState(TypedDict, total=False):
-    """State threaded through the research graph."""
+    """贯穿研究图的状态。"""
 
     run_id: int
     topic_id: int

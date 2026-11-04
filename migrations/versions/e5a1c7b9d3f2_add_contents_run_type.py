@@ -1,4 +1,7 @@
-"""add the contents run type
+"""新增 contents 运行类型
+
+`contents` 阶段为候选预热 `repository_contents` 缓存，登记为全局运行类型后，缓存
+刷新是否发生、是否失败才会出现在台账里。
 
 Revision ID: e5a1c7b9d3f2
 Revises: c8b4e6f2a013
@@ -26,17 +29,15 @@ GLOBAL_WITHOUT_CONTENTS = "'collect', 'snapshot', 'rank', 'backfill'"
 
 
 def upgrade() -> None:
-    """Register `contents` as a global pipeline run type.
+    """把 `contents` 登记为全局流水线运行类型。
 
-    The `contents` stage pre-warms the `repository_contents` cache for the ranked candidates,
-    and it belongs in the same ledger as every other stage: without a run row, "did the cache
-    refresh today, and did anything fail" would only be answerable from container logs.
+    `contents` 阶段为入选候选预热 `repository_contents` 缓存，它应当和所有其它阶段
+    记在同一本台账里：没有运行行，「今天缓存刷了吗、有没有失败」就只能去容器日志里找。
 
-    It is a *global* run type, which is why both CHECK constraints move. `run_type_valid` gains
-    the value; `topic_scope_valid` gains it too, but for the opposite reason - it lists the types
-    that are allowed to have `topic_id IS NULL`. A type that only appears in the first CHECK
-    would be rejected at insert time by the second, which is the failure mode this pair exists to
-    prevent.
+    它是*全局*运行类型，所以两个 `CHECK` 约束都要改。`run_type_valid` 增加这个值；
+    `topic_scope_valid` 也要增加，但理由相反 —— 后者列出的是允许 `topic_id IS NULL`
+    的类型。只出现在第一个 `CHECK` 里的类型，会在插入时被第二个拒绝，这对约束存在的
+    意义正是防住这种失败。
     """
     op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{RUN_TYPE_CHECK}`"))
     op.execute(
@@ -55,7 +56,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Unregister `contents`, dropping the run rows the narrower CHECK would reject."""
+    """注销 `contents`，先删掉收窄后的 `CHECK` 会拒绝的运行行。"""
     op.execute(sa.text("DELETE FROM `pipeline_runs` WHERE `run_type` = 'contents'"))
     op.execute(sa.text(f"ALTER TABLE `pipeline_runs` DROP CHECK `{TOPIC_SCOPE_CHECK}`"))
     op.execute(

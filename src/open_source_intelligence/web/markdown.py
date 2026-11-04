@@ -1,19 +1,17 @@
-"""Markdown rendering for report bodies.
+"""渲染报告正文里的 Markdown。
 
-The report is authored as Markdown — `reports/composition.py` and the Agent both write it — and it
-used to reach the page inside a `<pre>`, so readers saw `## 重点项目` and `**加粗**` literally. That
-is the one place where the interface was showing the file format instead of the report.
+报告本身用 Markdown 撰写 —— `reports/composition.py` 与 Agent 都在写它 —— 而它
+过去是塞在 `<pre>` 里到达页面的，读者会原样看到 `## 重点项目` 和 `**加粗**`。
+这是界面上唯一一处把文件格式当成报告展示的地方。
 
-Two rules decide how it is rendered:
+渲染方式由两条规则决定：
 
-* **Escape, do not trust.** A report quotes repository READMEs, which are third-party text a
-  contributor controls. `escape=True` turns any HTML in the source into text, so a README cannot
-  smuggle markup into the interface. The validator already refuses injected instructions; this is
-  the second, independent layer, because escaping does not depend on the model or the guard
-  agreeing with each other.
-* **No raw-HTML escape hatch.** There is deliberately no way to opt out per report. A field that
-  says "render this one as HTML" is a field that eventually gets set to true on data nobody
-  re-read.
+* **转义，不信任。** 报告会引用仓库 README，而那是贡献者能控制的第三方
+  文本。`escape=True` 把源文本里的任何 HTML 都变成文字，于是 README 无法把
+  标记偷带进界面。校验器已经会拒绝注入的指令；这里是第二道独立的防线，
+  因为转义不依赖模型和守卫彼此达成一致。
+* **不留原始 HTML 的逃生口。** 刻意不提供按报告单独开启的开关。一个写着
+  「这份按 HTML 渲染」的字段，迟早会在没人重读的数据上被置为真。
 """
 
 from __future__ import annotations
@@ -21,8 +19,8 @@ from __future__ import annotations
 import mistune
 from markupsafe import Markup
 
-#: Table and strikethrough are the two GitHub extensions the composed reports actually use; the
-#: `url` plugin linkifies bare URLs, which the evidence sections contain.
+#: 表格与删除线是成稿报告实际用到的两个 GitHub 扩展；`url` 插件会把裸 URL 变成
+#: 链接，证据章节里就含有这类 URL。
 _RENDERER = mistune.create_markdown(
     escape=True,
     plugins=["table", "strikethrough", "url"],
@@ -30,10 +28,10 @@ _RENDERER = mistune.create_markdown(
 
 
 def render_markdown(text: str | None) -> Markup:
-    """Render one Markdown document to sanitized HTML.
+    """把一份 Markdown 文档渲染成已净化的 HTML。
 
-    Empty input renders to empty output rather than raising: a report whose body failed to
-    generate is a state the page has to draw, not a 500.
+    空输入渲染成空输出而不是抛错：正文生成失败的报告是页面必须画出来的一种状态，
+    不是一个 500。
     """
     if not text:
         return Markup("")

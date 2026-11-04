@@ -1,14 +1,14 @@
-"""Bounded LangGraph research graph for one topic window.
+"""单个主题时间窗的有界 LangGraph 研究图。
 
-Flow (ARCHITECTURE.md §8.1)::
+执行流程（见 `ARCHITECTURE.md` §8.1）::
 
     Research -> Tool Call -> Observe -> Verify -> Write
                         ^                  |
                         +---- evidence gap -+
 
-The graph is deliberately bounded. Loop, model-call, and tool-call caps all come from
-`agent_configs`; when a cap is hit the graph stops researching and writes whatever the
-evidence supports, marking the draft incomplete rather than looping forever.
+这张图刻意有界。轮次上限、模型调用上限与工具调用上限都来自
+`agent_configs`；撞上任一上限时，图就停止研究，并把证据能支撑的内容写出来，
+同时把草稿标记为不完整，而不是无限循环下去。
 """
 
 from __future__ import annotations
@@ -67,13 +67,12 @@ from open_source_intelligence.agent.writing import (
 )
 from open_source_intelligence.core.text import content_digest
 
-#: The draft-writing tool. `profile.WRITE_TOOL` is the single definition; this alias keeps the
-#: name the graph has always exported for tests and documentation.
+#: 起草报告的工具。`profile.WRITE_TOOL` 是唯一定义；这个别名保留了图一直
+#: 对外导出、供测试与文档使用的那个名字。
 SAVE_SECTION_TOOL = WRITE_TOOL
 TOKEN_DEGRADE_PERCENT = 80
-#: How many times the write stage may ask the model for a draft. Two attempts is the point where a
-#: schema mistake or a dropped section stops being a coin flip without letting a run that cannot
-#: follow the contract spend the whole budget on retries.
+#: 写阶段最多能向模型要几次草稿。两次是这样一个点：schema 写错或漏掉章节不再像抛
+#: 硬币，又不至于让一个跟不上契约的运行把整个预算都花在重试上。
 DRAFT_ATTEMPTS = 2
 
 _INTENT_BY_TOOL: dict[str, ResearchIntent] = {
@@ -86,7 +85,7 @@ _INTENT_BY_TOOL: dict[str, ResearchIntent] = {
 
 @dataclass(slots=True)
 class GraphDependencies:
-    """Everything a graph node needs, injected once per run."""
+    """图节点所需的一切，每次运行注入一次。"""
 
     client: ModelClient
     registry: ToolRegistry
@@ -99,7 +98,7 @@ class GraphDependencies:
 
 
 def _elapsed_ms(started: float) -> int:
-    """Return a non-negative elapsed millisecond count."""
+    """返回非负的已耗时毫秒数。"""
     return max(0, int((time.perf_counter() - started) * 1000))
 
 
@@ -108,16 +107,15 @@ def _draft_messages(
     draft_prompt: str,
     rejection: str | None = None,
 ) -> list[ChatMessage]:
-    """Swap the research system prompt for the drafting prompt.
+    """把研究的系统提示换成起草提示。
 
-    The plan stage and the write stage are different tasks with different output
-    contracts, and `prompts/` versions them separately. Replacing the system message keeps
-    the recorded user context and tool trail intact while giving the model the draft
-    instructions (section keys, citation format, JSON shape) it is actually being asked for.
+    `plan` 阶段与 `write` 阶段是两个不同的任务，输出契约也不同，`prompts/` 分别
+    给它们做版本。替换系统消息可以保留已记录的用户上下文与工具轨迹，同时把模型
+    真正被要求的起草指令（章节键名、引用格式、JSON 结构）交给它。
 
-    `rejection` carries the reason the previous attempt was not accepted. Retrying without it
-    mostly reproduces the same mistake — the model has no way to know which of the six sections
-    it dropped or which field failed validation.
+    `rejection` 携带上一次尝试未被接受的原因。不带它重试，多半只是把同一个
+    错误再演一遍 —— 模型无从知道它漏掉了六个章节里的哪一个，或者哪个字段没过
+    校验。
     """
     if not draft_prompt:
         return list(messages)
@@ -140,14 +138,14 @@ def _draft_messages(
 
 
 def _as_repo_id(value: Any) -> int | None:
-    """Return a positive repository id, ignoring booleans and other junk."""
+    """返回正的仓库 id，忽略布尔值和其他垃圾值。"""
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return None
 
 
 def _jsonable(value: Any) -> Any:
-    """Convert tool payloads into JSON-safe structures for the conversation log."""
+    """把工具载荷转换成可写入对话日志的 JSON 安全结构。"""
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if isinstance(value, (list, tuple)):
@@ -158,7 +156,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def _tool_message_content(result: ToolResult[Any]) -> tuple[str, GuardDecision]:
-    """Render one tool result as the JSON the model reads back."""
+    """把一条工具结果渲染成模型回读的 JSON。"""
     if result.ok:
         payload, decision = guard_tool_payload(_jsonable(result.data))
         return json.dumps(payload, ensure_ascii=False), decision
@@ -177,23 +175,22 @@ def _tool_message_content(result: ToolResult[Any]) -> tuple[str, GuardDecision]:
 
 
 def _total_tokens(state: AgentState) -> int:
-    """Return the current total token count recorded in the graph state."""
+    """返回图状态里记录的当前 token 总数。"""
     return state.get("prompt_tokens", 0) + state.get("completion_tokens", 0)
 
 
 def _token_budget_at_or_above(state: AgentState, percent: int) -> bool:
-    """Return whether the configured token budget reached the given percentage."""
+    """判断已用 token 是否达到配置预算的给定百分比。"""
     max_tokens = state.get("max_tokens", 0)
     return max_tokens > 0 and _total_tokens(state) * 100 >= max_tokens * percent
 
 
 def _cost_budget_exhausted(state: AgentState) -> bool:
-    """Return whether the run has already spent its configured cost budget.
+    """判断本次运行是否已经花光配置的费用预算。
 
-    Cost is a budget dimension of its own: token caps bound how much text flows through the
-    model, while a price table can make a modest number of expensive calls cost more than a
-    large number of cheap ones. `agent_configs.max_cost` is therefore enforced here, next to
-    the token gate, instead of being written to the config and never read again.
+    费用是独立的预算维度：token 上限约束的是流经模型的文本量，而一份价目表可以让
+    少量昂贵调用比大量廉价调用更贵。因此 `agent_configs.max_cost` 在此处、紧挨着
+    token 闸执行，而不是写进配置后再也没人读。
     """
     max_cost = state.get("max_cost", Decimal("0"))
     spent = state.get("estimated_cost", Decimal("0"))
@@ -201,7 +198,7 @@ def _cost_budget_exhausted(state: AgentState) -> bool:
 
 
 def _observation_summary(observation: ToolObservation) -> str:
-    """Return a compact human-readable line for one observation."""
+    """为一条观测返回一行紧凑、人类可读的说明。"""
     if not observation.ok:
         return f"{observation.tool_name} failed with {observation.error_code or 'UNKNOWN'}"
     suffix = " (truncated)" if observation.truncated else ""
@@ -209,7 +206,7 @@ def _observation_summary(observation: ToolObservation) -> str:
 
 
 def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
-    """Ask the model what to research next and stage its tool calls."""
+    """询问模型下一步研究什么，并暂存它要发起的工具调用。"""
     started = time.perf_counter()
     loop_count = state.get("loop_count", 0)
     model_call_count = state.get("model_call_count", 0)
@@ -288,9 +285,9 @@ def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             summary=f"model call failed with {exc.code}",
             latency_ms=_elapsed_ms(started),
         )
-        # A failed call can still have been billed (an answer truncated by the output ceiling
-        # arrives, is unusable, and is charged for). Those tokens and that cost are added here
-        # so the budget moves forward instead of letting one run retry for free.
+        # 失败的调用同样可能已经计费（被输出上限截断的答案照样会返回、不可用，
+        # 并且照收费）。把这些 token 与费用加在这里，预算才会往前走，而不是让
+        # 一次运行白白重试。
         return {
             "pending_tool_calls": [],
             "loop_count": loop_count + 1,
@@ -340,15 +337,15 @@ def _plan_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
 
 
 def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
-    """Execute every staged tool call through the whitelist registry."""
+    """通过白名单注册表执行每一条已暂存的工具调用。"""
     started = time.perf_counter()
     calls = list(state.get("pending_tool_calls") or [])
     tool_call_count = state.get("tool_call_count", 0)
     guard_triggered = bool(state.get("guard_triggered"))
     messages: list[ChatMessage] = []
     observations: list[ToolObservation] = []
-    # Calls are committed one by one as they run (evidence has to survive a crash); the step is
-    # written afterwards, so remember where this node started and attach that tail to it.
+    # 调用执行时逐条提交（证据必须扛过崩溃）；步骤行是之后才写的，所以记下
+    # 本节点的起点，再把这批尾巴挂上去。
     first_call = len(deps.context.recorded_call_ids)
 
     for call in calls:
@@ -395,7 +392,7 @@ def _tool_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
 
 
 def _observe_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
-    """Summarize the latest tool outcomes into audit-friendly evidence rows."""
+    """把最新的工具结果汇总成便于审计的证据行。"""
     started = time.perf_counter()
     observations = list(state.get("last_observations") or [])
     guard_triggered = bool(state.get("guard_triggered"))
@@ -423,19 +420,17 @@ def _observe_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
 
 
 def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
-    """Check whether the evidence base can carry an internal weekly draft.
+    """检查这份证据基础能否支撑一份内部周报草稿。
 
-    A draft needs more than counters: every candidate must carry a profile and a metric
-    series, the topic's published history must have been consulted for a baseline, and at
-    least one candidate must have had its cached content read.
+    草稿需要的远不止计数器：每个候选都必须带画像与指标序列，必须查过该主题
+    已发布的历史以取得基线，并且至少有一个候选读过它缓存的内容。
     """
     started = time.perf_counter()
     if not deps.run_verifier:
-        # `agent_no_verifier` ablation (`docs/evaluation.md` §8): the coverage gate is removed
-        # so a run that would normally be held back for a human instead publishes whatever the
-        # evidence supports. The result is recorded as a normal verification so the graph and
-        # the run summary stay identical in shape to a verified run - the whole point of the
-        # ablation is to measure the gate's contribution, not to change the pipeline's contract.
+        # `agent_no_verifier` 消融（`docs/evaluation.md` §8）：覆盖闸被移除，
+        # 于是平时会被拦下来等人工的运行，改为发布证据能支撑的内容。结果仍按
+        # 一次正常校验记录，让图与运行摘要在形状上与已校验的运行完全一致 ——
+        # 消融的全部意义是衡量这道闸的贡献，而不是改变流水线的契约。
         permissive = VerificationResult(
             sufficient=True,
             reason="verifier disabled by execution profile",
@@ -511,11 +506,10 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         latency_ms=_elapsed_ms(started),
     )
 
-    # A nudge for the one gap the model keeps leaving open: it does profile + metrics + history
-    # and then stops, never reading a README, so the verifier stays "insufficient" until the
-    # budget runs out. When the only missing class is cached content, tell the planner exactly
-    # what is missing instead of letting it guess. Sent once, so a run that still cannot satisfy
-    # the condition does not accumulate the same instruction every loop.
+    # 针对模型反复留着不补的那个缺口推一把：它做完画像 + 指标 + 历史就
+    # 停下，从不读 README，于是验证器一直「不充分」，直到预算耗尽。当
+    # 唯一缺的一类就是缓存内容时，直接告诉规划器缺什么，而不是让它去猜。
+    # 只发一次，这样仍然满足不了条件的运行不会每轮都堆积同一句话。
     nudge_messages: list[ChatMessage] = []
     if (
         not result.sufficient
@@ -543,7 +537,7 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
 
 
 def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
-    """Draft the report sections and persist them through `save_report_section`."""
+    """起草报告各章节，并通过 `save_report_section` 落库。"""
     started = time.perf_counter()
     verification = state.get("verification")
     sufficient = verification is not None and verification.sufficient
@@ -555,12 +549,12 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     budget_degraded = bool(state.get("budget_degraded"))
     guard_triggered = bool(state.get("guard_triggered"))
 
-    # A fatal upstream failure (the provider was unreachable during planning, a call was
-    # rejected) must end the run as that failure. Without this gate the graph flows plan -> write
-    # unconditionally, the write stage returns `error_code=None` for a clean draft, and the
-    # terminal status is decided from that last value: the run would be recorded as
-    # "needs_review" and the retry rule keyed on AGENT_MODEL_UNAVAILABLE would never fire, while
-    # a second call went out to an endpoint that had just failed.
+    # 上游致命失败（规划期间供应商不可达、某次调用被拒）必须以该失败作为
+    # 运行的结局。没有这道闸，图会无条件从 `plan` 流到 `write`，写阶段对
+    # 一份干净的草稿返回 `error_code=None`，而终态正是由最后这个值决定
+    # 的：运行会被记成 "needs_review"，按 `AGENT_MODEL_UNAVAILABLE`
+    # 建立的 retry 规则永远不会触发，同时第二次调用还发向了一个刚刚失败
+    # 的端点。
     carried_error = state.get("error_code")
     if carried_error is not None and carried_error not in REVIEW_REQUIRED_CODES:
         deps.recorder.record(
@@ -649,10 +643,10 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         }
 
     messages = list(state.get("messages") or [])
-    # One draft call is a coin flip on a real model: the answer can fail the schema, or come back
-    # with one of the six sections. Both are worth asking again about, because the second attempt
-    # is told exactly what was wrong — but neither is worth asking about forever, so the loop is
-    # capped and every attempt is charged against the same model-call, token, and cost budgets.
+    # 在真实模型上，一次草稿调用如同抛硬币：答案可能过不了 schema，也可能
+    # 少了一节。两者都值得再问一次，因为第二次尝试会被告知究竟哪里不对 ——
+    # 但也都不值得一直问，所以循环有上限，且每次尝试都计入同一份模型调用、
+    # token 与费用预算。
     sections: list[DraftSection] = []
     rejection: str | None = None
     cost = state.get("estimated_cost", Decimal("0"))
@@ -702,12 +696,11 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         if absent:
             rejection = f"缺少章节 {', '.join(absent)}"
             continue
-        # A draft that has all six sections but none of its citations is not complete: the
-        # generate stage refuses it (`section X has no citations`), so accepting it here would
-        # let the run reach `completed` and then fail one step later — after the model call was
-        # already paid for. Re-ask, naming the empty sections, the same way a missing section is
-        # named. This is the code-side enforcement of the prompt rule "every section carries at
-        # least one citation".
+        # 六个章节齐全却一条引用都没有的草稿不算完整：生成阶段会拒掉它
+        # （`section X has no citations`），所以在这里放行会让运行走到
+        # `completed`，然后在下一步失败 —— 而那时模型调用已经付过钱了。像点名
+        # 缺失章节那样，点名没有引用的章节再要一次。这是对 prompt 规则
+        # 「每节至少带一条引用」的代码侧落实。
         citationless = [section.section_key for section in sections if not section.citations]
         if citationless:
             rejection = f"以下章节没有引用：{', '.join(citationless)}"
@@ -736,17 +729,16 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "guard_triggered": guard_triggered,
         }
 
-    # A Markdown fallback (the model ignored the JSON contract) can come back with fewer than
-    # the six template sections. That is recoverable content, not a crash: save what arrived and
-    # flag the run for review, instead of treating a partially-drafted report as a clean
-    # completion.
+    # Markdown 兜底（模型无视了 JSON 契约）可能只带回少于六个模板章节。
+    # 这是可恢复的内容而非崩溃：把到手的存下来并把运行标记为待复核，而不是
+    # 把一份只写了一半的报告当成干净完成。
     present_keys = {section.section_key for section in sections}
     missing_keys = [key for key in REPORT_SECTION_KEYS if key not in present_keys]
     draft_incomplete = bool(missing_keys)
 
-    # Chapter writes are deterministic and bounded by the report template, so they run
-    # against their own budget and never compete with the research-call cap. That keeps
-    # `max_tool_calls` meaning "how much the model may explore", not "how big a report is".
+    # 章节写入是确定性的，且受报告模板约束，所以它们走自己的预算，从不与
+    # 研究调用上限争抢。这样 `max_tool_calls` 的含义才是「模型可以探索
+    # 多少」，而不是「报告有多大」。
     write_context = replace(
         deps.context,
         tool_call_count=0,
@@ -755,9 +747,9 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     saved: list[SectionRef] = []
     tool_call_count = state.get("tool_call_count", 0)
     failures = 0
-    # Same bookkeeping as the tool node: section writes are also `tool_calls` rows, and they belong
-    # to the `write` step written below. `replace` copies the list by reference, so the registry
-    # appends to the same list the run context holds.
+    # 与 `tool` 节点同样的记账：章节写入同样是 `tool_calls` 行，它们归属于
+    # 下面写出的 `write` 步骤。`replace` 按引用复制列表，因此注册表追加
+    # 进去的正是运行上下文持有的同一个列表。
     first_write_call = len(deps.context.recorded_call_ids)
     for index, section in enumerate(sections):
         arguments: dict[str, Any] = {
@@ -782,16 +774,15 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         latency_ms=_elapsed_ms(started),
     )
     deps.recorder.link_tool_calls(write_step.id, deps.context.recorded_call_ids[first_write_call:])
-    # A partially stored draft is not a finished draft: report it as needing a human instead
-    # of letting the run look complete with fewer sections than the template requires.
+    # 只存了一部分的草稿不是完成的草稿：报告为待人工处理，而不是让一个章节数少于
+    # 模板要求的运行看起来已经完成。
     next_prompt_tokens = prompt_tokens
     next_completion_tokens = completion_tokens
     next_cost = cost
     token_total = next_prompt_tokens + next_completion_tokens
     max_cost = state.get("max_cost", Decimal("0"))
-    # The draft call is billed like any other, so its cost has to be added here as well: a run
-    # that planned cheaply and then wrote an expensive draft used to be recorded with only the
-    # planning cost.
+    # 草稿调用和其他调用一样计费，所以它的费用也必须在这里加上：
+    # 过去一次规划很便宜、起草很昂贵的运行，只会记下规划部分的费用。
     budget_exceeded = (max_tokens > 0 and token_total >= max_tokens) or (
         max_cost > 0 and next_cost >= max_cost
     )
@@ -841,7 +832,7 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
 
 
 def _route_after_verify(state: AgentState) -> Literal["plan", "write"]:
-    """Continue researching only while there is an unexhausted budget and a next step."""
+    """只有在预算尚未耗尽且还有下一步时，才继续研究。"""
     verification = state.get("verification")
     if state.get("guard_triggered"):
         return "write"
@@ -867,7 +858,7 @@ def _route_after_verify(state: AgentState) -> Literal["plan", "write"]:
 def build_research_graph(
     deps: GraphDependencies,
 ) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
-    """Compile the bounded research graph with dependencies bound to its nodes."""
+    """编译有界研究图，并把依赖绑定到各节点上。"""
 
     def plan_node(state: AgentState) -> dict[str, Any]:
         return _plan_node(state, deps)
@@ -899,5 +890,5 @@ def build_research_graph(
     return graph.compile()
 
 
-#: Node names in execution order, used by tests and documentation.
+#: 按执行顺序排列的节点名，供测试与文档使用。
 GRAPH_NODES: tuple[str, ...] = ("plan", "tool", "observe", "verify", "write")

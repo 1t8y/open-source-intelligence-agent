@@ -1,4 +1,7 @@
-"""add agent and report tables
+"""新增 Agent 与报告相关表
+
+建立 Agent 配置、运行、步骤、工具调用，以及报告、引用、草稿、章节与仓库内容缓存；
+取值约束随表一并添加。
 
 Revision ID: b3f6a1c2d4e7
 Revises: 9c1f7b2d4e83
@@ -96,17 +99,17 @@ CHECKS = (
 
 
 def utc_datetime() -> sa.DateTime:
-    """Return the MySQL UTC DATETIME type used across the schema."""
+    """返回全库统一的 MySQL UTC `DATETIME` 类型。"""
     return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 def medium_text() -> sa.Text:
-    """Return a TEXT column that maps to MEDIUMTEXT on MySQL."""
+    """返回在 MySQL 上映射为 `MEDIUMTEXT` 的 `TEXT` 列。"""
     return sa.Text().with_variant(mysql.MEDIUMTEXT(), "mysql")
 
 
 def upgrade() -> None:
-    """Create the Agent run, tool call, report, and content cache tables."""
+    """创建 Agent 运行、工具调用、报告与内容缓存表。"""
     op.create_table(
         "agent_configs",
         sa.Column("id", UINT, autoincrement=True, nullable=False),
@@ -375,7 +378,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the Agent, report, and content cache tables."""
+    """删除 Agent、报告与内容缓存表。"""
     op.drop_table("repository_contents")
     op.drop_table("report_sections")
     op.drop_table("report_drafts")

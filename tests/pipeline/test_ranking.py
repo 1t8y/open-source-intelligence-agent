@@ -1,4 +1,4 @@
-"""Tests for deterministic topic candidate ranking."""
+"""守护主题候选排名的确定性。"""
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -21,7 +21,7 @@ from open_source_intelligence.pipeline.ranking import rank_topic_candidates
 
 
 def build_session_factory() -> sessionmaker[Session]:
-    """Build a shared in-memory database for ranking tests."""
+    """构造排名测试共用的内存数据库。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -45,7 +45,7 @@ def add_repository(
     latest_forks: int,
     with_snapshots: bool = True,
 ) -> Repository:
-    """Insert a repository and optional two-point metric history."""
+    """插入一个仓库，并可选地插入两个时间点的指标历史。"""
     source = session.scalar(select(DataSource).where(DataSource.source_type == "github"))
     if source is None:
         source = DataSource(
@@ -95,7 +95,7 @@ def add_repository(
 
 
 def add_topic(session: Session, *, max_candidates: int = 2) -> Topic:
-    """Insert one enabled Python/Agent topic."""
+    """插入一个已启用的 Python/Agent 主题。"""
     session.add(
         User(
             id=1,
@@ -122,7 +122,7 @@ def add_topic(session: Session, *, max_candidates: int = 2) -> Topic:
 
 
 def test_ranking_filters_orders_and_marks_agent_candidates() -> None:
-    """Topic filters, score ordering, and selection limits must be deterministic."""
+    """主题过滤、得分排序与入选上限三者都必须可复现。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         topic = add_topic(session)
@@ -225,7 +225,7 @@ def test_ranking_filters_orders_and_marks_agent_candidates() -> None:
 
 
 def test_repeated_ranking_replaces_stale_candidates() -> None:
-    """A rerun must not duplicate rows and must remove candidates that no longer match."""
+    """重跑不能留下重复行，还要清掉已经不再匹配的候选。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         topic = add_topic(session)
@@ -270,7 +270,7 @@ def test_repeated_ranking_replaces_stale_candidates() -> None:
 
 
 def test_negative_growth_is_clamped_to_nonnegative_score() -> None:
-    """Database score constraints must hold when repository growth is negative."""
+    """仓库负增长时，数据库上的得分约束仍然必须成立。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         topic = add_topic(session)
@@ -295,14 +295,13 @@ def test_negative_growth_is_clamped_to_nonnegative_score() -> None:
 
 
 def test_a_pinned_link_never_shares_a_position() -> None:
-    """Keeping a pinned link must not leave it holding another candidate's rank.
+    """保留钉住的关联行，不能让它继续占着另一个候选的名次。
 
-    The in-place refresh gives every scored candidate a fresh position and leaves the pinned,
-    unscored ones alone — including their old `rank`. When the pinned link happened to hold, say,
-    4 and the new pass also produced a 4, two rows shared a position. Everything that orders by
-    rank (the candidate list, the report's provenance line, the Agent's candidate loader) then got
-    an arbitrary order between them, so two reports over the same data could list the pool
-    differently.
+    原地刷新会给每个被评分的候选分配新名次，却不动钉住的、未评分的
+    那几行 —— 包括它们原来的 `rank`。若钉住的那行恰好占着 4，新的
+    一轮又产出一个 4，两行就共用同一个名次。此后所有按名次排序的地方
+    （候选列表、报告的来源行、Agent 的候选加载器）在这两行之间拿到的
+    都是任意顺序，同一份数据出的两份报告就可能列出不同的候选池。
     """
     session_factory = build_session_factory()
     with session_factory() as session:
@@ -335,7 +334,7 @@ def test_a_pinned_link_never_shares_a_position() -> None:
             latest_forks=11,
             with_snapshots=False,
         )
-        # `rank=1` collides with the winner of any pass: a fixture parked at the top of the list.
+        # `rank=1` 必然与任何一轮的头名撞车：这个夹具就停在列表顶端。
         session.add(
             TopicRepository(
                 topic_id=topic.id,
@@ -362,16 +361,16 @@ def test_a_pinned_link_never_shares_a_position() -> None:
 
     assert len(ranks) == len(set(ranks)), f"two candidates share a position: {ranks}"
     assert fixture is not None
-    # Parked after the scored pool, not promoted over it.
+    # 停在有分候选池之后，而不是被抬到其前面。
     assert fixture.rank == 3
 
 
 def test_a_pinned_candidate_survives_a_ranking_pass() -> None:
-    """Ranking refreshes the pool; it does not get to delete a link a human pinned.
+    """排名刷新的是候选池，没有权力删掉人手动钉住的关联。
 
-    An evaluation topic holds exactly one candidate chosen for the shape it exercises, and that
-    candidate usually does not win the star/fork ranking. Rebuilding the list from scratch dropped
-    it, so one daily pass over a curated topic silently emptied the case it exists to measure.
+    评测用的主题只挂一个候选，挑它是因为它恰好覆盖某种形状，而这个候选通常赢不下
+    按 star/fork 的排名。此前从零重建列表会把它丢掉，于是对一个人工挑选的主题跑
+    一次每日任务，就悄悄清空了它存在正是为了度量的那个用例。
     """
     session_factory = build_session_factory()
     with session_factory() as session:
@@ -400,8 +399,8 @@ def test_a_pinned_candidate_survives_a_ranking_pass() -> None:
             first_forks=10,
             latest_forks=20,
         )
-        # A curated, non-matching repository: it can never win the ranking, which is exactly why
-        # the pin has to protect it.
+        # 一个人工挑选、却不符合条件的仓库：它永远赢不了排名，这正是钉住
+        # 必须保护它的原因。
         add_repository(
             session,
             repository_id=3,
@@ -424,7 +423,7 @@ def test_a_pinned_candidate_survives_a_ranking_pass() -> None:
                 manually_pinned=True,
             )
         )
-        # A stale, unpinned link for a repository the ranker will not select.
+        # 一条过期的、未钉住的关联，指向排名器不会选中的仓库。
         session.add(
             TopicRepository(
                 topic_id=topic.id,
@@ -448,6 +447,6 @@ def test_a_pinned_candidate_survives_a_ranking_pass() -> None:
         assert links[3].selected_for_agent is True
         assert links[3].manually_pinned is True
         assert links[1].selected_for_agent is True
-        # Repo 2 was ranked and lost the cut-off, so its automatic selection is refreshed to False
-        # and the link survives as a scored-but-unselected candidate.
+        # 2 号仓库参与了排名但没进名单，于是它的自动选中被刷成 False，而关联
+        # 得以保留，成为一个有分却未入选的候选。
         assert links[2].selected_for_agent is False

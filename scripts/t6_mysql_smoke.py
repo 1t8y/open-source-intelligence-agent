@@ -1,4 +1,11 @@
-"""Run T6 pipeline run, scheduling, and retry smoke checks against MySQL."""
+"""针对 MySQL 跑 T6 的流水线运行、调度与重试冒烟。
+
+判据分三块：顺利路径必须按 collect → snapshot → rank 落三行，重跑不得重复写快照与候选，
+禁用的主题拿不到 rank 阶段；失败路径必须记下 `COLLECTOR_FAILED`、把令牌脱敏成
+`token=[REDACTED]`，并且整批采集失败后不再继续后续阶段；此外还直接向 `pipeline_runs`
+插入一行没有主题的 agent 记录，确认 CHECK 约束把它拒掉。运行前需导出 `DATABASE_URL`，
+`--collector offline` 让脚本在没有出网权限的机器上也能跑通。
+"""
 
 import argparse
 import json
@@ -43,7 +50,7 @@ SNAPSHOT_DATE_PATH = "$.snapshot_date"
 
 
 class FailingCollector:
-    """Hugging Face collector double that always reports an unavailable source."""
+    """永远报告数据源不可用的 Hugging Face 采集器替身。"""
 
     provider = "huggingface"
     display_name = "Hugging Face"
@@ -57,11 +64,10 @@ class FailingCollector:
 
 
 class OfflineCollector:
-    """GitHub collector double that succeeds without new data.
+    """不取新数据、但一定成功的 GitHub 采集器替身。
 
-    It exists so the orchestration, run records, and constraints can be verified
-    on a host without outbound network access. It never inserts repositories, so
-    the snapshot and rank stages still work on the real data collected by T4.
+    它存在的意义是让编排、运行记录与约束能在没有出网权限的机器上验证。它从不写入
+    仓库，所以快照与排名阶段仍然作用在 T4 采到的真实数据上。
     """
 
     provider = "github"
@@ -73,11 +79,10 @@ class OfflineCollector:
 
 
 def cleanup_verification_records(session: Any, *, extra_dates: Sequence[date] = ()) -> None:
-    """Remove verification topics, snapshots, and runs for the verification dates.
+    """按验证日期删掉验证用的主题、快照与运行记录。
 
-    Global collect and snapshot runs carry their business date in ``metrics_json``,
-    so an interrupted previous run, or a run created by the Celery checks, is
-    still cleaned up here.
+    全局的采集与快照运行把业务日期放在 ``metrics_json`` 里，所以上一轮被中断的运行、
+    或 Celery 检查留下的运行，也能在这里一并清干净。
     """
     dates = [VERIFY_DATE, *extra_dates]
     date_strings = [item.isoformat() for item in dates]
@@ -117,7 +122,7 @@ def cleanup_verification_records(session: Any, *, extra_dates: Sequence[date] = 
 
 
 def add_topic(session: Any, *, user_id: int, name: str, enabled: bool) -> Topic:
-    """Insert one verification topic bound to the temporary user."""
+    """插入一个绑定在临时用户名下的验证主题。"""
     topic = Topic(
         name=name,
         languages_json=None,
@@ -135,7 +140,7 @@ def add_topic(session: Any, *, user_id: int, name: str, enabled: bool) -> Topic:
 
 
 def check_topic_scope_constraint(session: Any) -> bool:
-    """Confirm the database rejects an Agent run that has no topic."""
+    """确认数据库会拒绝一次没有主题的 Agent 运行。"""
     try:
         session.execute(
             text(
@@ -151,7 +156,7 @@ def check_topic_scope_constraint(session: Any) -> bool:
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the optional cleanup mode used by the verification script."""
+    """解析验证脚本使用的可选清理模式。"""
     parser = argparse.ArgumentParser(description="Run T6 MySQL smoke checks")
     parser.add_argument(
         "--cleanup-only",
@@ -174,7 +179,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Verify run records, retry trail, status queries, and constraints on MySQL."""
+    """在 MySQL 上核对运行记录、重试轨迹、状态查询与约束。"""
     args = parse_args()
     extra_dates = [date.fromisoformat(item) for item in args.extra_cleanup_dates]
     settings = get_settings()

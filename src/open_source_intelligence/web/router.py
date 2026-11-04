@@ -1,8 +1,7 @@
-"""Server-rendered admin UI: report list, report detail, and the review workflow.
+"""服务端渲染的管理界面：报告列表、报告详情与审核流程。
 
-The pages are rendered with Jinja2 and enhanced with HTMX, which is vendored under
-`static/` so the interface works without any outbound network access. Every page reuses the
-same service layer as the JSON API; the UI never touches SQL itself.
+页面由 Jinja2 渲染、由 HTMX 增强，HTMX 内置在 `static/` 下，因此界面在完全没有外网
+访问时也能工作。每个页面都复用 JSON API 所用的同一层服务；界面自己从不直接碰 SQL。
 """
 
 from __future__ import annotations
@@ -160,42 +159,38 @@ MODULE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = MODULE_DIR / "templates"
 STATIC_DIR = MODULE_DIR / "static"
 
-#: The windows the dashboard offers as buttons. The endpoints accept any 1-90 and refuse anything
-#: else rather than silently clamping it; these three are the ones an operator actually asks for.
+#: 看板以按钮形式提供的观察窗口。接口接受 1-90 之间的任意值，其余一律拒绝而不是
+#: 悄悄截断；这三个才是运维真正会要的。
 WINDOW_OPTIONS = (1, 7, 30)
-#: How many recent runs the dashboard lists before pointing at the full ledger.
+#: 看板在指向完整账本之前，先列出多少条最近的运行。
 DASHBOARD_RUN_PAGE_SIZE = 10
-#: How many rows the list pages inside the sidebar shell show per page. The page size is fixed
-#: rather than a query parameter: these are browse pages, and a caller who wants a different page
-#: size wants the JSON API.
+#: 侧边栏外壳内的列表页每页显示多少行。页大小是固定的，不是查询参数：这些是浏览页，
+#: 想要别的页大小的人要的是 JSON API。
 LIST_PAGE_SIZE = 20
-#: How many delivery records and ledger rows the "one screenful" pages show. `list_pushes`,
-#: `list_jobs` and `list_eval_runs` take a limit rather than a page, so the page states the cap
-#: instead of pretending to paginate.
+#: 「一屏」页面显示多少条投递记录与账本行。`list_pushes`、`list_jobs` 和
+#: `list_eval_runs` 接受的是上限而不是页码，所以页面如实写出这个上限，而不是假装分页。
 RECENT_LIMIT = 50
-#: How many pipeline-run rows the ledger shows. One daily pipeline writes a run per stage (~8 of
-#: them), so 50 rows is a little over a week of history: enough to read a chain end to end without
-#: turning the card into a second database browser. The type/status filters narrow it beyond that.
+#: 账本显示多少条流水线运行。一次每日流水线会为每个阶段各写一条运行（约 8 条），
+#: 因此 50 行略多于一周的历史：足够从头到尾读完一条链路，又不至于把卡片变成第二个
+#: 数据库浏览器。类型与状态筛选可以在此基础上再收窄。
 PIPELINE_RECENT_LIMIT = 50
-#: The two values the Agent-run ledger accepts for `?review=`. Anything else is ignored rather than
-#: forwarded, because a typo in a URL should not be an error on a read-only page.
+#: Agent 运行账本对 `?review=` 接受的取值。其它值一律忽略而不是往下传，因为 URL 里
+#: 打错字不该让一个只读页面报错。
 RUN_REVIEW_FILTERS = ("open", "done")
 
-#: Roles that may see an **operations-configuration** surface in the interface. Today that is the
-#: push-target allowlist and the empty-state sentences that tell a reader to go write one.
+#: 有权在界面上看到**运维配置**类信息的角色。目前指的是推送目标白名单，以及那些
+#: 提示读者「去建一个」的空状态文案。
 #:
-#: Managing those is deliberately not something the console does. A push target decides which
-#: destinations a published report may leave through, and an account is created by the bootstrap
-#: CLI; both are deployment-adjacent configuration, so the backend owns them and the interface shows
-#: the state. Where the state is unavoidable — "you cannot push yet" needs to say why — the
-#: explanation is rendered for an admin, who is the person who can act on it. `AUDIT_READ_ROLES` and
-#: `TOPIC_WRITE_ROLES` are the same single role for the same reason: these are the controls that
-#: change what the platform does, not what one report says.
+#: 这些配置刻意不由控制台来管。推送目标决定一份已发布的报告可以走哪些出口，账号
+#: 则由引导 CLI 创建；两者都属于贴近部署的配置，所以归后端所有，界面只展示状态。
+#: 当状态无法回避时 ——「你还不能推送」总要说清原因 —— 解释只渲染给管理员看，
+#: 因为只有管理员能据此行动。`AUDIT_READ_ROLES` 与 `TOPIC_WRITE_ROLES` 出于同样的
+#: 理由也收在同一个角色上：它们改变的是平台的行为，而不是某一份报告的内容。
 OPS_CONFIG_ROLES: Final[tuple[str, ...]] = (ROLE_ADMIN,)
 
-#: The sidebar, in the order it is shown: `(group title, ((key, label, path, roles), ...))`.
-#: Declared next to the routes on purpose — the `roles` of an entry are the same roles its route
-#: enforces, so a page cannot be listed for an identity that would then be refused when it opens.
+#: 侧边栏，按显示顺序排列：`(组标题, ((key, label, path, roles), ...))`。
+#: 刻意声明在路由旁边 —— 条目的 `roles` 就是它的路由所强制的同一组角色，因此不会
+#: 出现「某个身份能看到某个页面、打开时却被拒绝」的情况。
 NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str, tuple[str, ...]], ...]], ...] = (
     (
         "总览",
@@ -234,16 +229,15 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _redact(value: object) -> object:
-    """Jinja filter applying the log redaction rule to one free-text value."""
+    """Jinja 过滤器：把日志脱敏规则应用到单个自由文本值上。"""
     return None if value is None else redact_text(str(value))
 
 
 def _redacted_json(value: object) -> str:
-    """Jinja filter serializing a JSON column for display with credentials removed.
+    """Jinja 过滤器：序列化 JSON 列用于展示，并抹掉其中的凭据。
 
-    The run trace is rendered by the UI as well as served by the JSON API, and both are egress
-    paths. Reusing `redact_text` keeps one definition of what may leave the process instead of
-    letting the page show what the endpoint deliberately hides.
+    运行轨迹既由界面渲染，也由 JSON API 提供，两者都是数据出口。复用 `redact_text`
+    让「什么可以离开进程」只有一个定义，而不是让页面把接口刻意隐藏的内容显示出来。
     """
     return redact_text(json.dumps(value, ensure_ascii=False, default=str))
 
@@ -252,24 +246,22 @@ templates.env.filters["redact"] = _redact
 templates.env.filters["redacted_json"] = _redacted_json
 
 
-#: Display labels for the enum codes the platform stores. **Only the label is translated — the
-#: value stays the contract code.** A select submits its `value`, so an option whose value became
-#: 待审核 would send a state the server does not have; the same split applies to the code shown in
-#: a badge versus the code sent in a form.
+#: 平台存储的枚举码对应的展示标签。**只翻译标签 —— 取值仍是契约里的码。** 下拉框
+#: 提交的是它的 `value`，所以一个取值被翻成「待审核」的选项会发出服务端并不存在的
+#: 状态；徽章上显示的码与表单里提交的码之间，同样是这条界线。
 #:
-#: Identifiers are deliberately absent and pass through untranslated: error codes
-#: (`AGENT_EVIDENCE_INCOMPLETE`), audit action names (`topic.create`), evaluation target names
-#: (`agent_full`) and role codes (`ADMIN`) are things an operator greps for in the contract, and a
-#: translated copy would only be harder to match.
+#: 标识符刻意不做映射、原样透传：错误码（`AGENT_EVIDENCE_INCOMPLETE`）、审计动作名
+#: （`topic.create`）、评测目标名（`agent_full`）与角色码（`ADMIN`）都是运维要在契约
+#: 里 grep 的东西，翻译过的副本只会更难对上。
 ENUM_LABELS: dict[str, str] = {
-    # Report lifecycle.
+    # 报告生命周期。
     "draft": "草稿",
     "pending_review": "待审核",
     "changes_requested": "退回修改",
     "approved": "已批准",
     "scheduled": "待发布",
     "published": "已发布",
-    # Run and job lifecycle. `pending`/`failed` are shared by several of these state machines.
+    # 运行与任务生命周期。`pending`/`failed` 被其中几台状态机共用。
     "pending": "待处理",
     "queued": "排队中",
     "running": "运行中",
@@ -279,19 +271,19 @@ ENUM_LABELS: dict[str, str] = {
     "partial": "部分成功",
     "completed": "已完成",
     "cancelled": "已取消",
-    # Agent runs only: the run finished, but its evidence base was not enough to stand behind a
-    # draft, so a human has to look. Phrased as a judgement about the run, not as a queue item —
-    # there is no "confirm this run" operation, and the old label promised one.
+    # 仅用于 Agent 运行：运行结束了，但证据基础不足以支撑一份草稿，得让人看一眼。
+    # 措辞是对这次运行的判断，而不是一个待办项 —— 根本不存在「确认这次运行」这个
+    # 操作，旧标签却许诺了它。
     "needs_review": "需人工复核",
-    # What a reviewer concluded. Not approve/reject: there is no draft to approve, only a decision
-    # about whether this explanation closes the case or needs another attempt.
+    # 复核人得出的结论。不是 approve/reject：这里没有草稿可供批准，只有「这段解释
+    # 能否结案，还是需要再试一次」的判断。
     "acknowledged": "已确认原因",
     "needs_rerun": "要重跑",
     "denied": "被拒",
     "sent": "已送达",
     "passed": "通过",
-    # Pipeline run types: one stage of the chain each. `agent`/`publish`/`push` are per topic,
-    # the rest run for every enabled topic in one pass.
+    # 流水线运行类型：每个类型对应链路中的一个阶段。`agent`/`publish`/`push` 按主题
+    # 运行，其余类型在一轮里对所有已启用主题运行。
     "collect": "采集",
     "snapshot": "快照",
     "rank": "排名",
@@ -300,7 +292,7 @@ ENUM_LABELS: dict[str, str] = {
     "agent": "研究",
     "publish": "发布",
     "push": "推送",
-    # Visibility, sensitivity, and the two publish modes (report and topic share the vocabulary).
+    # 可见性、敏感性，以及两种发布模式（报告与主题共用这套词汇）。
     "PRIVATE": "私有",
     "TEAM": "团队",
     "INTERNAL": "内部",
@@ -309,8 +301,8 @@ ENUM_LABELS: dict[str, str] = {
     "AUTO": "自动",
     "AUTO_WITH_DELAY": "延迟自动",
     "MANUAL": "手动",
-    # Agent step trail. `step_type` is the graph node that ran, `status` is its verdict; both are
-    # printed as a pair on the run page (`规划 · 正常`), where the raw codes read like stack frames.
+    # Agent 步骤轨迹。`step_type` 是实际运行的图节点，`status` 是它的判定；两者在
+    # 运行页上成对打印（`规划 · 正常`），毕竟原始码读起来像调用栈帧。
     "plan": "规划",
     "tool": "调用工具",
     "observe": "整理证据",
@@ -320,53 +312,51 @@ ENUM_LABELS: dict[str, str] = {
     "insufficient": "证据不足",
     "skipped": "跳过",
     "degraded": "降级",
-    # Delivery channels.
+    # 投递渠道。
     "email": "邮件",
     "webhook": "Webhook",
-    # Human review decisions. The audit trail keeps the raw code (an audit row names the operation,
-    # not its label); these three exist because the report page prints the decision next to the
-    # reviewer and 「approve」 in a Chinese table reads like a leaked field name.
+    # 人工审核决策。审计链保留原始码（审计行记录的是操作名，而不是它的标签）；
+    # 这三条之所以存在，是因为报告页会把决策打印在复核人旁边，而中文表格里的
+    # 「approve」读起来像泄漏出来的字段名。
     "approve": "通过",
     "reject": "拒绝",
     "request_changes": "退回修改",
-    # Why a version exists. `rollback_to_vN` is generated with the version in it, so it is handled
-    # by the prefix rule in `_label` rather than by a fixed entry here.
+    # 版本存在的原因。`rollback_to_vN` 是连版本号一起生成的，所以由 `_label` 里的
+    # 前缀规则处理，而不是在这里写一条固定条目。
     "generated_from_agent_draft": "由 Agent 草稿生成",
     "manual_edit": "人工编辑",
 }
 
 
 def _label(value: object) -> str:
-    """Translate one enum code for display, falling back to the code itself.
+    """把一个枚举码翻译成展示文案，映射不到时回退成码本身。
 
-    The fallback matters: an unmapped value shows as `agent_full` rather than as nothing, so a new
-    state added to a model appears on the page as its own code and is immediately visible as
-    "not yet labelled" instead of as a blank cell.
+    回退很重要：未映射的值显示为 `agent_full` 而不是什么都不显示，于是模型里新增的
+    状态会以它自己的码出现在页面上，一眼就能看出「尚未打标签」，而不是一个空白单元格。
     """
     text = "" if value is None else str(value)
     if text.startswith("rollback_to_v"):
-        # One reason carries its target in the value (`revisions.py` writes
-        # `rollback_to_v{version}`), so it can only be translated by rule. The digits pass through
-        # untouched on purpose: they are a version number, not a word.
+        # 有一条原因把目标版本编码在取值里（`revisions.py` 写的是
+        # `rollback_to_v{version}`），所以只能用规则翻译。数字刻意原样透传：
+        # 它是版本号，不是一个词。
         return f"回滚到 v{text.removeprefix('rollback_to_v')}"
     return ENUM_LABELS.get(text, text)
 
 
 templates.env.filters["label"] = _label
-# Report bodies are Markdown. The filter returns sanitized markup, so the template must not add
-# `| safe` on top of it: escaping is the whole point (see `web/markdown.py`).
+# 报告正文是 Markdown。该过滤器返回的是已净化标记，模板不能在其上再加
+# `| safe`：转义正是它存在的意义（见 `web/markdown.py`）。
 templates.env.filters["markdown"] = render_markdown
 
 DbSession = Annotated[Session, Depends(get_db_session)]
-#: The alias matters: the templates post the token as `csrf_token`, and FastAPI binds a form
-#: parameter by its declared name unless told otherwise. Paired with an `= ""` default at
-#: every use site so a form that omits the token still reaches `verify_csrf` and gets the
-#: rendered 403 page, instead of a JSON validation error.
+#: 别名很关键：模板提交的令牌字段名是 `csrf_token`，而 FastAPI 默认按声明名绑定
+#: 表单参数。再配合每个使用点上的 `= ""` 默认值，漏带令牌的表单仍会走到
+#: `verify_csrf`、拿到渲染好的 403 页面，而不是一个 JSON 校验错误。
 CsrfField = Annotated[str, Form(alias=CSRF_FIELD)]
 
 
 def get_web_session(request: Request, session: DbSession) -> WebSession:
-    """FastAPI dependency wrapper around `load_web_session`."""
+    """包在 `load_web_session` 外面的 FastAPI 依赖。"""
     return load_web_session(request, session)
 
 
@@ -374,7 +364,7 @@ WebSessionDep = Annotated[WebSession, Depends(get_web_session)]
 
 
 def add_web_surface(app: FastAPI) -> None:
-    """Mount the static assets and register the UI redirect/forbidden responses."""
+    """挂载静态资源，并注册界面用的重定向与拒绝响应。"""
     app.mount("/ui/static", StaticFiles(directory=str(STATIC_DIR)), name="ui-static")
 
     @app.exception_handler(WebRedirect)
@@ -383,9 +373,8 @@ def add_web_surface(app: FastAPI) -> None:
 
     @app.exception_handler(WebForbidden)
     async def forbidden_handler(request: Request, exc: WebForbidden) -> Response:
-        # A refusal inside an htmx swap lands in a small container. The whole 403 page there would
-        # be a page nested in a card — the same defect the trigger fragment exists to avoid — so a
-        # swap gets one line and keeps the status code.
+        # htmx 交换进来的拒绝落在一个小容器里。整张 403 页面会被嵌进卡片内部 ——
+        # 正是触发片段要避免的那个毛病 —— 所以交换请求只拿一行提示，状态码照旧保留。
         if _is_htmx(request):
             return templates.TemplateResponse(
                 request,
@@ -411,24 +400,23 @@ def add_web_surface(app: FastAPI) -> None:
 
 
 def _settings(request: Request) -> Settings:
-    """Return the application settings bound to the running app."""
+    """返回绑定在运行中应用上的配置。"""
     settings = request.app.state.settings
     assert isinstance(settings, Settings)
     return settings
 
 
 def _identity(user: User) -> dict[str, Any]:
-    """Render-friendly identity for the signed-in user."""
+    """把已登录用户整理成便于渲染的身份信息。"""
     return {"username": user.username, "roles": sorted(get_role_codes(user))}
 
 
 def _roles_of(context: dict[str, Any]) -> frozenset[str]:
-    """Return the role codes carried by the identity a page already holds.
+    """读取页面已持有的身份所携带的角色码。
 
-    One reader for `context["current_user"]`, because three callers ask the same question of it:
-    which sidebar entries to draw, whether to draw the dashboard entry, and which operations
-    surfaces this identity may see. A rule that read the dict for itself would be a fourth opinion
-    on what "signed in with a role" means, and the four would drift.
+    `context["current_user"]` 只由这一个函数读取，因为有三个调用方要问它同一个问题：
+    画哪些侧边栏条目、要不要画看板条目、这个身份能看哪些运维界面。若每条规则都自己
+    去读这个字典，就会多出第四种「带角色登录」的解释，四者迟早会走偏。
     """
     identity = context.get("current_user")
     if not isinstance(identity, dict):
@@ -440,32 +428,30 @@ def _roles_of(context: dict[str, Any]) -> frozenset[str]:
 
 
 def _has_role(context: dict[str, Any], allowed: tuple[str, ...]) -> bool:
-    """Return whether the page's identity intersects `allowed`.
+    """返回页面的身份是否与 `allowed` 有交集。
 
-    Written as an intersection rather than `in`: a rule gated on one role today would silently keep
-    working if the tuple grows, while `role in allowed` would not.
+    写成求交集而不是 `in`：今天只由一个角色把关的规则，在元组变长后仍会默默生效，
+    而 `role in allowed` 就不会。
     """
     return not _roles_of(context).isdisjoint(allowed)
 
 
 def _sees_ops_config(web: WebSession) -> bool:
-    """Return whether this session may see an operations-configuration surface.
+    """返回该会话能否看到运维配置类界面。
 
-    The entity-level twin of the `can_manage_ops` the renderer derives from an identity. A route
-    sometimes has to decide *before* a template exists — whether to load the push-target allowlist
-    at all — and it cannot ask the renderer. Both read `OPS_CONFIG_ROLES`, so the data a page
-    carries and the card that shows it cannot disagree.
+    它是渲染器从身份推出的 `can_manage_ops` 在实体层面的孪生。路由有时必须在模板
+    存在*之前*就做决定 —— 比如到底要不要加载推送目标白名单 —— 此时它没法去问渲染器。
+    两者都读 `OPS_CONFIG_ROLES`，所以页面携带的数据和展示它的卡片不会各说各话。
     """
     return not get_role_codes(web.user).isdisjoint(OPS_CONFIG_ROLES)
 
 
 def _navigation(context: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build the sidebar for the identity a page already carries.
+    """为页面已携带的身份构建侧边栏。
 
-    Derived from `context["current_user"]` for the same reason `can_manage_ops` is: every template
-    renders the nav, and none of them should have to compute who may see what. An identity lacking a
-    group's roles drops the whole entry, and a group left with no entries drops the heading too — an
-    empty group title is a promise of a page that is not there.
+    从 `context["current_user"]` 推导，理由与 `can_manage_ops` 相同：每个模板都要渲染
+    导航，它们都不该自己去算谁能看什么。身份缺少某个组的角色时整个条目被丢掉，组内
+    条目全空时连标题也一起丢掉 —— 一个空组标题等于承诺了一个并不存在的页面。
     """
     roles = _roles_of(context)
     navigation: list[dict[str, Any]] = []
@@ -476,10 +462,10 @@ def _navigation(context: dict[str, Any]) -> list[dict[str, Any]]:
             if not roles.isdisjoint(allowed)
         ]
         if items:
-            # The list is keyed `entries`, not `items`: Jinja resolves `group.items` on a dict to
-            # the built-in bound method before it ever looks at the key, so `{% for x in
-            # group.items %}` raises "not iterable". Renaming is cheaper than a rule nobody
-            # remembers at the next template.
+            # 这个列表的键叫 `entries` 而不是 `items`：Jinja 在字典上取 `group.items`
+            # 时会先解析到内置的绑定方法，根本轮不到那个键，于是
+            # `{% for x in group.items %}` 抛出 "not iterable"。改个名，比留一条下个
+            # 模板没人记得的规则便宜。
             navigation.append({"title": title, "entries": items})
     return navigation
 
@@ -492,19 +478,18 @@ def render(
     status_code: int = 200,
     csrf: str | None = None,
 ) -> HTMLResponse:
-    """Render a template and hand the browser a CSRF cookie when it lacks one."""
+    """渲染模板；浏览器没有 CSRF Cookie 时顺手发一个。"""
     payload: dict[str, Any] = {
         "csrf_token": csrf or request.cookies.get(CSRF_COOKIE, ""),
-        # Hand the state-machine-derived sets to the template instead of retyping them there, so
-        # the buttons a page offers and the states the services accept cannot drift apart.
+        # 把从状态机推导出的集合交给模板，而不是在模板里重抄一遍，这样页面给出的按钮
+        # 与服务接受的状态不会脱节。
         "editable_statuses": sorted(EDITABLE_STATUSES),
         "rollbackable_statuses": sorted(ROLLBACKABLE_STATUSES),
-        # The sidebar and its current entry: one decision point per rule, computed here so no
-        # template has to know which role sees which page.
+        # 侧边栏与当前条目：每条规则只在一处判定，且在这里算好，模板无需知道哪个角色
+        # 能看哪个页面。
         "navigation": _navigation(context),
-        # Which operations surfaces this identity may see. Same reasoning as the sidebar, and the
-        # same shape, so a page that renders an operations detail cannot be wider than the route
-        # that serves it.
+        # 这个身份能看哪些运维界面。理由与侧边栏相同，形状也相同，于是渲染运维详情的
+        # 页面不会比提供它的路由更宽松。
         "can_manage_ops": _has_role(context, OPS_CONFIG_ROLES),
         "active": context.get("active"),
     }
@@ -536,15 +521,14 @@ def _audited_action(
     resource_type: str,
     resource_id: str | None = None,
 ) -> Iterator[None]:
-    """Record a UI refusal before it is rendered.
+    """在拒绝被渲染出来之前，先把这次界面拒绝记进审计。
 
-    The JSON API writes an audit row for every denial; the UI rendered the same refusal and
-    wrote nothing, so the trail only ever held the API's half of the story. §3.1.1 of
-    `docs/security-and-privacy.md` asks for the audit on the *write*, not on the transport, so
-    the UI has to record it too.
+    JSON API 对每次拒绝都写一行审计；界面渲染了同样的拒绝却什么都没写，审计链于是
+    只留下 API 那一半故事。`docs/security-and-privacy.md` §3.1.1 要求把审计落在*写*
+    上，而不是落在传输上，所以界面也必须记录。
 
-    It is recorded here rather than in the `WebForbidden` handler because the handler runs
-    outside the request's dependency graph and has no database session to write through.
+    记录放在这里而不是 `WebForbidden` 处理器里，是因为处理器运行在请求的依赖图之外，
+    手上没有可以写入的数据库会话。
     """
     try:
         yield
@@ -564,7 +548,7 @@ def _audited_action(
 
 
 def _require_write_role(session: WebSession) -> None:
-    """Reject a mutating UI action from a read-only role."""
+    """拒绝只读角色发起的写类界面操作。"""
     if get_role_codes(session.user).isdisjoint(REPORT_WRITE_ROLES):
         raise WebForbidden("只读角色不能执行该操作")
 
@@ -578,11 +562,10 @@ def _require_roles(
     resource_type: str,
     message: str,
 ) -> None:
-    """Reject an identity the page's roles do not cover, recording the refusal.
+    """拒绝页面角色未覆盖的身份，并把这次拒绝记录下来。
 
-    One helper for every page that is not open to everyone: the audit action, the resource type
-    and the refusal path are the same on each of them, and a page that spelled its own version
-    would be a page whose refusals are filed under a different name than the rest.
+    所有不向所有人开放的页面共用这一个辅助函数：它们的审计动作、资源类型和拒绝路径
+    都相同；若某个页面自己写一份，它的拒绝就会以别的名字归档，和其它页面对不上。
     """
     with _audited_action(request, session, web, resource_type=resource_type):
         if get_role_codes(web.user).isdisjoint(allowed):
@@ -590,10 +573,10 @@ def _require_roles(
 
 
 def _require_metrics_role(request: Request, session: Session, web: WebSession) -> None:
-    """Reject a viewer from the operations dashboard.
+    """把普通查看者挡在运维看板之外。
 
-    The dashboard exposes cross-topic cost, failure reasons and evaluation verdicts rather than
-    the contents of one report, so it follows `METRICS_ROLES` instead of the report read roles.
+    看板暴露的是跨主题的成本、失败原因与评测结论，而不是某一份报告的内容，所以它
+    遵循 `METRICS_ROLES`，而不是报告读取角色。
     """
     _require_roles(
         request,
@@ -612,10 +595,10 @@ def _authorize_action(
     report_id: int,
     csrf: str | None,
 ) -> None:
-    """Guard a mutating UI action: CSRF, then write role, then read access.
+    """为一个写类界面操作把关：先 CSRF，再写角色，最后读权限。
 
-    The read check runs *before* the service call so an action can never take effect on a
-    report the caller may not see, and any of the three refusals is audited as it is raised.
+    读权限检查发生在调用服务*之前*，因此任何操作都不可能作用在调用者看不到的报告上；
+    三种拒绝中的任何一种都会在抛出的同时记入审计。
     """
     with _audited_action(request, session, web, resource_type="report", resource_id=str(report_id)):
         verify_csrf(request, csrf)
@@ -624,10 +607,10 @@ def _authorize_action(
 
 
 def _load_visible_report(session: Session, web: WebSession, report_id: int) -> Report:
-    """Load a report the current user may read, or render the matching error page.
+    """加载当前用户有权读取的报告，否则渲染对应的错误页。
 
-    The refusal is filed as `report.read`, the same action the JSON API records, so "who tried
-    to reach which report" is one query over one action name rather than two.
+    拒绝会以 `report.read` 归档，与 JSON API 记录的是同一个动作，于是「谁试图访问哪份
+    报告」只需按一个动作名查一次，而不是查两次。
     """
     report = session.get(Report, report_id)
     if report is None:
@@ -638,17 +621,16 @@ def _load_visible_report(session: Session, web: WebSession, report_id: int) -> R
 
 
 def _topic_name(session: Session, topic_id: int) -> str | None:
-    """Return one topic name."""
+    """返回单个主题的名称。"""
     return session.scalar(select(Topic.name).where(Topic.id == topic_id))
 
 
 def _topic_names(session: Session, topic_ids: set[int]) -> dict[int, str]:
-    """Map topic ids to names for the list pages.
+    """为列表页建立主题 id 到名称的映射。
 
-    A presentation-only name lookup, not a read model: the list queries return rows that carry a
-    `topic_id`, and the page has to print something a human recognises. Same shape as the lookup
-    `reports_page` does inline — pulled out here so the repository page and the topic page use the
-    one copy instead of each inventing their own.
+    这只是展示用的名称查询，不是读模型：列表查询返回的行只带一个 `topic_id`，而页面
+    得印出人能认出来的东西。形状与 `reports_page` 内联做的那次查询相同 —— 抽到这里，
+    是为了让仓库页与主题页共用这一份，而不是各自发明一份。
     """
     if not topic_ids:
         return {}
@@ -657,7 +639,7 @@ def _topic_names(session: Session, topic_ids: set[int]) -> dict[int, str]:
 
 
 def _report_titles(session: Session, report_ids: set[int]) -> dict[int, str]:
-    """Map report ids to titles for the list pages. See `_topic_names`."""
+    """为列表页建立报告 id 到标题的映射。参见 `_topic_names`。"""
     if not report_ids:
         return {}
     rows = session.execute(select(Report.id, Report.title).where(Report.id.in_(report_ids))).all()
@@ -665,7 +647,7 @@ def _report_titles(session: Session, report_ids: set[int]) -> dict[int, str]:
 
 
 def _push_context(session: Session, report_id: int) -> dict[str, Any]:
-    """Build the data the push card needs: the allowlist and this report's delivery trail."""
+    """构建推送卡片需要的数据：白名单，以及这份报告的投递轨迹。"""
     return {
         "push_targets": list_targets(session),
         "pushes": list_pushes(session, report_id=report_id, limit=20),
@@ -674,12 +656,11 @@ def _push_context(session: Session, report_id: int) -> dict[str, Any]:
 
 
 def _research_trace_context(session: Session, report: Report) -> dict[str, Any]:
-    """Build the data the collapsed "research trace" card needs.
+    """构建折叠起来的「研究轨迹」卡片所需的数据。
 
-    The trace is the Agent's step-by-step trajectory (what it planned, which tools it called,
-    what each returned). It is deliberately *collapsed* on the report page: the report's value is
-    the finished narrative, not the machinery, so the trace is available to inspect on demand
-    without pushing its latency and token columns in front of the reader.
+    轨迹是 Agent 的逐步执行路径（它计划了什么、调用了哪些工具、每个工具返回了
+    什么）。在报告页上它刻意是*折叠*的：报告的价值在成稿的叙述，不在机器内部，所以
+    轨迹可以按需查看，而不必把它的耗时和 token 列推到读者眼前。
     """
     trace = (
         get_agent_run_trace(session, run_id=report.agent_run_id) if report.agent_run_id else None
@@ -688,12 +669,11 @@ def _research_trace_context(session: Session, report: Report) -> dict[str, Any]:
 
 
 def _runtime_mode(settings: Settings) -> dict[str, Any]:
-    """Describe how the deployment is wired, so a page can say "offline demo" vs "real".
+    """描述这次部署是怎么接的，让页面能区分「离线演示」与「真实运行」。
 
-    The three facts that decide whether the platform is running for real — the model provider,
-    the delivery transport, and whether research auto-dispatches — are surfaced together so a
-    reader cannot mistake an offline stub product for a real one. `provider` is "offline" only
-    for the deterministic stub; any remote provider counts as real.
+    决定平台是否真的在跑的三件事 —— 模型供应商、投递通道、研究是否自动派发 —— 被放
+    在一起呈现，读者就不会把离线桩产品误当成真货。只有确定性桩会让 `provider` 取
+    "offline"；任何远程供应商都算真。
     """
     provider_real = settings.agent_provider != "offline"
     delivery_real = settings.push_delivery == "live"
@@ -708,12 +688,11 @@ def _runtime_mode(settings: Settings) -> dict[str, Any]:
 
 
 def _delivery_mode(settings: Settings) -> dict[str, Any]:
-    """Describe how delivery is configured so the ledger page can say it out loud.
+    """描述投递是怎么配置的，好让账本页把它明说出来。
 
-    The answer is the same three facts the service acts on — `push_delivery`, whether pushing is
-    on, and whether the webhook channel carries a signing secret — plus the two test-only escape
-    hatches that a local drill flips. A reader should not have to infer "these are all offline
-    receipts" from a table full of `offline:` details.
+    答案就是服务实际依据的那三件事 —— `push_delivery`、推送是否开启、Webhook 通道
+    是否带签名密钥 —— 外加本地演练才会拨动的两个仅测试用逃生口。读者不该靠一张满是
+    `offline:` 细节的表，自己去推断「这些回执全是离线的」。
     """
     return {
         "delivery": settings.push_delivery,
@@ -725,11 +704,11 @@ def _delivery_mode(settings: Settings) -> dict[str, Any]:
 
 
 def _share_context(session: Session, report: Report) -> dict[str, Any]:
-    """Build the data the share card needs: the links and whether a new one may be minted.
+    """构建分享卡片需要的数据：已有的链接，以及能否再生成一条。
 
-    The eligibility answer is computed from the same two constants the service refuses on
-    (`SHAREABLE_SENSITIVITY`, `SHAREABLE_STATUS`), so the card cannot offer a button that the
-    service will reject - the same rule the navigation and topic pages follow.
+    可否分享的判断用的是服务拒绝时依据的同样两个常量（`SHAREABLE_SENSITIVITY`、
+    `SHAREABLE_STATUS`），所以卡片不会给出一个服务必然拒绝的按钮 —— 与导航和主题页
+    遵循的是同一条规则。
     """
     shareable = report.sensitivity == SHAREABLE_SENSITIVITY and report.status == SHAREABLE_STATUS
     if report.sensitivity != SHAREABLE_SENSITIVITY:
@@ -746,17 +725,16 @@ def _share_context(session: Session, report: Report) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------
-# Home
+# 首页
 # --------------------------------------------------------------------------------------
 
-#: Roles allowed to trigger a collect or a research run from the home page. A research run
-#: spends real model budget and a collect spends public-API quota, so both sit with the write
-#: roles rather than every reader; the cost is stated on the card next to the buttons.
+#: 允许从首页触发采集或研究运行的角色。研究运行要花真实的模型预算，采集要消耗
+#: 公共 API 配额，所以两者都交给写角色而不是所有读者；成本写在按钮旁边的卡片上。
 TRIGGER_ROLES: Final[tuple[str, ...]] = REPORT_WRITE_ROLES
 
-#: Audit action names for the two home triggers. `collector.run` already exists (the collector
-#: stage records it); a research dispatch from the UI is a new surface, so it gets its own
-#: `agent.run` action alongside the `report.*` and `topic.*` family.
+#: 首页两个触发动作的审计动作名。`collector.run` 已经存在（采集阶段在记录它）；
+#: 从界面派发研究是一块新入口，所以它在 `report.*`、`topic.*` 家族之外单列一个
+#: `agent.run`。
 AUDIT_COLLECT: Final[str] = "collector.run"
 AUDIT_RESEARCH: Final[str] = "agent.run"
 
@@ -768,12 +746,11 @@ def home_page(
     web: WebSessionDep,
     now: Annotated[datetime, Depends(utc_now)],
 ) -> HTMLResponse:
-    """Render the landing page: system state, the newest report, and the trigger entry.
+    """渲染落地页：系统状态、最新报告，以及触发入口。
 
-    The page is the first thing a signed-in user sees, so it answers the three questions the
-    D3 acceptance names — what is the system doing, what is the newest report, how do I trigger
-    once — without sending the reader into the ledger. It reads through the same service layer
-    as every other page; nothing here issues SQL directly.
+    这是已登录用户看到的第一个页面，所以它要回答 D3 验收点名的三个问题 —— 系统在做
+    什么、最新的一份报告是哪份、怎么触发一次 —— 而不用把读者打发去账本。它和其它
+    页面一样通过同一层服务读取数据；这里没有任何地方直接发 SQL。
     """
     roles = get_role_codes(web.user)
     overview = collect_metrics(
@@ -817,11 +794,10 @@ def home_collect(
     web: WebSessionDep,
     csrf: CsrfField = "",
 ) -> Response:
-    """Queue a full daily pipeline (collect → snapshot → rank → contents) on the worker.
+    """在 worker 上排入一次完整的每日流水线（采集 → 快照 → 排名 → 正文缓存）。
 
-    The run is dispatched asynchronously: a collect hits the public API and can take minutes, so
-    the request returns a notice and the worker does the work. Only write roles may spend the
-    quota, and the dispatch is audited.
+    运行是异步派发的：采集要打公共 API，可能耗时数分钟，所以请求只返回一条提示，
+    活儿交给 worker 干。只有写角色可以消耗配额，派发本身会记入审计。
     """
     verify_csrf(request, csrf)
     _require_roles(
@@ -868,10 +844,10 @@ def home_research(
     topic_id: Annotated[int, Form()],
     csrf: CsrfField = "",
 ) -> Response:
-    """Queue one research run for a topic on the worker.
+    """为某个主题在 worker 上排入一次研究运行。
 
-    A research run spends real model budget, so the endpoint enforces the write roles, validates
-    the topic exists and is enabled, and audited the dispatch. The run itself is asynchronous.
+    研究运行要花真实的模型预算，因此该端点强制写角色、校验主题存在且已启用，并把
+    派发记进审计。运行本身是异步的。
     """
     verify_csrf(request, csrf)
     _require_roles(
@@ -938,7 +914,7 @@ def home_research(
 
 
 def _queue_collect(settings: Settings) -> str:
-    """Queue a full daily pipeline on the broker and return the Celery task id."""
+    """在 broker 上排入一次完整的每日流水线，返回 Celery 任务 id。"""
     app = create_celery_app(settings)
     result = app.send_task(
         DAILY_PIPELINE_TASK,
@@ -948,18 +924,18 @@ def _queue_collect(settings: Settings) -> str:
 
 
 def _queue_research(settings: Settings, *, topic_id: int) -> str:
-    """Queue one research run on the broker and return the Celery task id."""
+    """在 broker 上排入一次研究运行，返回 Celery 任务 id。"""
     app = create_celery_app(settings)
     result = app.send_task(RESEARCH_AGENT_TASK, kwargs={"topic_id": topic_id})
     return str(result.id)
 
 
 def _is_htmx(request: Request) -> bool:
-    """Return whether the request came from htmx.
+    """返回该请求是否来自 htmx。
 
-    htmx stamps `HX-Request: true` on everything it sends. A handler that swaps into a small
-    container needs that signal: the same endpoint also serves a browser without JavaScript, and
-    only one of the two audiences can take a fragment.
+    htmx 会在它发出的每个请求上盖 `HX-Request: true`。要把内容交换进小容器的处理器
+    需要这个信号：同一个端点同时还要服务没有 JavaScript 的浏览器，而两类受众里只有
+    一类能接受片段。
     """
     return request.headers.get("HX-Request", "").lower() == "true"
 
@@ -973,7 +949,7 @@ def _trigger_result(
     href: str | None = None,
     link_label: str | None = None,
 ) -> dict[str, Any]:
-    """Describe one trigger outcome once, for both the fragment and the fallback page."""
+    """把一次触发的结果只描述一遍，供片段与兜底页共用。"""
     return {
         "ok": ok,
         "title": title,
@@ -992,15 +968,15 @@ def _trigger_response(
     result: dict[str, Any],
     status_code: int = status.HTTP_200_OK,
 ) -> Response:
-    """Answer a home trigger with a fragment for htmx, or the whole page for a plain form post.
+    """用片段回应 htmx 的首页触发，用整页回应普通表单提交。
 
-    Both trigger forms target `#home-trigger-result` with `hx-swap="innerHTML"`, so a full document
-    there gets inserted *inside* the card — the shell ends up nested in itself, which is neither
-    readable nor presentable. The fragment is the only thing an htmx swap can take.
+    两个触发表单都指向 `#home-trigger-result` 并带 `hx-swap="innerHTML"`，所以一份
+    完整文档会被插进卡片*内部* —— 外壳套在自己里面，既不好读也不好看。片段是 htmx
+    交换唯一能接受的东西。
 
-    The same forms still carry `method`/`action`, so a browser without JavaScript posts them too.
-    That client gets the page back, carrying the same message as an alert — which is why the
-    outcome is described once in `_trigger_result` instead of once per response shape.
+    同一批表单仍然带 `method`/`action`，因此没有 JavaScript 的浏览器也会提交它们。
+    这类客户端拿到的是整页，消息以提示条的形式出现 —— 这也是为什么结果只在
+    `_trigger_result` 里描述一遍，而不是每种响应形态各写一遍。
     """
     if _is_htmx(request):
         return render(
@@ -1037,7 +1013,7 @@ def _home_notice_context(
     notice: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
-    """Re-read the home page's data after a trigger, carrying a notice or an error back."""
+    """触发之后重新读取首页数据，并把提示或错误带回去。"""
     roles = get_role_codes(web.user)
     resolved_now = now or utc_now()
     overview = collect_metrics(
@@ -1071,7 +1047,7 @@ def _home_notice_context(
 
 
 # --------------------------------------------------------------------------------------
-# Session
+# 会话
 # --------------------------------------------------------------------------------------
 
 
@@ -1080,7 +1056,7 @@ def login_page(
     request: Request,
     next_url: Annotated[str, Query(alias="next")] = "/ui/home",
 ) -> HTMLResponse:
-    """Render the login form."""
+    """渲染登录表单。"""
     csrf = new_csrf_token()
     return render(
         request,
@@ -1099,7 +1075,7 @@ def login_submit(
     next_url: Annotated[str, Form(alias="next")] = "/ui/home",
     csrf: CsrfField = "",
 ) -> Response:
-    """Authenticate the form and store the access token in an HttpOnly cookie."""
+    """校验表单里的身份，并把访问令牌存进 `HttpOnly` Cookie。"""
     verify_csrf(request, csrf)
     user = authenticate_user(session, username, password)
     if user is None:
@@ -1146,7 +1122,7 @@ def login_submit(
 
 @router.post("/logout")
 def logout(request: Request, csrf: CsrfField = "") -> Response:
-    """Clear the session cookie."""
+    """清除会话 Cookie。"""
     verify_csrf(request, csrf)
     response = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(SESSION_COOKIE, path="/")
@@ -1154,7 +1130,7 @@ def logout(request: Request, csrf: CsrfField = "") -> Response:
 
 
 # --------------------------------------------------------------------------------------
-# Dashboard
+# 看板
 # --------------------------------------------------------------------------------------
 
 
@@ -1168,10 +1144,10 @@ def dashboard_page(
         int, Query(ge=MIN_WINDOW_DAYS, le=MAX_WINDOW_DAYS)
     ] = DEFAULT_WINDOW_DAYS,
 ) -> HTMLResponse:
-    """Render the operations dashboard: one window of metrics plus the newest runs.
+    """渲染运维看板：一个观察窗口的指标，加上最新的若干次运行。
 
-    The role check runs before anything is read, so a viewer's request never touches the ledger
-    and the page they get back says why rather than showing an empty dashboard.
+    角色校验在任何读取之前执行，所以普通查看者的请求根本不会碰到账本，返回的页面会
+    说明原因，而不是给出一张空看板。
     """
     _require_metrics_role(request, session, web)
     overview = collect_metrics(
@@ -1203,12 +1179,12 @@ def dashboard_run_page(
     web: WebSessionDep,
     run_id: int,
 ) -> Response:
-    """Keep the dashboard's old run links working by pointing them at the run's real home.
+    """让看板下旧的运行链接继续可用：把它们指向运行真正的归属页。
 
-    The trajectory used to live here, which is why opening a run from 采集与运行 felt like being
-    dropped into 运维看板: the URL said `dashboard`, the nav highlighted 运维看板, and the only way
-    back led to the dashboard. A run belongs to the ledger that lists it, so the page moved to
-    `/runs/{run_id}`; this path stays as a redirect because links and bookmarks outlive a fix.
+    轨迹以前就住在这里，所以从「采集与运行」点开一次运行，感觉像被丢进了「运维看板」：
+    URL 写着 `dashboard`，导航高亮的是「运维看板」，唯一的返回路径也通向看板。运行
+    属于列出它的那本账，于是页面搬到了 `/runs/{run_id}`；这条路径留作重定向，因为
+    链接和书签比一次修复活得久。
     """
     _require_metrics_role(request, session, web)
     return RedirectResponse(
@@ -1218,7 +1194,7 @@ def dashboard_run_page(
 
 
 # --------------------------------------------------------------------------------------
-# Reports
+# 报告
 # --------------------------------------------------------------------------------------
 
 
@@ -1232,7 +1208,7 @@ def reports_page(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> HTMLResponse:
-    """Render the paginated, access-filtered report list."""
+    """渲染按权限过滤、分页的报告列表。"""
     page_result = queries.list_reports(
         session,
         access_filter=readable_reports_filter(web.user, get_role_codes(web.user)),
@@ -1251,15 +1227,13 @@ def reports_page(
             "topic_names": topic_names,
             "status_filter": status_filter or "",
             "visibility_filter": visibility or "",
-            # Offered from the model's own tuples rather than retyped in the template: a filter
-            # that lists a state the state machine does not have returns an empty page and looks
-            # like a bug in the data.
+            # 直接取自模型自己的元组，而不是在模板里重抄：一个列出状态机并不存在的状态
+            # 的筛选项，只会返回空页，看起来像数据有 bug。
             "status_options": REPORT_STATUSES,
             "visibility_options": REPORT_VISIBILITIES,
-            # The release driver on this page is a write: the route behind it enforces
-            # `REPORT_WRITE_ROLES`, so the button is rendered under the same rule. A read-only
-            # identity used to be offered the button and refused by the route, which is the same
-            # defect as a sidebar entry that opens to a 403.
+            # 本页上的发布驱动器是一次写操作：它背后的路由强制 `REPORT_WRITE_ROLES`，
+            # 所以按钮也在同一条规则下渲染。过去只读身份会看到按钮、点了却被路由拒绝，
+            # 这和侧边栏条目点开就是 403 是同一个毛病。
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
             "active": "reports",
         },
@@ -1278,7 +1252,7 @@ def _panel(
     share_token: str | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
-    """Render the report panel that every action endpoint swaps back in."""
+    """渲染每个动作端点都会换回来的报告面板。"""
     report = _load_visible_report(session, web, report_id)
     detail = queries.get_report_detail(session, report_id=report.id)
     assert detail is not None
@@ -1311,7 +1285,7 @@ def report_page(
     web: WebSessionDep,
     report_id: int,
 ) -> HTMLResponse:
-    """Render one report with its citations, verdict, reviews, and actions."""
+    """渲染单份报告：引用、结论、复核记录与可执行的动作。"""
     report = _load_visible_report(session, web, report_id)
     detail = queries.get_report_detail(session, report_id=report.id)
     assert detail is not None
@@ -1344,7 +1318,7 @@ def verify_action(
     report_id: int,
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Run the Verifier and swap the refreshed panel back in."""
+    """运行校验器，并把刷新后的面板换回来。"""
     _authorize_action(request, session, web, report_id, csrf)
     outcome = verify_report(session, report_id=report_id)
     reason = "、".join(outcome.reason_codes) or "无"
@@ -1367,7 +1341,7 @@ def review_action(
     comment: Annotated[str, Form()] = "",
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Record one human review decision."""
+    """记录一次人工审核决策。"""
     _authorize_action(request, session, web, report_id, csrf)
     try:
         outcome = record_review(
@@ -1397,11 +1371,10 @@ def publish_action(
     report_id: int,
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Apply the publish policy and release the report when it is already due.
+    """套用发布策略，并在已到期时真正放出这份报告。
 
-    A report still inside its withdrawal window stays queued here, exactly like the JSON API:
-    the release is only attempted once the window has elapsed, so an `INV-5` block surfaces as
-    a rendered 409 instead of a bare "queued".
+    还在撤回窗口内的报告会像 JSON API 那样留在这里排队：只有窗口过去之后才会尝试
+    发布，于是 `INV-5` 拦截会以渲染好的 409 呈现，而不是干巴巴一句「已排队」。
     """
     _authorize_action(request, session, web, report_id, csrf)
     try:
@@ -1453,10 +1426,9 @@ def publish_due_action(
     web: WebSessionDep,
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Run the release driver once, mirroring the scheduled sweep.
+    """手动跑一次发布驱动器，行为对齐定时扫描。
 
-    Scoped to the reports this user may read: the scheduled sweep belongs to the system, a button
-    pressed by a person does not.
+    范围限于这个用户能读的报告：定时扫描属于系统，人按下的按钮则不是。
     """
     with _audited_action(request, session, web, resource_type="report"):
         verify_csrf(request, csrf)
@@ -1483,11 +1455,10 @@ def push_action(
     target_id: Annotated[int, Form()],
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Deliver the report to one allowlisted target and swap the refreshed panel back in.
+    """把报告投递到一个白名单目标，并把刷新后的面板换回来。
 
-    The channel is read from the target row rather than from the form, so the browser cannot
-    ask for a channel the target does not use. Re-submitting the same target is the retry
-    path: the service replays a delivered push and advances the attempt count of a failed one.
+    渠道取自目标行而不是表单，所以浏览器无法要求一个该目标并不使用的渠道。重新提交
+    同一个目标就是重试路径：服务对已送达的推送做重放，对失败的推送递增尝试次数。
     """
     _authorize_action(request, session, web, report_id, csrf)
     target = session.get(PushTarget, target_id)
@@ -1530,7 +1501,7 @@ def rollback_action(
     comment: Annotated[str, Form()] = "",
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Restore a historical version as a new draft version."""
+    """把历史版本恢复成一个新的草稿版本。"""
     _authorize_action(request, session, web, report_id, csrf)
     try:
         outcome = rollback_report(
@@ -1560,11 +1531,11 @@ def withdraw_action(
     comment: Annotated[str, Form()] = "",
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Pull a published report back to draft.
+    """把已发布的报告撤回草稿。
 
-    This is the only way out of `published` (`published -> draft`), and until now it existed
-    nowhere in the interface: an editor could publish a report and then have no way to correct it,
-    because editing requires a draft and rolling back requires a second version to roll back to.
+    这是离开 `published` 的唯一出路（`published -> draft`），而在此之前界面上根本没有
+    这个操作：编辑者能发布一份报告，之后却无从修改 —— 因为编辑要求草稿状态，回滚又
+    要求存在第二个可回滚的版本。
     """
     _authorize_action(request, session, web, report_id, csrf)
     try:
@@ -1597,7 +1568,7 @@ def edit_action(
     sensitivity: Annotated[str, Form()] = "",
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Apply a manual edit from the detail page."""
+    """应用来自详情页的人工编辑。"""
     _authorize_action(request, session, web, report_id, csrf)
     try:
         outcome = revise_report(
@@ -1629,7 +1600,7 @@ def edit_action(
 
 
 # --------------------------------------------------------------------------------------
-# Push deliveries
+# 推送投递
 # --------------------------------------------------------------------------------------
 
 
@@ -1641,11 +1612,10 @@ def create_share_action(
     report_id: int,
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Mint a no-login link and render it once.
+    """生成一条免登录链接，并只渲染一次。
 
-    The plaintext token is passed to this one render and never stored. A refresh re-posts the
-    form (the browser asks first) instead of replaying the string, so "shown once" follows from
-    HTTP semantics rather than from front-end bookkeeping.
+    明文令牌只传给这一次渲染，从不落库。刷新页面会重新提交表单（浏览器会先问一句），
+    而不是重放那个字符串，因此「只显示一次」来自 HTTP 语义，而不是前端的记账。
     """
     _authorize_action(request, session, web, report_id, csrf)
     try:
@@ -1678,7 +1648,7 @@ def revoke_share_action(
     share_id: int,
     csrf: CsrfField = "",
 ) -> HTMLResponse:
-    """Stop a link from resolving, idempotently."""
+    """让一条链接不再可用，且幂等。"""
     _authorize_action(request, session, web, report_id, csrf)
     try:
         revoked = revoke_share_link(
@@ -1707,10 +1677,10 @@ def pushes_page(
     web: WebSessionDep,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
 ) -> HTMLResponse:
-    """Render the delivery ledger: which report version went to which destination.
+    """渲染投递账本：哪个报告版本去了哪个目的地。
 
-    `list_pushes` caps rather than paginates, so the page prints its cap instead of offering
-    paging controls the query could not honour.
+    `list_pushes` 是截断而不是分页，所以页面直接写明上限，而不提供查询根本兑现不了的
+    分页控件。
     """
     _require_roles(
         request,
@@ -1724,15 +1694,14 @@ def pushes_page(
         session,
         status=status_filter,
         limit=RECENT_LIMIT,
-        # Role alone is not enough here: a delivery row carries a report title, version,
-        # destination and error text, so the ledger is filtered by the same report ACL the report
-        # list uses. Otherwise an editor reads the metadata of a PRIVATE report they cannot open.
+        # 光有角色还不够：一条投递记录带着报告标题、版本、目的地和错误文本，所以账本
+        # 要用报告列表所用的同一套报告 ACL 过滤。否则编辑者能读到一份自己打不开的
+        # PRIVATE 报告的元数据。
         access_filter=readable_reports_filter(web.user, get_role_codes(web.user)),
     )
-    # The allowlist is loaded only when its card will be drawn. The rendering rule and this one read
-    # the same constant, so a viewer who is not shown the card does not have its contents in the
-    # payload either — a display rule that leaves the data in place is a leak waiting for the next
-    # debug block.
+    # 白名单只在那张卡片确实要画出来时才加载。渲染规则和这一条读的是同一个常量，因此
+    # 看不到这张卡片的查看者，payload 里也不会带着它的内容 —— 一条把数据留在原地的
+    # 展示规则，就是等着下一次调试输出把它漏出去。
     targets = list_targets(session, enabled_only=False) if _sees_ops_config(web) else []
     return render(
         request,
@@ -1752,7 +1721,7 @@ def pushes_page(
 
 
 # --------------------------------------------------------------------------------------
-# Repository catalog
+# 仓库目录
 # --------------------------------------------------------------------------------------
 
 
@@ -1767,7 +1736,7 @@ def repositories_page(
     topic_id: Annotated[int | None, Query(ge=1)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> HTMLResponse:
-    """Render the repository catalog: what the collectors found, and under which topic."""
+    """渲染仓库目录：采集器发现了什么，以及它们归属于哪个主题。"""
     with _audited_action(
         request,
         session,
@@ -1777,9 +1746,9 @@ def repositories_page(
     ):
         if get_role_codes(web.user).isdisjoint(REPOSITORY_READ_ROLES):
             raise WebForbidden("当前角色不能查看仓库目录")
-        # `list_repositories` documents that the caller settles topic visibility *before* calling
-        # it: the catalog itself has no per-row access predicate, so narrowing to a topic the
-        # caller may not read would otherwise be a way to read it one row at a time.
+        # `list_repositories` 写明调用方要在调用*之前*解决主题可见性：目录本身没有
+        # 逐行的访问判定，否则收窄到一个调用者无权读取的主题，就成了一种一行一行把它
+        # 读出来的办法。
         if topic_id is not None:
             topic = session.get(Topic, topic_id)
             if topic is None:
@@ -1801,8 +1770,8 @@ def repositories_page(
         {
             "current_user": _identity(web.user),
             "page": page_result,
-            # The filter offers the topics this identity can read, capped at the documented page
-            # size: beyond that the list is not a filter any more, it is a second catalog.
+            # 筛选项只给出这个身份能读的主题，并受文档化的页大小封顶：再多下去，这个
+            # 列表就不再是筛选器，而是第二个目录了。
             "topics": list_topics(session, user=web.user, page_size=TOPIC_MAX_PAGE_SIZE).items,
             "query": q or "",
             "language_filter": language or "",
@@ -1815,7 +1784,7 @@ def repositories_page(
 
 
 # --------------------------------------------------------------------------------------
-# Collection and research runs
+# 采集与研究运行
 # --------------------------------------------------------------------------------------
 
 
@@ -1830,13 +1799,12 @@ def runs_page(
     review: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> HTMLResponse:
-    """Render the run ledger: pipeline stages, Agent runs over their candidate pool, backfills.
+    """渲染运行账本：流水线阶段、围绕候选池的 Agent 运行，以及回填任务。
 
-    The three live on one page because they are the three layers of 采集与运行: a pipeline run is
-    one stage of the chain (collect → snapshot → rank → contents, or the per-topic agent/publish/
-    push), an Agent run is the research pass inside the `agent` stage, and a backfill job is the
-    history walk that fills a topic's candidate pool. All three are `METRICS_ROLES` — they expose
-    cross-topic cost and failure reasons, not one report.
+    这三者放在同一页，是因为它们正是「采集与运行」的三层：流水线运行是链路中的一个
+    阶段（采集 → 快照 → 排名 → 正文缓存，或按主题的 agent/publish/push），Agent 运行
+    是 `agent` 阶段内部的研究过程，回填任务则是填充主题候选池的历史回溯。三者都归
+    `METRICS_ROLES` —— 它们暴露的是跨主题的成本与失败原因，而不是某一份报告。
     """
     _require_roles(
         request,
@@ -1847,10 +1815,10 @@ def runs_page(
         message="采集与运行仅对管理员和编辑者开放",
     )
     review_filter = review if review in RUN_REVIEW_FILTERS else None
-    # The two filter bars share this page, so each carries the other's value in a hidden field.
-    # "No filter" therefore arrives as `status=`, an empty string rather than `None`, and
-    # `AgentRun.status == ""` matches nothing — the pipeline filter would silently empty the Agent
-    # card and its empty state would blame the data. Same guard as the other two vocabularies here.
+    # 两条筛选栏共用这一页，所以各自把对方的值放在隐藏字段里带过来。「不筛选」于是
+    # 会以 `status=` 的形式到达，是空字符串而不是 `None`，而 `AgentRun.status == ""`
+    # 什么都不匹配 —— 流水线的筛选会悄悄清空 Agent 卡片，空状态还会把锅甩给数据。
+    # 这里用的是与另外两套词汇相同的守卫。
     agent_status_filter = status_filter if status_filter in AGENT_RUN_STATUSES else None
     agent_runs = list_agent_runs(
         session,
@@ -1859,8 +1827,8 @@ def runs_page(
         page=page,
         page_size=LIST_PAGE_SIZE,
     )
-    # A filter value that is not in the vocabulary is ignored rather than passed down: the service
-    # raises for it, and a typo in a URL should not be a 500 on a read-only page.
+    # 不在词汇表里的筛选值会被忽略而不是往下传：服务会为它抛错，而 URL 里打错字不该
+    # 让一个只读页面变成 500。
     type_filter = run_type if run_type in RUN_TYPES else None
     stage_status_filter = run_status if run_status in RUN_STATUSES else None
     pipeline_runs = list_pipeline_runs(
@@ -1900,9 +1868,8 @@ def runs_page(
     )
 
 
-#: What a refused review says in the page's own words. The service raises English sentences with a
-#: `reason`; the interface translates the reason rather than forwarding the sentence, so the same
-#: refusal reads the same however it is reached.
+#: 被拒绝的复核在页面上用页面自己的话怎么说。服务抛出的是带 `reason` 的英文句子；
+#: 界面翻译那个原因，而不是转述整句，于是同一种拒绝无论从哪条路径来，读起来都一样。
 RUN_REVIEW_REFUSALS: dict[str, str] = {
     "not_found": "这条运行已经不存在了，可能是被清理掉了。",
     "not_reviewable": (
@@ -1922,7 +1889,7 @@ def _render_run_detail(
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    """Render one run's trajectory, its review history, and the form that appends to it."""
+    """渲染一次运行的轨迹、它的复核历史，以及往其后追加的复评表单。"""
     trace = get_agent_run_trace(session, run_id=run_id)
     if trace is None:
         raise WebNotFound(f"运行 {run_id} 不存在")
@@ -1936,8 +1903,8 @@ def _render_run_detail(
             "unfinished": trace.run.started_at is None or trace.run.finished_at is None,
             "reviews": reviews,
             "latest_review": reviews[-1] if reviews else None,
-            # Admission to this page is already `METRICS_ROLES`, which is the same set as the report
-            # write roles, so the only remaining question is whether the run has anything to review.
+            # 进入本页的门槛已经是 `METRICS_ROLES`，它与报告写角色是同一个集合，所以
+            # 剩下的唯一问题就是这次运行有没有可复核的东西。
             "can_review": trace.run.status == REVIEWABLE_RUN_STATUS,
             "review_verdicts": AGENT_RUN_REVIEW_VERDICTS,
             "error_hints": AGENT_ERROR_HINTS,
@@ -1957,14 +1924,14 @@ def run_detail_page(
     run_id: int,
     reviewed: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
-    """Render one run: its ordered steps, the tool calls under each, and its review history.
+    """渲染一次运行：有序的步骤、每步之下的工具调用，以及它的复核历史。
 
-    This is the page the "从失败报告追到具体工具调用" acceptance is walked on — an operator sees a
-    run in the ledger, opens it, and reaches the exact tool call that failed with its error code.
+    「从失败报告追到具体工具调用」这条验收就是在这一页走完的 —— 运维在账本里看到一次
+    运行，点开它，落到那个失败的具体工具调用上，并看到它的错误码。
 
-    It sits under `/runs` rather than under `/dashboard` because that is which list it belongs to.
-    The old dashboard path redirects here: opening a run from 采集与运行 used to highlight 运维看板
-    in the nav and offer only a way back to the dashboard, which read as "this went somewhere else".
+    它挂在 `/runs` 而不是 `/dashboard` 下，因为那才是它所属的列表。旧的看板路径重定向
+    到这里：从前从「采集与运行」点开一次运行，导航高亮的是「运维看板」，给出的唯一
+    出路也是回看板，读起来就像「这东西跑到别处去了」。
     """
     _require_metrics_role(request, session, web)
     return _render_run_detail(
@@ -1986,11 +1953,11 @@ def run_review_action(
     comment: Annotated[str, Form()] = "",
     csrf: CsrfField = "",
 ) -> Response:
-    """Append one human conclusion to a run that stopped for review.
+    """给一次停下来等复核的运行追加一条人工结论。
 
-    The verdict does not move the run: it still has no report, and saying otherwise would claim a
-    draft exists. What it does is let the next reader see the case was already read, and what the
-    reader decided — otherwise a `needs_review` row stays identical whether or not anyone looked.
+    这个结论不会推动运行：它依旧没有报告，说推动了就等于宣称草稿存在。它做的是让
+    下一个读者看见这个案子已经有人看过、以及那个人怎么判的 —— 否则一个
+    `needs_review` 行不论有没有人看过都长一个样。
     """
     _require_metrics_role(request, session, web)
     with _audited_action(request, session, web, resource_type="agent_run", resource_id=str(run_id)):
@@ -2021,7 +1988,7 @@ def run_review_action(
 
 
 # --------------------------------------------------------------------------------------
-# Evaluation
+# 评测
 # --------------------------------------------------------------------------------------
 
 
@@ -2032,11 +1999,11 @@ def evaluations_page(
     web: WebSessionDep,
     dataset_id: Annotated[int | None, Query(ge=1)] = None,
 ) -> HTMLResponse:
-    """Render the evaluation surface: the imported datasets and the runs over them.
+    """渲染评测界面：已导入的数据集，以及在它们之上跑出的结果。
 
-    Read-only on purpose. Running an evaluation spends model budget, and the same reasoning that
-    keeps `POST /agent/runs` and `POST /topics/{id}/run` off the API keeps the run trigger on the
-    operator CLI (`python -m open_source_intelligence.evaluation.cli`).
+    刻意只读。跑一次评测要花模型预算，让 `POST /agent/runs` 与
+    `POST /topics/{id}/run` 不出现在 API 上的那套理由，同样把触发留给了运维 CLI
+    （`python -m open_source_intelligence.evaluation.cli`）。
     """
     _require_roles(
         request,
@@ -2065,7 +2032,7 @@ def evaluations_page(
 
 
 # --------------------------------------------------------------------------------------
-# Audit log
+# 审计日志
 # --------------------------------------------------------------------------------------
 
 
@@ -2080,7 +2047,7 @@ def audit_page(
     result: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> HTMLResponse:
-    """Render the audit ledger — every refusal, configuration change and publish, newest first."""
+    """渲染审计账本 —— 每次拒绝、配置变更与发布，最新的在前。"""
     _require_roles(
         request,
         session,
@@ -2104,8 +2071,8 @@ def audit_page(
         {
             "current_user": _identity(web.user),
             "page": page_result,
-            # The column is binary; the API has one function that turns it into the usual dotted
-            # form, and the page uses the same one rather than formatting `b'...'` by accident.
+            # 这一列是二进制；API 里有一个函数把它转成常见的点分形式，页面用的也是
+            # 同一个，免得不知不觉把它格式化成了 `b'...'`。
             "ip_addresses": {
                 int(entry.id): format_ip_address(entry.ip_address) for entry in page_result.items
             },
@@ -2120,20 +2087,19 @@ def audit_page(
 
 
 # --------------------------------------------------------------------------------------
-# Topic configuration
+# 主题配置
 # --------------------------------------------------------------------------------------
 #
-# This is the one settings surface the platform had none of. `pipeline/daily.py` runs the enabled
-# topics and nothing else, so with no way to add one the whole pipeline produces nothing and a UI
-# on top of it shows an empty shell however good the UI is. `docs/api-contract.md` §3 recorded the
-# missing API as "designed but not done"; T19 built that API, and this is its UI face.
+# 这是平台此前唯一缺的那块配置界面。`pipeline/daily.py` 只跑已启用的主题，别的一概
+# 不管，所以在没有任何办法新增主题时，整条流水线什么都产不出来，架在它上面的界面
+# 不管做得多好，展示的都只是一个空壳。`docs/api-contract.md` §3 把缺失的这套 API
+# 记作「设计过但没做」；T19 把它做出来了，这里就是它的界面。
 #
-# What stays off this page is the same thing that stays off the API: triggering a research run.
-# A run spends model budget, and that trigger belongs to the scheduler and the operator CLI.
+# 不放在这个页面上的，和不放在 API 上的是同一件事：触发研究运行。运行要花模型预算，
+# 那个触发属于调度器和运维 CLI。
 
-#: Post-redirect-get notices: the action name travels in the URL and the sentence is looked up
-#: here. Echoing a free-text message through a query parameter would let anyone craft a link that
-#: puts words in the application's mouth.
+#: 重定向后再取（post-redirect-get）的提示：动作名走在 URL 里，句子在这里查。若让一段
+#: 自由文本通过查询参数回显，任何人都能造出一条把话塞进应用嘴里的链接。
 TOPIC_NOTICES: dict[str, str] = {
     "created": "已创建主题。",
     "updated": "已保存主题。",
@@ -2142,8 +2108,8 @@ TOPIC_NOTICES: dict[str, str] = {
     "disabled": "已停用该主题，下一次采集不会运行它。",
 }
 
-#: Which HTTP status a refusal is answered with. The same split the JSON API makes, so a client
-#: reading the status sees the same meaning on both surfaces.
+#: 某种拒绝用哪个 HTTP 状态回应。与 JSON API 的划分相同，于是读状态码的客户端在两个
+#: 界面上看到的是同一个含义。
 TOPIC_ERROR_STATUS: dict[str, int] = {
     "TOPIC_NAME_CONFLICT": status.HTTP_409_CONFLICT,
     "TOPIC_IN_USE": status.HTTP_409_CONFLICT,
@@ -2151,11 +2117,10 @@ TOPIC_ERROR_STATUS: dict[str, int] = {
     "TOPIC_NAME_BLANK": status.HTTP_400_BAD_REQUEST,
 }
 
-#: The refusal, said in the language of the page. The service layer's own messages are English and
-#: written for a log line or an API client — right for `str(exc)` in a traceback, wrong as the only
-#: sentence an operator sees. Unmapped codes fall through to `str(exc)` rather than to a generic
-#: "操作失败": a new refusal should appear as itself, obviously unlabelled, and not as a placard
-#: that hides what went wrong.
+#: 用页面的语言说出的拒绝。服务层自己的消息是英文，是写给日志行或 API 客户端看的 ——
+#: 放进 traceback 里的 `str(exc)` 正合适，但作为运维唯一能看到的那句话就不合适。未
+#: 映射的码会落到 `str(exc)`，而不是一句笼统的「操作失败」：新的拒绝应该以它本来的
+#: 样子出现，明摆着还没打标签，而不是一块把问题遮住的牌子。
 TOPIC_ERROR_MESSAGES: dict[str, str] = {
     "TOPIC_NAME_BLANK": "主题名不能为空。",
     "TOPIC_NAME_CONFLICT": "这个主题名已经被占用，换一个再试。",
@@ -2165,12 +2130,11 @@ TOPIC_ERROR_MESSAGES: dict[str, str] = {
 
 
 def _topic_refusal(exc: TopicError, *, session: Session, topic_id: int | None) -> str:
-    """Render a domain refusal as the sentence the page shows.
+    """把领域层的拒绝渲染成页面展示的那句话。
 
-    `TOPIC_IN_USE` is the one that keeps its detail, and the dates come from
-    `reference_counts` rather than being parsed out of the English message: "which table is
-    holding it" is the actionable half of that refusal, and reading it back out of a sentence
-    would break the moment somebody rewords the sentence.
+    `TOPIC_IN_USE` 是唯一保留细节的那个，而这些计数来自 `reference_counts`，不是从
+    英文消息里解析出来的：「是哪张表在引用它」才是这条拒绝里可操作的那一半，而从句
+    子里反读出来，别人一改措辞就会失效。
     """
     lead = TOPIC_ERROR_MESSAGES.get(exc.code)
     if lead is None:
@@ -2183,25 +2147,24 @@ def _topic_refusal(exc: TopicError, *, session: Session, topic_id: int | None) -
 
 
 class _FormInvalid(Exception):
-    """A submitted value the service layer would reject, caught before the call.
+    """一个服务层会拒绝的提交值，在调用之前就被拦下。
 
-    The form sends everything as text, so "eight" in a numeric field has to be turned into a
-    message a person can act on rather than a 422 with a JSON pointer in it.
+    表单把所有东西都当文本发过来，所以数字化字段里填了「八」，得变成一句人能照着改的
+    提示，而不是一个夹着 JSON 指针的 422。
     """
 
 
 def _split_terms(raw: str) -> list[str] | None:
-    """Turn a comma-separated form field into the list the service expects.
+    """把逗号分隔的表单字段变成服务期望的列表。
 
-    An empty field means "no restriction", which is stored as SQL NULL — so this returns `None`,
-    not `[]`. An empty list would mean "restrict to nothing" and select no repositories at all,
-    which is the opposite of what a blank field is asking for.
+    空字段意味着「不限」，在库里存为 SQL NULL —— 所以这里返回 `None` 而不是 `[]`。
+    空列表意味着「限制到空」，一个仓库都选不出来，与留空字段的本意正好相反。
     """
     terms = [part.strip() for part in raw.split(",") if part.strip()]
     return terms or None
 
 
-#: The fields the topic form carries, in the order they are shown.
+#: 主题表单携带的字段，按显示顺序排列。
 TOPIC_FORM_FIELDS: tuple[str, ...] = (
     "name",
     "description",
@@ -2214,9 +2177,8 @@ TOPIC_FORM_FIELDS: tuple[str, ...] = (
     "enabled",
 )
 
-#: What a brand-new topic's form starts from. These are the column defaults, so a topic created
-#: without touching them is the row the pipeline would have produced on its own — not a second
-#: definition of "a new topic".
+#: 全新主题的表单从什么值起步。它们就是列默认值，所以不去动它们创建出来的主题，就是
+#: 流水线自己会产出的那一行 —— 而不是「新主题」的第二套定义。
 TOPIC_FORM_DEFAULTS: dict[str, str] = {
     "name": "",
     "description": "",
@@ -2231,11 +2193,11 @@ TOPIC_FORM_DEFAULTS: dict[str, str] = {
 
 
 def _topic_form_fields(topic: Topic | None, form: Mapping[str, str] | None) -> dict[str, str]:
-    """Return the values the topic form shows, as text.
+    """返回主题表单要显示的值，一律转成文本。
 
-    Three sources, in that order, on purpose. After a refusal the operator's own input has to
-    survive, or they retype nine fields to fix one; on a first open the row is the truth; and for
-    a new topic there is no row, so the column defaults above stand in.
+    刻意按这个顺序取三个来源。被拒绝之后，运维自己填的内容必须活下来，否则为了改一个
+    字段要重打九个；首次打开时，数据库里的那行才是事实；而新建主题没有行，就用上面的
+    列默认值顶上。
     """
     if form:
         return {field: str(form.get(field, "")) for field in TOPIC_FORM_FIELDS}
@@ -2255,11 +2217,11 @@ def _topic_form_fields(topic: Topic | None, form: Mapping[str, str] | None) -> d
 
 
 def _topic_values(raw: Mapping[str, str]) -> dict[str, Any]:
-    """Translate the create/update form into the service's field values.
+    """把新建/更新表单翻译成服务的字段取值。
 
-    `publish_mode` is validated here rather than passed through: the API path types it as a
-    `Literal`, the form does not, and letting an unknown value reach the table turns a bad form
-    into a `CHECK` violation, which surfaces as a 500 instead of a re-rendered form with a message.
+    `publish_mode` 在这里校验而不是直接透传：API 路径把它声明成 `Literal`，表单没有，
+    放任一个未知取值进到表里，会把一次填错表单变成 `CHECK` 约束冲突，最终以 500 出现，
+    而不是带着提示重新渲染的表单。
     """
     publish_mode = (raw.get("publish_mode") or "").strip()
     if publish_mode not in TOPIC_PUBLISH_MODES:
@@ -2298,11 +2260,10 @@ def _topics_context(
     error: str | None = None,
     form: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build the topic page context, shared by the list route and the write actions' failures.
+    """构建主题页的上下文，列表路由与写操作失败时共用。
 
-    A failed write re-renders this page instead of redirecting with the message in the URL: the
-    sentence then comes from our own exception rather than from whoever wrote the link, and the
-    operator keeps what they typed.
+    写操作失败时重新渲染这个页面，而不是带着消息重定向：句子于是来自我们自己的异常，
+    而不是来自写链接的那个人，运维填过的内容也得以保留。
     """
     enabled_filter = {"true": True, "false": False}.get((enabled or "").lower())
     return {
@@ -2334,7 +2295,7 @@ def _topics_page_response(
     *,
     status_code: int = 200,
 ) -> HTMLResponse:
-    """Render the topic page with a fresh CSRF token available to its forms."""
+    """渲染主题页，并让它的表单拿到一个新的 CSRF 令牌。"""
     return render(
         request,
         "topics.html",
@@ -2350,10 +2311,10 @@ def _authorize_topic_write(
     web: WebSession,
     csrf: str | None,
 ) -> None:
-    """Guard a topic write: CSRF first, then the admin-only role.
+    """为主题写操作把关：先 CSRF，再校验仅管理员可用的角色。
 
-    There is no per-row read check the way the report actions have one: visibility for a topic is
-    by role, and only `ADMIN` reaches this line — the one role `can_read_topic` lets see everything.
+    这里没有报告动作那样的逐行读检查：主题的可见性是按角色划分的，而且只有 `ADMIN`
+    能走到这一行 —— 那正是 `can_read_topic` 允许看全部内容的唯一角色。
     """
     with _audited_action(request, session, web, resource_type="topic"):
         verify_csrf(request, csrf)
@@ -2371,7 +2332,7 @@ def topics_page(
     page: Annotated[int, Query(ge=1)] = 1,
     ok: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
-    """Render the topic list — the configuration that decides what the platform collects."""
+    """渲染主题列表 —— 决定平台采集什么的那份配置。"""
     _require_roles(
         request,
         session,
@@ -2400,11 +2361,10 @@ def topic_page(
     topic_id: int,
     ok: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
-    """Render one topic's edit form.
+    """渲染单个主题的编辑表单。
 
-    Its own page rather than a form folded into the list row: a topic carries nine editable
-    fields, and a nine-field form inside a table cell makes the table unreadable and the form
-    unusable. The list links here, and this page is where the fields are edited.
+    它自成页面，而不是把表单折进列表行：一个主题有九个可编辑字段，塞进表格单元格里的
+    九字段表单会让表格没法读、表单没法用。列表链到这里，字段就在这个页面上改。
     """
     _require_roles(
         request,
@@ -2452,7 +2412,7 @@ def create_topic_action(
     enabled: Annotated[str, Form()] = "",
     csrf: CsrfField = "",
 ) -> Response:
-    """Create one topic from the configuration page."""
+    """从配置页新建一个主题。"""
     _authorize_topic_write(request, session, web, csrf)
     raw = {
         "name": name,
@@ -2467,8 +2427,8 @@ def create_topic_action(
     }
     try:
         values = _topic_values(raw)
-        # `publish_mode` is a keyword of its own on `create_topic`, and the table requires it.
-        # Leaving it in `values` would set the same attribute twice.
+        # 在 `create_topic` 上 `publish_mode` 是独立的关键字参数，表里也要求它。把它
+        # 留在 `values` 里会把同一个属性设两遍。
         mode = str(values.pop("publish_mode"))
         create_topic(
             session,
@@ -2511,10 +2471,10 @@ def update_topic_action(
     enabled: Annotated[str, Form()] = "",
     csrf: CsrfField = "",
 ) -> Response:
-    """Save the edit form for one topic.
+    """保存单个主题的编辑表单。
 
-    The form carries every field, so this is a full replace rather than a patch — which is what
-    `update_topic` reports back in `changed`: the fields whose value actually moved.
+    表单带着全部字段，所以这是整体替换而不是打补丁 —— `update_topic` 回传的 `changed`
+    也正是这么回事：值真正发生了变化的那些字段。
     """
     _authorize_topic_write(request, session, web, csrf)
     raw = {
@@ -2567,7 +2527,7 @@ def toggle_topic_action(
     enabled: Annotated[str, Form()] = "",
     csrf: CsrfField = "",
 ) -> Response:
-    """Enable or disable one topic without opening the edit form."""
+    """不打开编辑表单，直接启用或停用某个主题。"""
     _authorize_topic_write(request, session, web, csrf)
     turn_on = (enabled or "").strip().lower() in {"true", "1", "on", "yes"}
     try:
@@ -2602,12 +2562,11 @@ def delete_topic_action(
     topic_id: int,
     csrf: CsrfField = "",
 ) -> Response:
-    """Delete one topic, or explain which tables still reference it.
+    """删除一个主题，或者说明还有哪些表在引用它。
 
-    A topic with recorded history cannot be deleted: the foreign keys from reports, runs and
-    pipeline rows are `RESTRICT`, and `delete_topic` turns that into a refusal naming the tables
-    instead of letting an `IntegrityError` surface as a 500. The message is rendered verbatim
-    because it is ours, and "which table" is the one thing the operator needs to act on.
+    有历史记录的主题删不掉：来自报告、运行和流水线行的外键是 `RESTRICT`，`delete_topic`
+    会把它转成一条点名到表的拒绝，而不是让 `IntegrityError` 以 500 冒出来。这条消息
+    原样渲染，因为它出自我们自己，而「是哪张表」正是运维要据此行动的那一件事。
     """
     _authorize_topic_write(request, session, web, csrf)
     try:
@@ -2630,7 +2589,7 @@ def delete_topic_action(
 
 
 def _topic_error_status(exc: TopicError) -> int:
-    """Map a domain refusal onto its HTTP status."""
+    """把领域层的拒绝映射到它的 HTTP 状态。"""
     return TOPIC_ERROR_STATUS.get(exc.code, status.HTTP_409_CONFLICT)
 
 
@@ -2642,7 +2601,7 @@ def _topics_write_failure(
     form: Mapping[str, str],
     status_code: int,
 ) -> HTMLResponse:
-    """Re-render the topic list with a refusal and whatever the operator had typed."""
+    """带上拒绝原因和运维填过的内容，重新渲染主题列表。"""
     context = _topics_context(
         request,
         session,
@@ -2665,7 +2624,7 @@ def _topic_detail_failure(
     form: Mapping[str, str],
     status_code: int,
 ) -> HTMLResponse:
-    """Re-render one topic's edit form with a refusal and whatever the operator had typed."""
+    """带上拒绝原因和运维填过的内容，重新渲染单个主题的编辑表单。"""
     topic = session.get(Topic, topic_id)
     if topic is None:
         raise WebNotFound(f"主题 {topic_id} 不存在")

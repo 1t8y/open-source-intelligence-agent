@@ -1,1 +1,1 @@
-"""Agent runtime and restricted tool layer."""
+"""Agent 运行时与受限工具层。"""

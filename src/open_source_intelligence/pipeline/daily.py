@@ -1,14 +1,12 @@
-"""Daily deterministic pipeline orchestration with one PipelineRun per stage.
+"""编排每日确定性流水线，每个阶段写一条 `PipelineRun`。
 
-The order is fixed and rule-driven: collect -> snapshot -> rank -> contents. No language
-model is involved, so a rerun with the same inputs produces the same candidate ranking.
-Each stage writes its own run record, which makes a partially failed batch
-diagnosable without reading container logs.
+顺序固定且由规则驱动：`collect` -> `snapshot` -> `rank` -> `contents`。全程不涉及语言模型，
+因此相同输入重跑会得到相同的候选排名。每个阶段各写自己的运行记录，一批部分失败也能不读
+容器日志就完成诊断。
 
-`contents` is the last stage and the only optional one: it pre-warms the README cache for the
-ranked candidates, and it needs a network source to do anything. Callers that pass no content
-source get the three deterministic stages and no contents run record, which is exactly what a
-run with nothing to fetch should look like.
+`contents` 是最后一个阶段，也是唯一可选的阶段：它为排好序的候选预热 README 缓存，而且必须
+有网络来源才做得了事。不传内容来源的调用方只会得到三个确定性阶段、没有 `contents` 运行
+记录 —— 这正是「没什么可抓」的一次运行应有的样子。
 """
 
 from __future__ import annotations
@@ -45,7 +43,7 @@ from open_source_intelligence.pipeline.snapshots import create_daily_snapshots
 
 @dataclass(frozen=True, slots=True)
 class CollectStageOutcome:
-    """Collection stage outcome with per-provider counters."""
+    """采集阶段的结果，附带各 provider 的计数。"""
 
     stage: StageOutcome
     provider_counts: dict[str, int]
@@ -54,7 +52,7 @@ class CollectStageOutcome:
 
 @dataclass(frozen=True, slots=True)
 class DailyPipelineResult:
-    """Aggregated result of one daily deterministic pipeline execution."""
+    """一次每日确定性流水线执行的汇总结果。"""
 
     business_date: str
     attempt: int
@@ -67,7 +65,7 @@ class DailyPipelineResult:
     content_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready payload for CLI, worker, and log output."""
+        """返回可供 CLI、Worker 与日志输出使用的 JSON 载荷。"""
         return {
             "business_date": self.business_date,
             "attempt": self.attempt,
@@ -83,7 +81,7 @@ class DailyPipelineResult:
 
 
 def list_enabled_topics(session: Session) -> Sequence[Topic]:
-    """Return enabled topics in a stable order."""
+    """按稳定顺序返回已启用的主题。"""
     return session.scalars(select(Topic).where(Topic.enabled.is_(True)).order_by(Topic.id)).all()
 
 
@@ -95,11 +93,10 @@ def run_collect_stage(
     limit: int,
     attempt: int = 1,
 ) -> CollectStageOutcome:
-    """Collect from every requested provider and record the batch.
+    """向每个被请求的 provider 采集，并记录这一批。
 
-    A provider failure is recorded and tolerated while another provider still
-    returns data. Only a batch where every provider failed is fatal, because an
-    empty collection makes the downstream slices meaningless.
+    只要还有另一个 provider 返回数据，单个 provider 的失败就会被记录并容忍。只有所有
+    provider 都失败的一批才算致命，因为空的采集会让下游各个切片失去意义。
     """
     if not collectors:
         raise ValueError("at least one collector is required")
@@ -107,11 +104,10 @@ def run_collect_stage(
     mark_pipeline_run_running(session, run)
     try:
         summary = collect_repositories(session, collectors, limit=limit)
-    except Exception as exc:  # noqa: BLE001 - recorded and re-raised as a stage error
-        # A provider-level failure is a `CollectorError` and is already summarized per provider.
-        # Anything else (a bad `limit`, a database error while upserting) escapes the service, and
-        # without this branch the run row would stay `running` forever — the one state that makes
-        # a dead batch indistinguishable from a live one.
+    except Exception as exc:  # noqa: BLE001 - 记录后重新抛出为阶段错误
+        # provider 层面的失败是 `CollectorError`，已经按 provider 汇总过了。其它任何异常
+        # （`limit` 不合法、upsert 时的数据库错误）都会逃出服务层，没有这个分支，运行行会
+        # 一直停在 `running` —— 正是这个状态让死掉的批次与活着的批次无法区分。
         error_code = classify_error("collect", exc)
         message = describe_error(exc)
         fail_pipeline_run(session, run, error_code=error_code, error_message=message)
@@ -167,12 +163,12 @@ def run_snapshot_stage(
     business_date: date,
     attempt: int = 1,
 ) -> StageOutcome:
-    """Create or refresh the daily snapshots and record the run."""
+    """创建或刷新每日快照，并记录本次运行。"""
     run = start_pipeline_run(session, run_type="snapshot", topic_id=None, attempt=attempt)
     mark_pipeline_run_running(session, run)
     try:
         snapshot_count = create_daily_snapshots(session, snapshot_date=business_date)
-    except Exception as exc:  # noqa: BLE001 - recorded and re-raised as a stage error
+    except Exception as exc:  # noqa: BLE001 - 记录后重新抛出为阶段错误
         error_code = classify_error("snapshot", exc)
         message = describe_error(exc)
         fail_pipeline_run(session, run, error_code=error_code, error_message=message)
@@ -203,12 +199,12 @@ def run_rank_stage(
     business_date: date,
     attempt: int = 1,
 ) -> StageOutcome:
-    """Rank one topic and record the run without failing the whole batch."""
+    """为一个主题排序并记录本次运行，但不因此让整批失败。"""
     run = start_pipeline_run(session, run_type="rank", topic_id=topic.id, attempt=attempt)
     mark_pipeline_run_running(session, run)
     try:
         ranked = rank_topic_candidates(session, topic, as_of_date=business_date)
-    except Exception as exc:  # noqa: BLE001 - one topic must not stop the others
+    except Exception as exc:  # noqa: BLE001 - 一个主题不能拦住其它主题
         error_code = classify_error("rank", exc)
         message = describe_error(exc)
         fail_pipeline_run(session, run, error_code=error_code, error_message=message)
@@ -240,7 +236,7 @@ def run_rank_all_topics(
     business_date: date,
     attempt: int = 1,
 ) -> list[StageOutcome]:
-    """Rank every enabled topic, one run record per topic."""
+    """为每个启用主题排序，每个主题一条运行记录。"""
     return [
         run_rank_stage(session, topic=topic, business_date=business_date, attempt=attempt)
         for topic in list_enabled_topics(session)
@@ -258,21 +254,19 @@ def run_daily_pipeline(
     content_refresh_after: datetime | None = None,
     attempt: int = 1,
 ) -> DailyPipelineResult:
-    """Run collect, snapshot, rank, and (optionally) contents as one observable batch.
+    """把 `collect`、`snapshot`、`rank` 与（可选的）`contents` 作为一批可观测任务执行。
 
-    `content_sources` is empty by default, and an empty list means the contents stage does not
-    run at all: no requests, no run record, `content_counts` empty. That default exists because
-    the content stage is the only one that talks to a per-repository endpoint, and a caller that
-    cannot supply one (a fixture, a drill, an offline replay) should get the deterministic three
-    stages rather than a stage that reports zero successes.
+    `content_sources` 默认为空，而空列表意味着 `contents` 阶段完全不跑：不发请求、不写
+    运行记录、`content_counts` 为空。设这个默认值，是因为内容阶段是唯一会访问「按仓库」
+    端点的阶段；拿不出这种来源的调用方（测试夹具、演练、离线回放）应当得到三个确定性
+    阶段，而不是一个报告零成功的阶段。
 
-    `content_limit` defaults to `limit` - the same order of magnitude as the collection batch -
-    so a caller that does not think about it still gets a bounded number of requests.
+    `content_limit` 默认取 `limit` —— 与采集批次同一数量级 —— 这样没特意考虑过的调用方，
+    拿到的请求数也是有界的。
 
     Raises:
-        PipelineStageError: when collection, snapshotting, or the contents stage itself fails.
-            Ranking failures stay inside the affected topic and are recorded as a failed rank
-            run; a single repository whose content cannot be fetched is counted, not raised.
+        PipelineStageError: 采集、快照或内容阶段本身失败时。排序失败留在受影响的主题
+            内部，记为一条失败的 `rank` 运行；单个仓库抓不到内容只计数，不抛出。
     """
     stages: list[StageOutcome] = []
     collect_outcome = run_collect_stage(

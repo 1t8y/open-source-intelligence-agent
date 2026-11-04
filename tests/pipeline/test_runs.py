@@ -1,4 +1,4 @@
-"""Tests for PipelineRun lifecycle, error redaction, and run history queries."""
+"""守护 `PipelineRun` 的生命周期、错误脱敏与运行历史查询。"""
 
 from datetime import UTC, datetime
 
@@ -27,7 +27,7 @@ from open_source_intelligence.pipeline.runs import (
 
 
 def build_session_factory() -> sessionmaker[Session]:
-    """Build a shared in-memory database for run lifecycle tests."""
+    """构造运行生命周期测试共用的内存数据库。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -38,7 +38,7 @@ def build_session_factory() -> sessionmaker[Session]:
 
 
 def add_topic(session: Session, *, name: str = "AI Agent") -> Topic:
-    """Insert one enabled topic owned by a test user."""
+    """插入一个由测试用户拥有的、已启用的主题。"""
     session.add(
         User(
             id=1,
@@ -62,7 +62,7 @@ def add_topic(session: Session, *, name: str = "AI Agent") -> Topic:
 
 
 def test_run_lifecycle_records_status_and_metrics() -> None:
-    """A run must move from queued to running to a terminal status with timestamps."""
+    """一次运行必须从 `queued` 经 `running` 走到终态，且每一步都留下时间戳。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         run = start_pipeline_run(session, run_type="collect", attempt=2)
@@ -90,7 +90,7 @@ def test_run_lifecycle_records_status_and_metrics() -> None:
 
 
 def test_pinned_clock_closes_the_run_on_the_same_instant() -> None:
-    """A caller that pins the clock gets run timestamps that satisfy the time-order CHECK."""
+    """调用方钉住时钟时，运行时间戳仍要满足先后顺序的 CHECK 约束。"""
     pinned = datetime(2099, 6, 5, 12, 0, tzinfo=UTC)
     session_factory = build_session_factory()
     with session_factory() as session:
@@ -113,7 +113,7 @@ def test_pinned_clock_closes_the_run_on_the_same_instant() -> None:
         )
         assert failed.finished_at == pinned
 
-        # Without a pinned clock the run still closes on the wall clock.
+        # 不钉时钟时，运行仍按墙钟时间收尾。
         default_clock = start_pipeline_run(session, run_type="snapshot", attempt=1)
         mark_pipeline_run_running(session, default_clock)
         finish_pipeline_run(session, default_clock, status="succeeded")
@@ -122,7 +122,7 @@ def test_pinned_clock_closes_the_run_on_the_same_instant() -> None:
 
 
 def test_failed_run_rejects_invalid_transition_and_keeps_error() -> None:
-    """A finished run cannot restart, and its error code is preserved."""
+    """已经结束的运行不能重启，错误码则被原样保留。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         run = start_pipeline_run(session, run_type="snapshot")
@@ -143,7 +143,7 @@ def test_failed_run_rejects_invalid_transition_and_keeps_error() -> None:
 
 
 def test_error_message_is_redacted_and_truncated() -> None:
-    """Credential-looking values must never reach the run record verbatim."""
+    """像凭据的值绝不能原样写进运行记录。"""
     session_factory = build_session_factory()
     long_tail = "x" * 5000
     with session_factory() as session:
@@ -162,7 +162,7 @@ def test_error_message_is_redacted_and_truncated() -> None:
 
 
 def test_topic_scope_is_enforced() -> None:
-    """Agent and publish runs must belong to a topic."""
+    """`agent` 与 `publish` 类型的运行必须归属某个主题。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         for run_type in ("agent", "publish"):
@@ -176,7 +176,7 @@ def test_topic_scope_is_enforced() -> None:
 
 
 def test_invalid_run_type_and_status_are_rejected() -> None:
-    """Unsupported enum values fail before the database constraint is hit."""
+    """不支持的枚举值要在撞上数据库约束之前就失败。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         with pytest.raises(ValueError, match="unsupported run_type"):
@@ -190,7 +190,7 @@ def test_invalid_run_type_and_status_are_rejected() -> None:
 
 
 def test_attempt_must_be_positive() -> None:
-    """Attempt numbering starts at one, matching the database constraint."""
+    """重试计数从 1 开始，与数据库约束保持一致。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         with pytest.raises(ValueError, match="attempt must be at least 1"):
@@ -198,7 +198,7 @@ def test_attempt_must_be_positive() -> None:
 
 
 def test_list_runs_filters_and_orders_newest_first() -> None:
-    """Run history must be filterable by type, status, and topic."""
+    """运行历史必须能按类型、状态与主题筛选。"""
     session_factory = build_session_factory()
     with session_factory() as session:
         topic = add_topic(session)
@@ -228,6 +228,6 @@ def test_list_runs_filters_and_orders_newest_first() -> None:
 
 
 def test_classify_error_maps_collector_failures() -> None:
-    """Collector errors keep their dedicated code regardless of the stage."""
+    """采集错误不论发生在哪个阶段，都保留它专属的错误码。"""
     assert classify_error("rank", SourceUnavailableError("boom")) == ERROR_COLLECTOR_FAILED
     assert classify_error("snapshot", RuntimeError("boom")) == "SNAPSHOT_FAILED"

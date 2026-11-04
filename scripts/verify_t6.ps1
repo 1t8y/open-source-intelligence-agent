@@ -55,9 +55,8 @@ docker @composeArgs exec -T api alembic check
 Assert-LastCommandSucceeded 'alembic check'
 
 if ($Offline) {
-    # Snapshotting and ranking only read the repository rows T4 already stored, so
-    # the orchestration under test does not depend on GitHub being reachable. Seed
-    # from whichever source still answers, and otherwise carry on with stored data.
+    # 快照和排序只读取 T4 已经入库的仓库行，因此被测的编排逻辑并不依赖
+    # GitHub 是否可达。改用仍能应答的数据源补种数据，否则就带着已入库的数据继续。
     Write-Host '==> Offline mode: seed from the reachable source, otherwise reuse stored data'
     $seedSucceeded = $false
     $collectionOutput = docker @composeArgs exec -T api python -m open_source_intelligence.collectors.cli --provider huggingface --limit 2
@@ -126,8 +125,8 @@ if ($smokeSummary.topic_scope_constraint_enforced -ne $true) {
 Write-Host '==> Dispatch the daily pipeline through the Celery broker'
 $successArgs = @('/workspace/scripts/t6_celery_check.py', '--mode', 'success', '--date', $verifyDate, '--limit', '2')
 if ($Offline) {
-    # The dispatch chain under test is provider agnostic, so in offline mode use a
-    # source that answers instead of letting GitHub egress decide the outcome.
+    # 被测的派发链路与数据源无关，因此在离线模式下改用一个能应答的数据源，
+    # 而不是让 GitHub 出网与否决定结果。
     $successArgs += @('--provider', 'huggingface')
 }
 $successOutput = docker @composeArgs run --rm --no-deps @mountArgs @successArgs
@@ -182,9 +181,9 @@ Assert-LastCommandSucceeded 'pipeline run query'
 $runsSummary = $runsOutput | ConvertFrom-Json
 $failedRuns = @($runsSummary.runs)
 $retryDateRuns = @($failedRuns | Where-Object { $_.metrics.business_date -eq $retryDate })
-# `list_pipeline_runs` is documented as newest-first, so the attempts for one date
-# arrive in descending order. Sort them here to assert the retry trail itself
-# instead of accidentally asserting the row order of the query.
+# `list_pipeline_runs` 的文档约定是最新的排在最前，因此同一日期的多次尝试会按降序到达。
+# 在这里排序，以断言重试轨迹本身，
+# 而不是无意中断言了查询的行序。
 $retryAttempts = @($retryDateRuns | ForEach-Object { [int]$_.attempt } | Sort-Object)
 
 if (@($failedRuns).Count -lt 2) {

@@ -1,14 +1,13 @@
-"""The five evaluation targets: one baseline, the full Agent, and three ablations.
+"""提供五个评测目标：一个基线、完整的 Agent 与三个消融变体。
 
-Every target turns one `eval_cases` row into the same `VariantOutput` shape, which is what
-makes the scorer and the runner target-agnostic. Two implementation choices carry the weight:
+每个目标都把一行 `eval_cases` 转成同一个 `VariantOutput` 形状，正因如此，打分器和运行器
+才能与具体目标无关。有两个实现选择承载着分量：
 
-* The Agent targets call the real `run_research_agent` with an `ExecutionProfile`. An ablation
-  is therefore the production pipeline minus one capability, not a reimplementation of it, so
-  the measured drop is attributable to the capability rather than to different code.
-* The baseline is a single model call over a prose digest of the candidate repositories. It
-  gets the same output contract as the Agent (the same draft prompt and the same payload
-  parser), but no tools, so any source it cites would have to come from the prompt alone.
+* Agent 类的目标会带 `ExecutionProfile` 调用真正的 `run_research_agent`。因此一个消融变体
+  就是生产链路减掉一项能力，而不是它的另一套实现，测出来的下降才能归因于那项能力，而不是
+  归因于不同的代码。
+* 基线是对候选仓库的散文摘要做一次模型调用。它拿到与 Agent 相同的输出契约（同一份草稿
+  Prompt、同一个载荷解析器），但没有工具，所以它引用的任何来源都只能来自 Prompt 本身。
 """
 
 from __future__ import annotations
@@ -51,11 +50,11 @@ from open_source_intelligence.persistence.models.intelligence import (
 )
 from open_source_intelligence.persistence.models.reporting import ReportDraft, ReportSection
 
-#: The one non-Agent target; the other four all run the research graph.
+#: 唯一一个非 Agent 目标；其余四个都会跑研究图。
 BASELINE_TARGET: Final[str] = "baseline_single_prompt"
 AGENT_TARGET: Final[str] = "agent_full"
 
-#: Error codes recorded on a failed case result. These are evaluation outcomes, not API errors.
+#: 失败用例结果上记录的错误码。这些是评测结论，不是 API 错误。
 ERROR_TOPIC_NOT_FOUND: Final[str] = "EVAL_TOPIC_NOT_FOUND"
 ERROR_CASE_INVALID: Final[str] = "EVAL_CASE_INVALID"
 ERROR_PAYLOAD_INVALID: Final[str] = "EVAL_PAYLOAD_INVALID"
@@ -64,13 +63,13 @@ ERROR_MODEL_UNAVAILABLE: Final[str] = "EVAL_MODEL_UNAVAILABLE"
 MAX_DIGEST_REPOS: Final[int] = 20
 MAX_NOTES: Final[int] = 10
 
-#: Read-only tools, as a set, so a tool-call count can be split into read and write calls.
+#: 只读工具的集合，便于把工具调用计数拆成读调用与写调用。
 READ_TOOL_NAMES: Final[frozenset[str]] = frozenset(READ_TOOLS)
 
 
 @dataclass(frozen=True, slots=True)
 class SectionDraft:
-    """One drafted section plus the citations it claims."""
+    """一个起草好的章节，加上它声称的引用。"""
 
     section_key: str
     content_markdown: str
@@ -79,7 +78,7 @@ class SectionDraft:
 
 @dataclass(frozen=True, slots=True)
 class VariantOutput:
-    """One target's output for one case, in the shape every scorer consumes."""
+    """一个目标对一个用例的输出，形状即所有打分器所消费的那一种。"""
 
     target_type: str
     case_key: str
@@ -103,11 +102,11 @@ class VariantOutput:
 
     @property
     def succeeded(self) -> bool:
-        """Return whether the target produced a scoreable run."""
+        """返回目标是否产出了可打分的一次运行。"""
         return self.status == "succeeded"
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe summary for the run report."""
+        """返回可安全序列化为 JSON 的摘要，供运行报告使用。"""
         return {
             "target_type": self.target_type,
             "case_key": self.case_key,
@@ -135,7 +134,7 @@ class VariantOutput:
 
 @dataclass(frozen=True, slots=True)
 class CaseContext:
-    """The run context a case carries, after validation."""
+    """用例携带的运行上下文，已通过校验。"""
 
     topic_name: str
     window_start: datetime
@@ -145,7 +144,7 @@ class CaseContext:
 
 
 def _parse_case_context(case: EvalCase) -> CaseContext:
-    """Validate a stored `input_json` into a typed run context."""
+    """把存储的 `input_json` 校验成带类型的运行上下文。"""
     payload = case.input_json or {}
     topic_name = payload.get("topic")
     window = payload.get("window")
@@ -168,7 +167,7 @@ def _parse_case_context(case: EvalCase) -> CaseContext:
 
 
 def resolve_case_topic(session: Session, *, topic_name: str) -> Topic | None:
-    """Return the enabled topic a case refers to by name."""
+    """返回用例按名称所指的那个启用中的主题。"""
     return session.scalar(
         select(Topic)
         .where(Topic.name == topic_name, Topic.enabled.is_(True))
@@ -178,7 +177,7 @@ def resolve_case_topic(session: Session, *, topic_name: str) -> Topic | None:
 
 
 def _latest_snapshot(session: Session, repository_id: int) -> RepoSnapshot | None:
-    """Return the newest snapshot of one repository."""
+    """返回某个仓库最新的一份快照。"""
     return session.scalar(
         select(RepoSnapshot)
         .where(RepoSnapshot.repository_id == repository_id)
@@ -194,7 +193,7 @@ def _window_points(
     window_start: datetime | None,
     window_end: datetime | None,
 ) -> list[RepoSnapshot]:
-    """Return a repository's snapshots inside a window, oldest first."""
+    """返回某个仓库在窗口内的快照，最早的在前。"""
     statement = select(RepoSnapshot).where(RepoSnapshot.repository_id == repository_id)
     if window_start is not None:
         statement = statement.where(RepoSnapshot.snapshot_date >= window_start.date())
@@ -204,7 +203,7 @@ def _window_points(
 
 
 def _describe_series(points: list[RepoSnapshot]) -> str:
-    """Render one repository's window series the way `query_repo_metrics` reports it."""
+    """按 `query_repo_metrics` 的汇报方式渲染一个仓库在窗口内的序列。"""
     if not points:
         return "no snapshot"
     first = points[0]
@@ -226,15 +225,13 @@ def build_candidate_digest(
     window_start: datetime | None = None,
     window_end: datetime | None = None,
 ) -> tuple[str, list[int]]:
-    """Render the candidate repositories as the prose a single-prompt baseline reads.
+    """把候选仓库渲染成单 Prompt 基线所读的那段散文。
 
-    This is the whole input a baseline gets: no tools, no prior reports, no cached README. It
-    makes the baseline a real single-prompt attempt while keeping the comparison honest about
-    what it cannot know.
+    这就是基线拿到的全部输入：没有工具、没有历史报告、没有缓存 README。它让基线成为一次
+    真正意义上的单 Prompt 尝试，同时让对比对「基线不可能知道什么」保持诚实。
 
-    The metrics are read over the same window the Agent queries. Handing the baseline "the
-    latest snapshot" while the Agent reads a closed historical window would compare two
-    different datasets and call the difference a capability gap.
+    指标读取的窗口与 Agent 查询的窗口相同。若给基线「最新的快照」而 Agent 读的是一个已
+    封闭的历史窗口，比的就是两份不同的数据集，却把差异说成了能力差距。
     """
     candidate_ids = load_candidate_repo_ids(session, topic_id=topic_id, limit=limit)
     lines: list[str] = []
@@ -277,7 +274,7 @@ def _baseline_messages(
     window_end: datetime,
     draft_prompt: str,
 ) -> list[ChatMessage]:
-    """Build the single-prompt baseline conversation."""
+    """构造单 Prompt 基线的对话。"""
     window = json.dumps(
         {"start": window_start.isoformat(), "end": window_end.isoformat()},
         ensure_ascii=False,
@@ -311,8 +308,8 @@ def run_baseline(
     client: ModelClient | None = None,
     now: datetime | None = None,
 ) -> VariantOutput:
-    """Run the single-prompt baseline over one case."""
-    del now  # the baseline does not persist a run, so it has no clock to pin
+    """在一个用例上运行单 Prompt 基线。"""
+    del now  # 基线不落库运行记录，因此没有需要钉住的时钟
     try:
         context = _parse_case_context(case)
     except ValueError as exc:
@@ -405,7 +402,7 @@ def run_baseline(
 
 
 def load_draft_sections(session: Session, *, agent_run_id: int) -> tuple[SectionDraft, ...]:
-    """Return the latest version of each section the Agent stored."""
+    """返回 Agent 存储的每个章节的最新版本。"""
     draft = session.scalar(select(ReportDraft).where(ReportDraft.agent_run_id == agent_run_id))
     if draft is None:
         return ()
@@ -436,12 +433,11 @@ def load_draft_sections(session: Session, *, agent_run_id: int) -> tuple[Section
 
 
 def load_tool_stats(session: Session, *, agent_run_id: int) -> tuple[int, int, int, int]:
-    """Return `(total, succeeded, denied, read_only)` tool-call counts for one agent run.
+    """返回某次 Agent 运行的 `(total, succeeded, denied, read_only)` 工具调用计数。
 
-    Read-only calls are counted separately because they are the only ones that can pull
-    untrusted external text into the conversation: the write tool stores a draft the model
-    already produced. An injection metric that counted writes would report a run with no
-    content reads as though it had an injection surface.
+    只读调用单独计数，因为只有它们才能把不可信的外部文本拉进对话：写工具存下的只是模型
+    已经产出的草稿。把写调用也算进去的注入指标，会让一次没有任何内容读取的运行看起来像
+    是有注入面的。
     """
     rows = session.execute(
         select(ToolCall.tool_name, ToolCall.status).where(ToolCall.agent_run_id == agent_run_id)
@@ -460,7 +456,7 @@ def run_agent_target(
     client: ModelClient | None = None,
     now: datetime | None = None,
 ) -> VariantOutput:
-    """Run the full Agent or one of its ablations over a single case."""
+    """在一个用例上运行完整 Agent 或它的某个消融变体。"""
     profile: ExecutionProfile | None = profile_for_target(target_type)
     if profile is None:
         raise ValueError(f"{target_type} is not an agent target")
@@ -512,9 +508,8 @@ def run_agent_target(
     notes: list[str] = []
     if verification is not None and not verification.sufficient:
         notes.append(f"verification insufficient: {verification.reason}")
-    # An agent run that only reached `needs_review` still produced a draft, and scoring that
-    # draft is exactly how the ablation's damage shows up. Only a genuinely failed run is
-    # reported as failed, because there is nothing to score.
+    # 一次只走到 `needs_review` 的 Agent 运行仍然产出了草稿，而给这份草稿打分，正是消融
+    # 变体所受损伤显形的方式。只有真正失败的运行才报成失败，因为它没有东西可打分。
     status = "failed" if result.status == "failed" else "succeeded"
     return VariantOutput(
         target_type=target_type,
@@ -547,7 +542,7 @@ def run_target(
     client: ModelClient | None = None,
     now: datetime | None = None,
 ) -> VariantOutput:
-    """Dispatch one case to the requested target variant."""
+    """把一个用例派发给所请求的目标变体。"""
     if target_type == BASELINE_TARGET:
         return run_baseline(session, case=case, settings=settings, client=client, now=now)
     if profile_for_target(target_type) is not None:
@@ -562,7 +557,7 @@ def run_target(
     raise ValueError(f"unsupported eval target: {target_type}")
 
 
-#: The baseline first, then the full Agent, then the ablations - the order the report reads in.
+#: 先是基线，然后是完整 Agent，最后是各消融变体 —— 也就是报告阅读的先后顺序。
 TARGET_ORDER: Final[tuple[str, ...]] = (
     BASELINE_TARGET,
     AGENT_TARGET,

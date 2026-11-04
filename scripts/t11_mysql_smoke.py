@@ -1,16 +1,15 @@
-"""Run T11 verifier and publishing checks against MySQL.
+"""针对 MySQL 跑 T11 的校验器与发布检查。
 
-The script reuses the T8 seeding helpers, then drives the *real* report CLI and the real
-publishing service on MySQL rather than in-memory SQLite. It exercises the three T11
-acceptance criteria end to end:
+脚本复用 T8 的种子辅助函数，然后把*真正的*报告 CLI 与真正的发布服务跑在 MySQL 上，
+而不是内存 SQLite 里。它端到端覆盖 T11 的三条验收标准：
 
-1. a fabricated citation is caught by the Verifier before anything can publish;
-2. a clean `AUTO_WITH_DELAY` report is released only after its withdrawal window elapses;
-3. a `MANUAL` report without an approval record cannot be published at all.
+1. 伪造的引用会在任何东西发布之前被校验器抓住；
+2. 干净的 `AUTO_WITH_DELAY` 报告只有熬过撤回窗口才会放行；
+3. 没有审批记录的 `MANUAL` 报告根本无法发布。
 
-The publishing clock is pinned to a fixed future moment (as in the T8 and T10 smokes) so the
-payload is deterministic. The publishing service carries that pinned clock into the
-`pipeline_runs` timestamps as well, otherwise `finished_at >= started_at` would be violated.
+发布时钟被钉在一个固定的未来时刻（与 T8、T10 冒烟一致），好让结果可复现。
+发布服务会把这只钉住的时钟一并带进 `pipeline_runs` 的时间戳，否则
+`finished_at >= started_at` 就会被违反。
 """
 
 import json
@@ -49,18 +48,17 @@ from open_source_intelligence.reports.verification import VERDICT_FAILED, VERDIC
 T11_NOW = datetime(2099, 6, 5, 12, 0, tzinfo=UTC)
 FABRICATED_REF = "repo_snapshots:999999:2099-01-01"
 
-#: What every report this smoke writes is titled, and therefore what the cleanup matches on. It is
-#: matched as a **literal** prefix (`startswith(..., autoescape=True)`): `_` is a single-character
-#: wildcard in `LIKE`, so the obvious `title.like("__T11%")` also matches a report titled
-#: `abT11foo`, which this smoke never wrote and has no business deleting. Both the title and the
-#: cleanup read this constant, so the two cannot drift apart.
+#: 本冒烟写下的每份报告都用这个前缀做标题，清理时也按它匹配。匹配用的是**字面**前缀
+#: （`startswith(..., autoescape=True)`）：`_` 在 `LIKE` 里是单字符通配符，所以想当然的
+#: `title.like("__T11%")` 连标题 `abT11foo` 也会命中 —— 那份报告不是本冒烟写的，更没有
+#: 理由被它删掉。标题与清理都读同一个常量，两者就不可能各走各的。
 REPORT_TITLE_PREFIX = "__T11"
 
 CLI = ("-m", "open_source_intelligence.reports.cli")
 
 
 def run_cli(*args: str) -> dict[str, Any]:
-    """Run one real CLI invocation and parse its JSON payload."""
+    """跑一次真正的 CLI 调用，并解析它的 JSON 结果。"""
     completed = subprocess.run(
         [sys.executable, *CLI, *args],
         check=False,
@@ -75,7 +73,7 @@ def run_cli(*args: str) -> dict[str, Any]:
 
 
 def run_cli_expecting_failure(*args: str) -> dict[str, Any]:
-    """Run a CLI invocation that must fail, returning its error payload."""
+    """跑一次必须失败的 CLI 调用，并返回它的错误结果。"""
     completed = subprocess.run(
         [sys.executable, *CLI, *args],
         check=False,
@@ -88,18 +86,18 @@ def run_cli_expecting_failure(*args: str) -> dict[str, Any]:
 
 
 def _refresh(session: Session) -> None:
-    """Drop cached rows after the CLI wrote from another process.
+    """CLI 在另一个进程里写入之后，丢弃本地缓存的行。
 
-    `rollback()` alone leaves already-loaded instances holding their old attribute values,
-    so a later query can return a row whose ORM state no longer matches the SQL predicate.
-    Production runs one short-lived session per task and is not exposed to this.
+    只调 `rollback()` 不够：已经加载过的实例仍攥着旧的属性值，后续查询可能返回一行，
+    而它的 ORM 状态早已和 SQL 谓词对不上。生产环境每个任务用一个短生命周期会话，
+    不会暴露在这个问题下。
     """
     session.rollback()
     session.expire_all()
 
 
 def _published_sibling(session: Session, report: Report) -> Report:
-    """Insert an already-published sibling so the topic is no longer a first run."""
+    """插入一份已发布的同主题报告，让该主题不再是首次发布。"""
     sibling = Report(
         agent_run_id=report.agent_run_id,
         topic_id=report.topic_id,
@@ -119,7 +117,7 @@ def _published_sibling(session: Session, report: Report) -> Report:
 
 
 def _verification_failure_check(session: Session, report_id: int) -> dict[str, Any]:
-    """Criterion 1: the Verifier rejects an unresolvable citation, then accepts the fix."""
+    """判据 1：校验器拒掉无法解析的引用，然后接受修好的版本。"""
     source = session.scalar(
         select(ReportSource).where(ReportSource.report_id == report_id).order_by(ReportSource.id)
     )
@@ -165,7 +163,7 @@ def _delayed_release_check(
     report_id: int,
     settings: Any,
 ) -> dict[str, Any]:
-    """Criterion 2: a clean report waits out the window, then releases."""
+    """判据 2：干净的报告先等满窗口，然后才放行。"""
     report = session.get(Report, report_id)
     if report is None:
         raise RuntimeError("report vanished before the delayed release check")
@@ -206,7 +204,7 @@ def _manual_approval_check(
     settings: Any,
     reviewer_id: int,
 ) -> dict[str, Any]:
-    """Criterion 3: `MANUAL` cannot publish without an approval record."""
+    """判据 3：`MANUAL` 没有审批记录就不许发布。"""
     report = session.get(Report, report_id)
     if report is None:
         raise RuntimeError("report vanished before the manual approval check")
@@ -271,7 +269,7 @@ def _manual_approval_check(
 
 
 def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
-    """Drive the real Agent, CLI, and publishing service through the T11 path."""
+    """让真正的 Agent、CLI 与发布服务走一遍 T11 的路径。"""
     settings = get_settings()
     agent_result = run_research_agent(
         session,
@@ -321,7 +319,7 @@ def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
 
 
 def _cleanup(session: Session) -> None:
-    """Remove T11 verdict and review rows, then the T8 records they hang off."""
+    """先删 T11 的校验与审批行，再删它们挂靠的 T8 记录。"""
     report_ids = select(Report.id).where(
         Report.title.startswith(REPORT_TITLE_PREFIX, autoescape=True)
     )
@@ -335,7 +333,7 @@ def _cleanup(session: Session) -> None:
 
 
 def main() -> None:
-    """Run T11 MySQL smoke checks and print the result payload."""
+    """跑 T11 MySQL 冒烟，并打印结果。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)

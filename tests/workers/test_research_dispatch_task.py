@@ -1,4 +1,4 @@
-"""Tests for the daily task's research dispatch step."""
+"""守护每日任务里的研究派发步骤。"""
 
 from datetime import UTC, date, datetime
 
@@ -22,7 +22,7 @@ YESTERDAY = datetime(2026, 10, 11, 1, 0, tzinfo=UTC)
 
 
 def build_settings(*, auto_research: bool, limit: int = 2) -> Settings:
-    """Create deterministic worker settings for dispatch tests."""
+    """为派发用例构造一套确定的 Worker 配置。"""
     return Settings(
         _env_file=None,
         app_env="test",
@@ -36,7 +36,7 @@ def build_settings(*, auto_research: bool, limit: int = 2) -> Settings:
 
 
 def build_session_factory() -> sessionmaker[Session]:
-    """Build a shared in-memory database for dispatch tests."""
+    """为派发用例构造一个共享的内存数据库。"""
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -47,7 +47,7 @@ def build_session_factory() -> sessionmaker[Session]:
 
 
 def add_ready_topic(session: Session, *, name: str, candidates: int = 4) -> Topic:
-    """Insert an enabled topic with a successful rank run for the business date."""
+    """插入一个启用主题，并给它当天的排名运行造一条成功记录。"""
     if session.scalar(select(User).where(User.id == 1)) is None:
         session.add(User(id=1, username="admin", password_hash="hash", display_name="Admin"))
         session.flush()
@@ -80,7 +80,7 @@ def add_ready_topic(session: Session, *, name: str, candidates: int = 4) -> Topi
 
 
 def add_published_history(session: Session, *, topic_id: int, window_end: datetime) -> None:
-    """Insert a published report whose run observed up to `window_end`."""
+    """插入一份已发布报告，使它背后的运行观测到 `window_end` 为止。"""
     config = AgentConfig(
         name="default",
         version="v1",
@@ -136,7 +136,7 @@ def add_published_history(session: Session, *, topic_id: int, window_end: dateti
 
 
 class RecordingApp:
-    """Celery-app double that records the tasks it was asked to send."""
+    """Celery 应用替身，记录它被要求发送的任务。"""
 
     def __init__(self, error: Exception | None = None) -> None:
         self.sent: list[tuple[str, dict[str, object]]] = []
@@ -154,7 +154,7 @@ class RecordingApp:
 
 
 def test_dispatch_queues_one_research_task_per_eligible_topic() -> None:
-    """The step's only job: turn today's eligible topics into queued research tasks."""
+    """证明这一步只做一件事：把今天合格的主题变成排队中的研究任务。"""
     with build_session_factory()() as session:
         topic = add_ready_topic(session, name="active")
         app = RecordingApp()
@@ -173,11 +173,11 @@ def test_dispatch_queues_one_research_task_per_eligible_topic() -> None:
 
 
 def test_dispatch_passes_the_window_start_to_a_topic_with_history() -> None:
-    """A topic that already published must hand its next window start to the queued task.
+    """证明已发布过报告的主题，要把下一段窗口起点交给排队中的任务。
 
-    This is the worker-side half of the duplicate-delivery fix: the window start computed by
-    `select_research_targets` has to reach the Celery task, otherwise the research run silently
-    falls back to the full trailing window and re-covers the same snapshots.
+    这是重复投递修复的 Worker 侧一半：`select_research_targets` 算出的窗口起点
+    必须送到 Celery 任务手里，否则研究运行会悄悄退回完整的回溯窗口，
+    把同一批快照再覆盖一遍。
     """
     with build_session_factory()() as session:
         topic = add_ready_topic(session, name="active")
@@ -197,7 +197,7 @@ def test_dispatch_passes_the_window_start_to_a_topic_with_history() -> None:
 
 
 def test_dispatch_payload_reports_a_broker_failure_without_raising() -> None:
-    """A broker that refuses the task is a result to report, not an exception to propagate."""
+    """证明拒收任务的 broker 是一个要上报的结果，而不是要抛出去的异常。"""
     with build_session_factory()() as session:
         add_ready_topic(session, name="active")
         app = RecordingApp(error=RuntimeError("broker unavailable"))
@@ -214,9 +214,9 @@ def test_dispatch_payload_reports_a_broker_failure_without_raising() -> None:
 
 
 def test_the_switch_does_not_add_a_beat_entry() -> None:
-    """Research stays out of the beat table: it is dispatched by the daily batch, not by a clock.
+    """证明研究任务不进 beat 表：它由每日批次派发，而不是由时钟触发。
 
-    Two schedules for one run type would double the spend on a day when both fired.
+    同一类运行配两套调度，一旦两边都触发，当天的花费就会翻倍。
     """
     settings = build_settings(auto_research=True)
 
@@ -227,7 +227,7 @@ def test_the_switch_does_not_add_a_beat_entry() -> None:
 
 
 def test_the_limit_bounds_the_batch_and_reports_the_remainder() -> None:
-    """`AGENT_DAILY_RESEARCH_LIMIT` must be a real bound, and the leftovers must stay visible."""
+    """证明 `AGENT_DAILY_RESEARCH_LIMIT` 是真正的上限，剩下的必须留得可见。"""
     with build_session_factory()() as session:
         first = add_ready_topic(session, name="first")
         add_ready_topic(session, name="second")

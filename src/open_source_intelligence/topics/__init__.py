@@ -1,10 +1,10 @@
-"""Topic configuration: the read queries and the create/update/delete operations.
+"""主题配置：读侧查询，以及创建、更新、删除操作。
 
-The package exists because the contract said it should. `docs/api-contract.md` §3 recorded the
-absence of a topic API as "designed but not done, and whoever adds one should put the contract in
-`INTERFACES.md` §3 first", which is what T19 did. What stayed out is the part the contract argues
-against on its own merits: triggering a research run is not reachable from here, because a run
-spends model budget and that trigger belongs to the scheduler and the operator CLI.
+这个包的存在是因为契约要求它存在。`docs/api-contract.md` §3 曾把主题
+API 的缺席记为「设计过但没做，谁要加就应该先把契约写进
+`INTERFACES.md` §3」，T19 做的就是这件事。被留在外面的，是契约本身
+就已论证不该放在这里的那部分：触发一次研究运行不从这里可达，因为一次
+运行会花掉模型预算，那个触发器属于调度器与操作者 CLI。
 """
 
 from .errors import TopicError, TopicInUse, TopicNameBlank, TopicNameConflict, TopicNotFound

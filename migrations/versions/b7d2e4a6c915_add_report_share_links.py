@@ -1,4 +1,6 @@
-"""add report share links
+"""新增报告分享链接
+
+为免登录阅读报告提供地址：表里只存令牌的 SHA-256 摘要，明文令牌不落库。
 
 Revision ID: b7d2e4a6c915
 Revises: e5a1c7b9d3f2
@@ -16,29 +18,27 @@ down_revision: str | None = "e5a1c7b9d3f2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-#: `reports.id` and `users.id` are BIGINT UNSIGNED. A plain `sa.BigInteger()` is signed, and
-#: MySQL refuses the foreign key with error 3780 ("incompatible") - the constraint, not the
-#: column, is what fails, so the message points at the column that was correct.
+#: `reports.id` 与 `users.id` 都是 `BIGINT UNSIGNED`。直接写 `sa.BigInteger()` 得到的是
+#: 有符号类型，MySQL 会以 3780（"incompatible"）拒绝这个外键 —— 失败的是约束而不是列，
+#: 所以报错指向的恰恰是本来正确的列。
 UINT = sa.BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 def utc_datetime() -> sa.DateTime:
-    """Match `UTCDateTime`: microsecond precision on MySQL, plain DATETIME elsewhere.
+    """对齐 `UTCDateTime`：MySQL 上精确到微秒，其它方言用普通 `DATETIME`。
 
-    Using a plain `sa.DateTime()` here would produce a MySQL `DATETIME` with the default zero
-    fractional seconds, so `last_accessed_at` would lose the sub-second part that the ORM model
-    is written to keep.
+    这里若用朴素的 `sa.DateTime()`，MySQL 会生成小数秒默认为 0 的 `DATETIME`，
+    `last_accessed_at` 就会丢掉 ORM 模型刻意保留的亚秒部分。
     """
     return sa.DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql")
 
 
 def upgrade() -> None:
-    """Create `report_share_links`, the storage behind the no-login report address.
+    """创建 `report_share_links`，承载免登录报告地址的存储。
 
-    `token_hash` is `CHAR(64)` with a unique constraint: the hex digest of a sha256 is always
-    that length, and the unique index is what turns "look this token up" into a single probe
-    instead of a scan. There is deliberately no column for the plaintext token - a database that
-    cannot store it cannot leak it.
+    `token_hash` 是带唯一约束的 `CHAR(64)`：sha256 的十六进制摘要长度固定，唯一索引
+    把「按令牌查一行」变成一次探测而不是全表扫描。这里刻意不设明文令牌列 ——
+    存不下的东西才泄不出去。
     """
     op.create_table(
         "report_share_links",
@@ -65,11 +65,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the share-link table.
+    """删除分享链接表。
 
-    Dropping it invalidates every link that ever existed; the uptime cost of a downgrade is
-    therefore larger than the schema change. That is acceptable for a rollback of the feature
-    that created the table, and unacceptable as a routine operation.
+    删表会让所有已发出的链接同时失效，因此这次降级的可用性代价大于表结构本身的变化。
+    作为「回滚创建该表的功能」可以接受，作为日常操作则不可接受。
     """
     op.drop_index("ix_report_share_links_report_revoked", table_name="report_share_links")
     op.drop_table("report_share_links")

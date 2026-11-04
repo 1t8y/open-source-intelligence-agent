@@ -1,8 +1,8 @@
-"""Tests for the edge that turns a finished research run into a report.
+"""守护「研究运行结束 → 报告」这条边的用例。
 
-The daily chain used to stop at `report_drafts`: `reports/cli.py --action generate` was the only
-way to compose a report, and nothing scheduled it. An unattended day therefore produced a draft,
-no report, nothing to publish, and no email - while every stage reported `succeeded`.
+日常链路原本止步于 `report_drafts`：`reports/cli.py --action generate` 是唯一能组装报告的
+途径，而没有任何调度去跑它。于是一个无人值守的日子只产出一份草稿 —— 没有报告、没有可发布
+的内容、也没有邮件，而每个阶段都汇报 `succeeded`。
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ def test_a_finished_run_reaches_a_verified_report(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """`finish_run_report` composes, verifies, and hands the report to the publish policy."""
+    """证明 `finish_run_report` 会组装、校验报告，并把它交给发布策略。"""
     seeded = seed_topic(workspace, repo_count=2)
     result = run_research_agent(
         session,
@@ -37,7 +37,7 @@ def test_a_finished_run_reaches_a_verified_report(
     assert summary["verdict"] == "passed"
     report = session.get(Report, summary["report_id"])
     assert report is not None
-    # Where it lands is the policy's call; what matters is that it left `draft` on its own.
+    # 最终落到哪个状态由策略决定；这里只在乎它靠自己离开了 `draft`。
     assert report.status in {"scheduled", "published", "pending_review", "approved"}
 
 
@@ -45,13 +45,13 @@ def test_a_run_without_a_draft_reports_the_composition_failure(
     session: Session,
     workspace: Workspace,
 ) -> None:
-    """No candidates, no draft, no report — and the caller gets a code instead of an exception.
+    """证明没有候选就没有草稿、没有报告，且调用方拿到的是错误码而非异常。
 
-    A Celery task must not raise here: raising triggers a retry, and a retry spends model budget
-    on a run whose evidence base was empty to begin with.
+    Celery 任务在这里绝不能抛错：抛错会触发重试，而重试会把模型预算花在一次证据基础
+    本就是空的运行上。
     """
-    # A topic with no ranked candidates: the run stops before drafting, so there is nothing to
-    # compose. `agent_max_candidates` cannot express this - its floor is 1.
+    # 一个没有候选排名的主题：运行在起草之前就停了，因此没有东西可组装。
+    # `agent_max_candidates` 表达不了这种情形 —— 它的下限是 1。
     topic = workspace.add_topic()
     result = run_research_agent(
         session,

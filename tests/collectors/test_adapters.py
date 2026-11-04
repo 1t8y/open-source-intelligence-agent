@@ -1,4 +1,4 @@
-"""Tests for GitHub and Hugging Face collector adapters."""
+"""守护 GitHub 与 Hugging Face 采集适配器的归一化与重试行为。"""
 
 import httpx
 import pytest
@@ -10,7 +10,7 @@ from open_source_intelligence.collectors.types import SourceUnavailableError
 
 
 def build_http(handler: httpx.MockTransport) -> RetryingHttpClient:
-    """Build a retry client with no real delay for tests."""
+    """构造一个不做真实等待的重试客户端，用例才不会真的睡过去。"""
     return RetryingHttpClient(
         httpx.Client(transport=handler),
         max_attempts=3,
@@ -19,7 +19,7 @@ def build_http(handler: httpx.MockTransport) -> RetryingHttpClient:
 
 
 def test_github_collector_normalizes_repository() -> None:
-    """GitHub responses should map into the common repository shape."""
+    """GitHub 的响应要映射成统一的仓库结构，上层才不必按来源分支。"""
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["per_page"] == "1"
@@ -53,7 +53,7 @@ def test_github_collector_normalizes_repository() -> None:
 
 
 def test_huggingface_collector_normalizes_model() -> None:
-    """Hugging Face responses should map likes and tags consistently."""
+    """Hugging Face 的响应要把点赞数与标签按同一套规则归一。"""
 
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -80,7 +80,7 @@ def test_huggingface_collector_normalizes_model() -> None:
 
 
 def test_retrying_http_recovers_from_server_error() -> None:
-    """Transient 5xx responses should be retried."""
+    """偶发的 5xx 响应必须被重试，一次抖动不该让整轮采集落空。"""
     attempts = 0
 
     def handler(_: httpx.Request) -> httpx.Response:
@@ -97,7 +97,7 @@ def test_retrying_http_recovers_from_server_error() -> None:
 
 
 def test_retrying_http_exhausts_attempts() -> None:
-    """Repeated server failures should raise a stable collector error."""
+    """重试次数用尽后应抛出稳定的采集错误，而不是原始 `httpx` 异常。"""
 
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "down"})
@@ -107,7 +107,7 @@ def test_retrying_http_exhausts_attempts() -> None:
 
 
 def test_retrying_http_rejects_invalid_json() -> None:
-    """A successful HTTP status with malformed JSON must fail as a source error."""
+    """HTTP 状态成功但 JSON 畸形时，必须记为来源错误，脏数据不得流进下游。"""
 
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"not-json")
@@ -117,7 +117,7 @@ def test_retrying_http_rejects_invalid_json() -> None:
 
 
 def test_github_collector_rejects_invalid_metrics() -> None:
-    """Malformed provider counters must not escape as ValueError or TypeError."""
+    """供应商给出的畸形计数不能以 `ValueError` 或 `TypeError` 逃出去。"""
 
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(

@@ -1,4 +1,4 @@
-"""Tests for versioned prompt asset loading."""
+"""守护按版本加载 Prompt 资产的用例。"""
 
 from __future__ import annotations
 

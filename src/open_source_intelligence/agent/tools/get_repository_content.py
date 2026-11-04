@@ -1,10 +1,9 @@
-"""`get_repository_content` implementation: cleaned, query-ranked, and size-bounded README text.
+"""`get_repository_content` 的实现：清洗、按查询排序并限长的 README 文本。
 
-When the caller supplies a `query_hint`, a long README is no longer hard-truncated at its head.
-Instead the README is split into self-contained snippets and the ones most relevant to the query
-are returned, so a section buried deep in a 20k-character document (say, the security notes) is
-not silently dropped. The query ranking is lexical (see `agent/retrieval/vector.py`), stays
-offline, and falls back to head truncation whenever there is no hint.
+当调用方给了 `query_hint`，长 README 不再在开头被硬截断，而是切成自包含的
+片段，返回与查询最相关的那些：埋在 2 万字符文档深处的章节（比如安全说明）
+不会被悄悄丢掉。查询排序是词法级的（见 `agent/retrieval/vector.py`），
+全程离线；没有提示时回退到截取开头。
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ def get_repository_content(
     ctx: ToolContext,
     payload: GetRepositoryContentInput,
 ) -> ToolOutcome:
-    """Return cached content, always flagged as untrusted and size-bounded."""
+    """返回缓存内容，始终标记为不可信并受长度上限约束。"""
     load_authorized_repository(session, ctx, payload.repo_id)
     record = session.scalar(
         select(RepositoryContent).where(
@@ -60,11 +59,11 @@ def get_repository_content(
 
 
 def _select_content(cleaned: str, max_chars: int, query_hint: str | None) -> tuple[str, bool]:
-    """Return content capped at `max_chars`, ranking snippets by `query_hint` when given.
+    """返回不超过 `max_chars` 的内容；给了 `query_hint` 时按它给片段排序。
 
-    With no hint (or content already within budget) the behaviour is unchanged: take the head
-    and report whether anything was cut. With a hint, the most relevant snippets are concatenated
-    until `max_chars` is reached, so relevance — not position — decides what survives truncation.
+    没有提示（或内容本就在预算之内）时行为不变：直接取开头，并报告是否发生过
+    截断。有提示时，把最相关的片段依次拼接，直到达到 `max_chars` —— 因此决定
+    谁能活过截断的是相关性，而不是位置。
     """
     if len(cleaned) <= max_chars:
         return cleaned, False
@@ -81,7 +80,7 @@ def _select_content(cleaned: str, max_chars: int, query_hint: str | None) -> tup
         selected.append(item.text)
         used += len(item.text)
     if not selected:
-        # Every snippet alone exceeds the budget (or nothing matched): fall back to the head so
-        # the tool still returns something deterministic rather than an empty document.
+        # 每个片段单独都超出预算（或者没有任何匹配）：回退到截取开头，让工具
+        # 仍能返回确定的结果，而不是一份空文档。
         return truncate_text(cleaned, max_chars)
     return "\n\n".join(selected), True

@@ -1,1 +1,1 @@
-"""Lexical retrieval for the research Agent's content tools."""
+"""为研究 Agent 的内容工具提供词法检索。"""

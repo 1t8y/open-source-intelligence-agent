@@ -1,4 +1,4 @@
-"""`query_repo_metrics` implementation: daily snapshot series for one repository."""
+"""`query_repo_metrics` 的实现：单个仓库的每日快照序列。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def query_repo_metrics(
     ctx: ToolContext,
     payload: QueryRepoMetricsInput,
 ) -> ToolOutcome:
-    """Return daily snapshot points inside the requested window."""
+    """返回请求时间窗口内的每日快照点。"""
     load_authorized_repository(session, ctx, payload.repo_id)
     rows = session.scalars(
         select(RepoSnapshot)

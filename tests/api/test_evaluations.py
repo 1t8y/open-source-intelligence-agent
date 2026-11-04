@@ -1,17 +1,15 @@
-"""Integration tests for the evaluation API.
+"""守护评测 API：数据集清单、用例清单、五变体总扫、运行详情与已存对比。
 
-They drive the T14 surface over HTTP against the real route, service, and persistence stack: the
-dataset list, one dataset's cases, a full five-variant sweep, run detail, and the stored
-comparison. The offline model client is used throughout, so no network is touched and the whole
-sweep is reproducible.
+它们针对真实的路由、服务与持久化层，用 HTTP 跑通 T14 这条链路；全程使用离线
+模型客户端，因此不碰网络，整次扫描都可以复现。
 
-Two things these tests exist to pin down beyond the happy path:
+除了顺利路径，这组用例还要钉住两件事：
 
-* **Route order.** `/runs` and `/runs/{run_id}` are literal segments declared before
-  `/{dataset_id}/...`. If the order were reversed, `/runs` would be parsed as a dataset id and
-  the run list would 404 - a silent, confusing failure that only a test catches.
-* **Access control.** An evaluation run executes the Agent against real data, so the whole
-  surface is a write-role action (`INTERFACES.md` §2): a viewer must be refused everywhere.
+* **路由顺序。** `/runs` 与 `/runs/{run_id}` 是声明在
+  `/{dataset_id}/...` 之前的字面段。顺序一旦颠倒，`/runs` 就会被当成数据集
+  id 解析，运行清单随之 404 —— 这种悄无声息的故障只有测试能拦住。
+* **访问控制。** 一次评测运行会拿真实数据驱动 Agent，所以整条链路都是写角色
+  的动作（`INTERFACES.md` §2）：只读用户在任何一处都必须被拒绝。
 """
 
 from __future__ import annotations
@@ -42,32 +40,32 @@ RUNS = f"{BASE}/runs"
 
 @pytest.fixture()
 def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """Provide a client bound to the shared test database."""
+    """提供一个绑定到共享测试数据库的客户端。"""
     with build_client(session_factory) as started:
         yield started
 
 
 @pytest.fixture()
 def admin(session: Session) -> Actor:
-    """An administrator, who may run and read evaluations."""
+    """管理员：既能发起评测，也能读评测结果。"""
     return create_actor(session, username="eval-admin", role="ADMIN")
 
 
 @pytest.fixture()
 def viewer(session: Session) -> Actor:
-    """A read-only user, who must be refused everywhere on this surface."""
+    """只读用户：在这条链路的任何一处都必须被拒绝。"""
     return create_actor(session, username="eval-viewer", role="VIEWER")
 
 
 @pytest.fixture()
 def dataset_id(session: Session, workspace: Workspace) -> int:
-    """Seed the world and import the shipped dataset, returning its id."""
+    """铺好世界并导入随包发布的数据集，返回它的 id。"""
     seed_eval_world(session, workspace)
     return import_shipped_dataset(session)
 
 
 def _sweep(client: TestClient, actor: Actor, dataset_id: int) -> dict[str, object]:
-    """Run every variant over a dataset and return the comparison payload."""
+    """在一个数据集上跑完所有变体，返回对比载荷。"""
     response = client.post(
         f"{BASE}/{dataset_id}/run",
         json={},
@@ -78,7 +76,7 @@ def _sweep(client: TestClient, actor: Actor, dataset_id: int) -> dict[str, objec
 
 
 # --------------------------------------------------------------------------------------
-# Datasets and cases
+# 数据集与用例
 # --------------------------------------------------------------------------------------
 
 
@@ -87,7 +85,7 @@ def test_the_dataset_list_reports_the_imported_version(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """An operator must be able to see which dataset versions exist."""
+    """运维者必须能看到现存的是哪些数据集版本。"""
     response = client.get(BASE, headers=auth_headers(client, admin))
 
     assert response.status_code == 200, response.text
@@ -102,13 +100,13 @@ def test_the_case_list_exposes_topics_and_tags(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """The samples of a dataset version must be inspectable before spending a sweep on it."""
+    """在为一个数据集版本花掉一次扫描之前，必须先能看清它的样本。"""
     response = client.get(f"{BASE}/{dataset_id}/cases", headers=auth_headers(client, admin))
 
     assert response.status_code == 200, response.text
     items = response.json()["items"]
-    # `list_cases` orders by `case_key`, which is the only deterministic order `eval_cases`
-    # offers; the dataset author's file order is not persisted.
+    # `list_cases` 按 `case_key` 排序，这是 `eval_cases` 唯一能给出的
+    # 确定性顺序；数据集作者在文件里的排列顺序并不会被持久化。
     assert [item["case_key"] for item in items] == [
         "growth-surge",
         "injection-readme",
@@ -125,7 +123,7 @@ def test_disabled_cases_can_be_excluded(
     admin: Actor,
     workspace: Workspace,
 ) -> None:
-    """`enabled_only` must actually filter, since the runner skips disabled cases."""
+    """`enabled_only` 必须真的过滤，因为执行器本身会跳过被停用的用例。"""
     seed_eval_world(session, workspace)
     document = build_dataset_document(
         name="mixed",
@@ -145,7 +143,7 @@ def test_disabled_cases_can_be_excluded(
 
 
 # --------------------------------------------------------------------------------------
-# The unified sweep
+# 统一总扫
 # --------------------------------------------------------------------------------------
 
 
@@ -154,7 +152,7 @@ def test_a_sweep_returns_every_variant_in_one_report(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """`REQUIREMENTS.md` FR-A-06: one request, one comparable report across all variants."""
+    """`REQUIREMENTS.md` FR-A-06：一次请求，得到一份覆盖全部变体的可比报告。"""
     body = _sweep(client, admin, dataset_id)
 
     assert body["dataset"] == {"id": dataset_id, "name": "weekly-agent-quality", "version": "v1"}
@@ -168,7 +166,7 @@ def test_the_report_separates_the_candidate_from_its_controls(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """The Agent is measured against the baseline; each ablation against the Agent."""
+    """报告要把候选与它的对照组分开：Agent 对齐基线，各个消融对齐 Agent。"""
     body = _sweep(client, admin, dataset_id)
     by_target = {target["target_type"]: target for target in body["targets"]}
 
@@ -184,9 +182,9 @@ def test_the_report_separates_the_candidate_from_its_controls(
     assert ablated["reference_target"] == "agent_full"
     assert ablated["deltas_vs_reference"]["citation_coverage"] == "-1.0000"
     assert ablated["regression"] is True
-    # Two controls lose citations to the Agent, and both must be named in the report.
+    # 有两个对照组相对 Agent 丢了引用，两者都必须在报告里被点名。
     assert body["regressions"] == ["agent_no_verifier", "agent_no_tools"]
-    # `agent_no_history` keeps its citations, so it must not be flagged as a regression.
+    # `agent_no_history` 的引用没有掉，所以它不能被标成回归。
     assert by_target["agent_no_history"]["regression"] is False
 
 
@@ -195,7 +193,7 @@ def test_the_report_carries_the_cost_and_tool_evidence(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """`docs/evaluation.md` §9 asks for token, cost, latency, and failure evidence."""
+    """`docs/evaluation.md` §9 要求报告带上 token、成本、时延与失败证据。"""
     body = _sweep(client, admin, dataset_id)
     by_target = {target["target_type"]: target for target in body["targets"]}
 
@@ -216,7 +214,7 @@ def test_a_subset_of_variants_can_be_requested(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """A single-variant run must not be forced to execute the whole sweep."""
+    """只跑单个变体时，不该被迫执行整轮扫描。"""
     response = client.post(
         f"{BASE}/{dataset_id}/run",
         json={"targets": ["agent_no_tools", BASELINE_TARGET]},
@@ -224,7 +222,7 @@ def test_a_subset_of_variants_can_be_requested(
     )
 
     assert response.status_code == 200, response.text
-    # The report keeps report order, not request order, so two reports stay comparable.
+    # 报告按报告顺序排列，而不是按请求顺序，这样两份报告才始终可比。
     assert [item["target_type"] for item in response.json()["targets"]] == [
         BASELINE_TARGET,
         "agent_no_tools",
@@ -236,7 +234,7 @@ def test_an_unknown_variant_is_rejected_with_a_problem_document(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """A typo must fail loudly instead of silently running a subset."""
+    """写错变体名必须大声失败，而不是悄悄只跑一个子集。"""
     response = client.post(
         f"{BASE}/{dataset_id}/run",
         json={"targets": ["agent_oops"]},
@@ -253,7 +251,7 @@ def test_a_missing_dataset_is_a_problem_document(
     client: TestClient,
     admin: Actor,
 ) -> None:
-    """Unknown datasets must produce RFC 7807, not a bare 500 or a stack trace."""
+    """未知数据集要给出 RFC 7807 问题文档，而不是裸 500 或堆栈。"""
     response = client.post(f"{BASE}/424242/run", json={}, headers=auth_headers(client, admin))
 
     assert response.status_code == 404, response.text
@@ -266,7 +264,7 @@ def test_evaluation_can_be_disabled_by_configuration(
     dataset_id: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An operator must be able to switch the subsystem off without touching code."""
+    """运维者必须能只改配置就关掉这个子系统，而不必动代码。"""
     monkeypatch.setattr(
         evaluation_runner,
         "get_settings",
@@ -285,7 +283,7 @@ def test_a_dataset_version_cannot_be_overwritten(
     admin: Actor,
     workspace: Workspace,
 ) -> None:
-    """Changing a frozen dataset means publishing a new version (`docs/evaluation.md` §2.3)."""
+    """改一个已冻结的数据集，只能靠发布新版本（`docs/evaluation.md` §2.3）。"""
     seed_eval_world(session, workspace)
     first = parse_dataset(build_dataset_document(name="frozen", cases=[build_case_document()]))
     imported = import_dataset(session, first).dataset_id
@@ -298,14 +296,14 @@ def test_a_dataset_version_cannot_be_overwritten(
     with pytest.raises(DatasetVersionConflict) as excinfo:
         import_dataset(session, changed)
     assert excinfo.value.code == "DATASET_VERSION_CONFLICT"
-    # The rejected import must not have disturbed the stored version.
+    # 被拒绝的这次导入不能动到已存的版本。
     response = client.get(f"{BASE}/{imported}/cases", headers=auth_headers(client, admin))
     assert response.status_code == 200, response.text
     assert [item["case_key"] for item in response.json()["items"]] == ["case-a"]
 
 
 # --------------------------------------------------------------------------------------
-# Runs
+# 运行记录
 # --------------------------------------------------------------------------------------
 
 
@@ -314,7 +312,7 @@ def test_the_run_list_is_addressable_by_dataset_and_variant(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """The literal `/runs` segment must resolve before `/{dataset_id}` can absorb it."""
+    """字面的 `/runs` 段必须先被解析，否则它会被 `/{dataset_id}` 吞掉。"""
     _sweep(client, admin, dataset_id)
     headers = auth_headers(client, admin)
 
@@ -333,7 +331,7 @@ def test_run_detail_carries_every_case_measurement(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """`GET /runs/{run_id}` is the failure-triage entry point: which case, which reason."""
+    """`GET /runs/{run_id}` 是排查失败的入口：哪个用例、什么原因。"""
     _sweep(client, admin, dataset_id)
     headers = auth_headers(client, admin)
     runs = client.get(f"{RUNS}?dataset_id={dataset_id}", headers=headers).json()["items"]
@@ -360,7 +358,7 @@ def test_the_baseline_run_has_no_agent_config(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """A single-prompt baseline is not an agent configuration, and must not pretend to be one."""
+    """单提示词基线不是一份 Agent 配置，也不该冒充成一份。"""
     _sweep(client, admin, dataset_id)
     headers = auth_headers(client, admin)
     runs = client.get(f"{RUNS}?dataset_id={dataset_id}", headers=headers).json()["items"]
@@ -372,7 +370,7 @@ def test_the_baseline_run_has_no_agent_config(
 
 
 def test_an_unknown_run_is_a_problem_document(client: TestClient, admin: Actor) -> None:
-    """Triage must not crash on a stale link."""
+    """拿着过期的链接去排查，不该把排查页本身弄崩。"""
     response = client.get(f"{RUNS}/987654", headers=auth_headers(client, admin))
 
     assert response.status_code == 404, response.text
@@ -380,7 +378,7 @@ def test_an_unknown_run_is_a_problem_document(client: TestClient, admin: Actor) 
 
 
 # --------------------------------------------------------------------------------------
-# The stored comparison
+# 已存的对比
 # --------------------------------------------------------------------------------------
 
 
@@ -389,7 +387,7 @@ def test_the_comparison_is_reproducible_without_rerunning(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """`docs/evaluation.md` §9's report must be readable from storage, not only re-derivable."""
+    """`docs/evaluation.md` §9 的报告必须能从存储里读出来，而不只能重新推导。"""
     first = _sweep(client, admin, dataset_id)
     headers = auth_headers(client, admin)
     runs_before = len(
@@ -415,7 +413,7 @@ def test_comparing_a_dataset_without_a_run_is_a_problem_document(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """An empty report would look like a pass; it must be an explicit 404 instead."""
+    """空报告看起来会像「全部通过」，所以这里必须是显式的 404。"""
     response = client.get(f"{BASE}/{dataset_id}/comparison", headers=auth_headers(client, admin))
 
     assert response.status_code == 404, response.text
@@ -427,21 +425,21 @@ def test_the_comparison_payload_is_json_stable(
     admin: Actor,
     dataset_id: int,
 ) -> None:
-    """Rates travel as strings so a client never has to guess at float rounding."""
+    """比率一律以字符串出行，客户端永远不必去猜浮点舍入。"""
     body = _sweep(client, admin, dataset_id)
 
     for target in body["targets"]:
         for value in target["metrics"].values():
             assert value is None or isinstance(value, str)
         assert isinstance(target["total_cost"], str)
-        Decimal(target["total_cost"])  # a string a client can parse without float rounding
+        Decimal(target["total_cost"])  # 一个能被客户端解析、不必担心浮点舍入的字符串
         assert isinstance(target["tool_call_total"], int)
-    # Exactly the controls and the baseline miss the absolute targets; the Agent does not.
+    # 恰好是基线与两个对照组没达标，Agent 本身达标。
     assert set(body["failed_gates"]) == {BASELINE_TARGET, "agent_no_verifier", "agent_no_tools"}
 
 
 # --------------------------------------------------------------------------------------
-# Access control
+# 访问控制
 # --------------------------------------------------------------------------------------
 
 
@@ -462,7 +460,7 @@ def test_a_viewer_is_refused_everywhere(
     method: str,
     path: str,
 ) -> None:
-    """Running an evaluation against real data is an operator action, not a read."""
+    """拿真实数据跑评测是运维动作，不是读操作。"""
     headers = auth_headers(client, viewer)
     response = (
         client.get(path, headers=headers)
@@ -475,7 +473,7 @@ def test_a_viewer_is_refused_everywhere(
 
 
 def test_the_sweep_is_refused_without_credentials(client: TestClient, dataset_id: int) -> None:
-    """No token, no evaluation."""
+    """没有令牌，就没有评测。"""
     response = client.post(f"{BASE}/{dataset_id}/run", json={})
 
     assert response.status_code == 401, response.text

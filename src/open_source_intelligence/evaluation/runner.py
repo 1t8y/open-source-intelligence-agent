@@ -1,21 +1,18 @@
-"""Run a dataset against target variants and assemble the unified comparison report.
+"""在一份数据集上运行各目标变体，并组装统一的对比报告。
 
-The runner is the piece that answers "did the Agent earn its complexity". It executes each
-requested variant over the same frozen cases, scores every case with the deterministic scorers,
-persists one `eval_runs` row per variant plus one `eval_results` row per case, and then builds a
-single comparison so the variants can be read side by side.
+运行器就是回答「Agent 值不值它这份复杂度」的那块代码。它在同一批冻结的用例上执行每个被
+请求的变体，用确定性打分器给每个用例打分，为每个变体落一行 `eval_runs`、为每个用例落一行
+`eval_results`，然后组装出一份统一的对比，让各变体可以并排阅读。
 
-Two decisions worth naming:
+有两项决定值得点名：
 
-* **Averages skip `None`.** A metric that a case never exercised is not a zero, and averaging
-  it in as one would make a narrower ablation look worse than it is. Counts of scored versus
-  skipped cases are reported so the reader can see how thin a mean is.
-* **Every variant is measured against the variant it is a change to, not against one fixed
-  reference.** The comparison therefore forms a chain: `baseline_single_prompt <- agent_full <-
-  agent_no_*`. The Agent answers `docs/evaluation.md` §9's promotion question ("is it worth
-  shipping over doing nothing?"), while each ablation answers §8's ablation question ("what does
-  removing this capability cost?"). Measuring an ablation against the baseline would hide the
-  loss entirely, because the baseline is already at the floor the ablation falls to.
+* **求均值时跳过 `None`。** 某个用例从未行使过的指标不是零，把它按零平均进去，会让范围更
+  窄的消融变体显得比实际更差。打分与跳过的用例数都会报出来，读者因此能看出一个均值有多薄。
+* **每个变体都对照「它所改动的那一个」来量，而不是对照某个固定参照。** 对比因此串成一条链：
+  `baseline_single_prompt <- agent_full <- agent_no_*`。Agent 回答的是
+  `docs/evaluation.md` §9 的晋升问题（「比起什么都不做，它值得上线吗？」），而每个消融变体
+  回答的是 §8 的消融问题（「去掉这项能力要付什么代价？」）。拿消融变体去对照基线，损失会
+  被完全藏住，因为基线本来就处在消融变体跌落到的那个地板上。
 """
 
 from __future__ import annotations
@@ -49,40 +46,39 @@ from .errors import EvaluationDisabled, EvaluationNotFound, UnknownTarget
 from .scorers import ScoredCase, score_case, score_failed_case
 from .targets import AGENT_TARGET, BASELINE_TARGET, TARGET_ORDER, VariantOutput, run_target
 
-#: Metrics that can block a promotion. `docs/evaluation.md` §8 names exactly these three.
+#: 能挡住一次晋升的指标。`docs/evaluation.md` §8 点名的正是这三项。
 GATED_METRICS: Final[tuple[str, ...]] = (
     "citation_coverage",
     "factual_consistency",
     "task_completion",
 )
 
-#: Targets whose result decides promotion (`docs/evaluation.md` §9). An ablation measures what a
-#: capability is worth and is *expected* to lose, so it can never veto a release; its damage is
-#: reported through its own deltas and gate failures instead.
+#: 结果能决定晋升的目标（`docs/evaluation.md` §9）。消融变体量的是某项能力的价值，*本来就
+#: 该*输，所以它永远不能否决一次发布；它的损伤改由自身的差值与门禁失败来报告。
 PROMOTION_TARGETS: Final[tuple[str, ...]] = (AGENT_TARGET,)
 
-#: Absolute acceptance targets from `ARCHITECTURE.md` §12.
+#: 来自 `ARCHITECTURE.md` §12 的绝对验收目标。
 METRIC_TARGETS: Final[dict[str, Decimal]] = {
     "citation_coverage": Decimal("0.95"),
     "factual_consistency": Decimal("0.90"),
     "task_completion": Decimal("0.90"),
 }
 
-#: Rates promoted to real `eval_results` columns, because they gate a release.
+#: 提升为 `eval_results` 真实列的比率，因为它们把关发布。
 COLUMN_METRICS: Final[tuple[str, ...]] = (
     "citation_coverage",
     "factual_consistency",
     "task_completion",
 )
 
-#: Rates that have no threshold yet and therefore ride along in `details_json`. Keeping them
-#: out of the schema means adding a measured rate never requires a migration.
+#: 尚无阈值、因而随 `details_json` 一起走的比率。把它们留在 schema 之外，意味着新增一个
+#: 被测比率永远不需要迁移。
 DETAIL_METRICS: Final[tuple[str, ...]] = (
     "source_accuracy",
     "tool_success_rate",
 )
 
-#: Every rate that gets averaged into a run summary.
+#: 会被平均进运行摘要的每一个比率。
 RATE_METRICS: Final[tuple[str, ...]] = COLUMN_METRICS + DETAIL_METRICS
 
 RATE_PLACES: Final[Decimal] = Decimal("0.0001")
@@ -90,7 +86,7 @@ RATE_PLACES: Final[Decimal] = Decimal("0.0001")
 
 @dataclass(frozen=True, slots=True)
 class TargetSummary:
-    """One variant's aggregated outcome, and how it compares to its reference variant."""
+    """一个变体的聚合结果，以及它相对于其参照变体的表现。"""
 
     target_type: str
     run_id: int
@@ -112,7 +108,7 @@ class TargetSummary:
     regression: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload, stored on `eval_runs.summary_json`."""
+        """返回可安全序列化为 JSON 的载荷，存到 `eval_runs.summary_json` 上。"""
         return {
             "target_type": self.target_type,
             "run_id": self.run_id,
@@ -150,7 +146,7 @@ class TargetSummary:
 
 @dataclass(frozen=True, slots=True)
 class ComparisonReport:
-    """The unified report: every requested variant, plus the promotion verdict."""
+    """统一报告：每个被请求的变体，加上晋升结论。"""
 
     dataset_id: int
     dataset_name: str
@@ -161,18 +157,16 @@ class ComparisonReport:
 
     @property
     def passed(self) -> bool:
-        """Return the promotion verdict for the configuration under evaluation.
+        """返回正在评测的这套配置的晋升结论。
 
-        This is `docs/evaluation.md` §9's "是否允许进入生产的结论": did the Agent clear its
-        absolute targets and avoid regressing against the baseline? Ablations are excluded
-        because they are controls, not candidates - a control that scores badly is the point of
-        the experiment. A sweep that contains no candidate (a baseline-only or ablation-only
-        diagnostic run) is judged on every variant it does contain.
+        这就是 `docs/evaluation.md` §9 的「是否允许进入生产的结论」：Agent 有没有达到它的
+        绝对目标、有没有相对基线发生退化？消融变体被排除在外，因为它们是对照组而非候选者
+        —— 对照组得分难看，正是实验的意义所在。若一次批量里没有候选者（只跑基线或只跑消融
+        的诊断运行），则按它实际包含的每个变体来判定。
 
-        A variant that produced no scorable case cannot pass. Every gate is a threshold on a
-        measurement, and an unmeasured variant has none, so a run whose cases all failed would
-        otherwise sail through with an empty `gate_failures` - the most dangerous possible
-        outcome for a release gate.
+        一个没有产出任何可打分用例的变体不可能通过。每道门禁都是某个测量值上的阈值，而没被
+        测量的变体没有测量值，否则一次所有用例都失败的运行就会顶着空的 `gate_failures` 溜
+        过去 —— 那对发布门禁来说是最危险的结果。
         """
         considered = [item for item in self.targets if item.target_type in PROMOTION_TARGETS]
         if not considered:
@@ -185,7 +179,7 @@ class ComparisonReport:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe payload for the CLI and the API."""
+        """返回可安全序列化为 JSON 的载荷，供 CLI 与 API 使用。"""
         return {
             "dataset": {
                 "id": self.dataset_id,
@@ -205,19 +199,19 @@ class ComparisonReport:
 
 
 def _quantize(value: Decimal) -> Decimal:
-    """Quantize a derived rate to the result-column scale."""
+    """把推导出的比率量化到结果列的精度。"""
     return value.quantize(RATE_PLACES, rounding=ROUND_HALF_UP)
 
 
 def _mean(values: Sequence[Decimal]) -> Decimal | None:
-    """Return the quantized mean of the values, or None when there are none."""
+    """返回这些值的量化均值，一个值都没有时返回 None。"""
     if not values:
         return None
     return _quantize(sum(values) / Decimal(len(values)))
 
 
 def _as_decimal(value: Any) -> Decimal | None:
-    """Coerce a `details_json` rate back to Decimal, treating anything unusable as absent."""
+    """把 `details_json` 里的比率转回 Decimal，无法使用的值一律当作缺失。"""
     if isinstance(value, Decimal):
         return value
     if isinstance(value, bool) or value is None:
@@ -225,28 +219,28 @@ def _as_decimal(value: Any) -> Decimal | None:
     if isinstance(value, (int, float, str)):
         try:
             return Decimal(str(value))
-        except ArithmeticError:  # pragma: no cover - malformed JSON payload
+        except ArithmeticError:  # pragma: no cover - 格式错误的 JSON 载荷
             return None
     return None
 
 
 def _detail_total(rows: Sequence[EvalResult], field: str) -> int:
-    """Sum one integer counter that lives in `details_json`."""
+    """求和 `details_json` 里的某一个整数计数器。"""
     return sum(int((row.details_json or {}).get(field) or 0) for row in rows)
 
 
 def _closed_at(started_at: datetime, requested: datetime | None) -> datetime:
-    """Return a finish timestamp that cannot precede the start.
+    """返回一个不会早于开始时刻的结束时间戳。
 
-    `eval_runs` enforces `finished_at >= started_at`, and callers may pin the clock, so a run
-    that was started at a supplied instant has to be closed no earlier than that instant.
+    `eval_runs` 强制 `finished_at >= started_at`，而调用方可能钉住时钟，因此在某个给定时刻
+    开始的运行，必须不早于那个时刻结束。
     """
     closed = requested or utc_now()
     return closed if closed >= started_at else started_at
 
 
 def resolve_targets(target_types: Sequence[str] | None) -> tuple[str, ...]:
-    """Return the requested targets in report order, defaulting to every target."""
+    """按报告顺序返回所请求的目标，未指定时默认全部目标。"""
     if not target_types:
         return TARGET_ORDER
     unknown = [name for name in target_types if name not in EVAL_TARGET_TYPES]
@@ -266,7 +260,7 @@ def resolve_dataset_ref(
     name: str | None = None,
     version: str | None = None,
 ) -> EvalDataset:
-    """Resolve a dataset from either an id or a name/version pair."""
+    """按 id，或按名称/版本对解析一个数据集。"""
     return resolve_dataset(session, dataset_id=dataset_id, name=name, version=version)
 
 
@@ -277,10 +271,10 @@ def _record_result(
     case: EvalCase,
     scored: ScoredCase,
 ) -> None:
-    """Insert or refresh one case measurement.
+    """插入或刷新一条用例的测量值。
 
-    `UNIQUE(eval_run_id, eval_case_id)` makes a re-run of the same case an update rather than a
-    second row, so an interrupted run that is retried cannot double-count a case.
+    `UNIQUE(eval_run_id, eval_case_id)` 让同一个用例的重跑变成一次更新而不是多出一行，因此
+    一次被中断后重试的运行不会重复统计某个用例。
     """
     row = session.scalar(
         select(EvalResult).where(
@@ -307,7 +301,7 @@ def _config_id_for_target(
     target_type: str,
     settings: Settings,
 ) -> int | None:
-    """Return the Agent config id for an agent-family target, or None for the baseline."""
+    """返回 agent 系目标所用的 Agent 配置 id，基线则返回 None。"""
     if profile_for_target(target_type) is None:
         return None
     config: AgentConfig = load_or_create_config(session, settings)
@@ -325,7 +319,7 @@ def run_evaluation(
     client: ModelClient | None = None,
     now: datetime | None = None,
 ) -> ComparisonReport:
-    """Run every requested target over one dataset and return the comparison report."""
+    """在一份数据集上运行每个被请求的目标，并返回对比报告。"""
     resolved_settings = settings or get_settings()
     if not resolved_settings.eval_enabled:
         raise EvaluationDisabled("evaluation is disabled by configuration")
@@ -370,10 +364,9 @@ def run_evaluation(
                     client=client,
                     now=now,
                 )
-            except Exception as exc:  # noqa: BLE001 - one broken case must not kill the run
-                # A case that raises is a data or provider problem, not a quality signal. It is
-                # recorded as a failed result so the run still finishes and the operator can see
-                # exactly which case broke instead of losing the whole sweep.
+            except Exception as exc:  # noqa: BLE001 - 一个用例坏掉不能拖垮整轮运行
+                # 抛异常的用例是数据或供应商的问题，不是质量信号。它被记成一条失败结果，
+                # 这样整轮仍能跑完，运维也能确切看到坏的是哪个用例，而不是丢掉整批。
                 failures.append(case.case_key)
                 scored = score_failed_case(
                     case_key=case.case_key,
@@ -401,7 +394,7 @@ def run_evaluation(
 
 
 def aggregate_run(session: Session, *, run: EvalRun) -> TargetSummary:
-    """Average one run's stored results into a summary."""
+    """把一次运行已存的结果平均成摘要。"""
     rows = list(
         session.scalars(
             select(EvalResult).where(EvalResult.eval_run_id == run.id).order_by(EvalResult.id.asc())
@@ -424,10 +417,10 @@ def aggregate_run(session: Session, *, run: EvalRun) -> TargetSummary:
         for row in rows
         if (row.details_json or {}).get("prompt_injection_blocked") is not None
     ]
-    # Run-level tool and verification signals. `docs/evaluation.md` §8 asks what removing a
-    # capability costs, and for some capabilities the cost shows up here rather than in a rate:
-    # `agent_no_tools` is recognisable by having read nothing, `agent_no_history` by its denied
-    # prior-report call, and `agent_no_verifier` by never failing a verification.
+    # 运行级的工具与验证信号。`docs/evaluation.md` §8 问的是去掉一项能力要付什么代价，而对
+    # 某些能力来说，代价出现在这里而不是某个比率里：`agent_no_tools` 的特征是什么都没读，
+    # `agent_no_history` 的特征是那次被拒绝的历史报告调用，`agent_no_verifier` 的特征则是
+    # 从不曾让一次验证失败。
     verification_flags = [
         bool((row.details_json or {}).get("verification_sufficient"))
         for row in rows
@@ -457,12 +450,12 @@ def aggregate_run(session: Session, *, run: EvalRun) -> TargetSummary:
 
 
 def _tolerance(settings: Settings) -> Decimal:
-    """Return the configured regression tolerance as a rate."""
+    """把配置里的回归容忍度作为比率返回。"""
     return Decimal(str(settings.eval_regression_tolerance))
 
 
 def _gate_failures(summary: TargetSummary) -> list[str]:
-    """Return the absolute acceptance targets a variant missed."""
+    """返回某个变体未达到的绝对验收目标。"""
     failures: list[str] = []
     for metric in GATED_METRICS:
         value = summary.metrics.get(metric)
@@ -476,12 +469,11 @@ def _reference_summary(
     summary: TargetSummary,
     summaries: Sequence[TargetSummary],
 ) -> TargetSummary | None:
-    """Return the variant a target is a change to, or None when it has no reference.
+    """返回某个目标所改动的那一个变体，没有参照时返回 None。
 
-    The chain is `baseline <- agent_full <- ablations`. The Agent is measured against doing
-    nothing; an ablation is measured against the Agent whose capability it removed. Comparing an
-    ablation against the baseline instead would report a zero delta for exactly the ablations
-    that hurt most, since the baseline already sits at the floor they fall to.
+    链条是 `baseline <- agent_full <- ablations`。Agent 相对「什么都不做」来量；一个消融
+    变体则相对被它剪掉能力的那一个 Agent 来量。反过来拿消融变体去对照基线，恰恰会在伤害
+    最大的那几个消融上报告零差值，因为基线本来就处在它们跌落到的那个地板上。
     """
     if summary.target_type == BASELINE_TARGET:
         return None
@@ -495,7 +487,7 @@ def _deltas(
     summary: TargetSummary,
     reference: TargetSummary | None,
 ) -> dict[str, Decimal | None]:
-    """Return each gated metric's change against the reference variant."""
+    """返回每个把关指标相对参照变体的变化量。"""
     if reference is None:
         return {}
     deltas: dict[str, Decimal | None] = {}
@@ -510,7 +502,7 @@ def _deltas(
 
 
 def _regressed(deltas: dict[str, Decimal | None], tolerance: Decimal) -> bool:
-    """Return whether any gated metric fell further than the tolerance allows."""
+    """返回是否有某个把关指标的下滑超过了容忍度允许的范围。"""
     return any(value is not None and value < -tolerance for value in deltas.values())
 
 
@@ -522,12 +514,11 @@ def build_comparison(
     dataset: EvalDataset | None = None,
     persist: bool = True,
 ) -> ComparisonReport:
-    """Assemble the unified comparison over the given runs.
+    """在给定的这几次运行上组装统一的对比。
 
-    With `persist` (the default, used by `run_evaluation`) each run's frozen summary and terminal
-    status are written back to its row. Read paths pass `persist=False`: computing a comparison
-    is a query, and a query that rewrites `eval_runs.status` turns every dashboard refresh into a
-    write that can re-decide a historical verdict.
+    带上 `persist`（默认值，`run_evaluation` 用的就是它）时，每次运行冻结后的摘要与终态都会
+    写回它对应的行。读路径传 `persist=False`：算一次对比是查询，而一个会改写
+    `eval_runs.status` 的查询，会把每次仪表盘刷新都变成一次可能重判历史结论的写入。
     """
     resolved_settings = settings or get_settings()
     tolerance = _tolerance(resolved_settings)
@@ -550,9 +541,9 @@ def build_comparison(
     summaries = [aggregate_run(session, run=run) for run in ordered]
     finalized: list[TargetSummary] = []
     for summary, run in zip(summaries, ordered, strict=True):
-        # The terminal status is decided here, before the summary is frozen, so the row and its
-        # own summary agree. A run whose every case failed is "failed"; a partial failure stays
-        # "succeeded" with `failed_case_count` recording the misses.
+        # 终态在这里定下，早于摘要被冻结，这样行与它自己的摘要不会互相矛盾。每个用例都失败
+        # 的运行是 `failed`；部分失败仍是 `succeeded`，漏掉的用例由 `failed_case_count`
+        # 记录。
         status = summary.status
         if run.status == "running":
             status = "failed" if summary.failed_case_count == summary.case_count else "succeeded"
@@ -579,9 +570,8 @@ def build_comparison(
             regression=_regressed(deltas, tolerance),
         )
         finalized.append(final)
-        # The summary lives on the row so the API can answer "what did this run conclude" without
-        # re-executing anything, and so an operator reading one row sees the same numbers the
-        # comparison report shows.
+        # 摘要挂在行上，API 才能在不重跑任何东西的前提下回答「这次运行得出了什么结论」，
+        # 运维读一行看到的数字，也和对比报告里显示的一致。
         if persist:
             run.status = status
             run.summary_json = final.to_dict()
@@ -598,7 +588,7 @@ def build_comparison(
 
 
 def latest_runs_per_target(session: Session, *, dataset_id: int) -> list[EvalRun]:
-    """Return the newest run for each target of one dataset."""
+    """返回一份数据集每个目标各自最新的一次运行。"""
     rows = session.scalars(
         select(EvalRun).where(EvalRun.dataset_id == dataset_id).order_by(EvalRun.id.asc())
     ).all()
@@ -615,7 +605,7 @@ def list_runs(
     target_type: str | None = None,
     limit: int = 50,
 ) -> Sequence[EvalRun]:
-    """Return eval runs, newest first."""
+    """返回评测运行，最新的在前。"""
     if limit < 1:
         raise EvaluationNotFound("limit must be at least 1")
     statement = select(EvalRun)
@@ -632,11 +622,10 @@ def compare_latest(
     dataset_id: int,
     settings: Settings | None = None,
 ) -> ComparisonReport:
-    """Build the comparison over the newest run of each target without writing anything.
+    """在每个目标最新一次运行上组装对比，不写入任何东西。
 
-    This is what the dashboard and the read-only comparison endpoint call, so it must not persist:
-    a page refresh that re-decided `eval_runs.status` would make "what did last week's run
-    conclude" answer differently depending on who looked at it, and when.
+    仪表盘与只读的对比接口调用的就是它，所以它绝不能落库：一次会重判 `eval_runs.status` 的
+    页面刷新，会让「上周那次运行得出了什么结论」随看的人、看的时间不同而给出不同答案。
     """
     runs = latest_runs_per_target(session, dataset_id=dataset_id)
     if not runs:
@@ -650,7 +639,7 @@ def compare_latest(
 
 
 def collect_datasets(session: Session, *, limit: int = 50) -> Sequence[EvalDataset]:
-    """Return known datasets, newest first."""
+    """返回已知的数据集，最新的在前。"""
     return list_datasets(session, limit=limit)
 
 

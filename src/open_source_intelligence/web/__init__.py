@@ -1,1 +1,1 @@
-"""Jinja2/HTMX admin interface for the intelligence platform."""
+"""提供情报平台的 Jinja2/HTMX 管理界面。"""

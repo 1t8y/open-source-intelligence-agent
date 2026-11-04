@@ -1,4 +1,4 @@
-"""Report, draft, section, and citation persistence models."""
+"""报告、草稿、章节与引用的持久化模型。"""
 
 from __future__ import annotations
 
@@ -47,11 +47,10 @@ REPORT_REVIEW_DECISIONS = ("approve", "reject", "request_changes")
 
 
 class Report(Base):
-    """A published or in-review weekly report generated from an Agent run.
+    """由某次 Agent 运行生成、已发布或处于审核中的周报。
 
-    `owner_id` is the accountable editor for the report. It is the only handle the
-    `PRIVATE` visibility has: without it a private report would be readable by every
-    authenticated user, so the column is what makes the narrowest scope meaningful.
+    `owner_id` 是对这份报告负责的编辑。它是 `PRIVATE` 可见性唯一的抓手：没有它，
+    私密报告会被每一个已认证用户读到，因此正是这一列让最窄的可见范围有了意义。
     """
 
     __tablename__ = "reports"
@@ -107,7 +106,7 @@ class Report(Base):
 
 
 class ReportVersion(Base):
-    """Immutable snapshot of a report at one promoted version."""
+    """报告在某个已提升版本上的不可变快照。"""
 
     __tablename__ = "report_versions"
     __table_args__ = (
@@ -138,12 +137,11 @@ class ReportVersion(Base):
 
 
 class ReportSource(Base):
-    """One traceable evidence reference backing a report section.
+    """支撑报告某个章节的一条可追溯证据引用。
 
-    Rows are keyed by the report version they belong to, not just by the report, because
-    `report_versions` keeps every version immutable: rolling back to an earlier version must
-    restore the evidence that backed *that* version, and `INV-10` must be checkable against
-    the version actually being published.
+    这些行以所属的报告版本为键，而不只是以报告为键，因为 `report_versions` 让每个版本
+    都不可变：回滚到更早的版本时，必须恢复支撑*那个*版本的证据，而 `INV-10` 也必须能
+    针对真正被发布的那个版本进行核对。
     """
 
     __tablename__ = "report_sources"
@@ -179,7 +177,7 @@ class ReportSource(Base):
 
 
 class ReportDraft(Base, TimestampMixin):
-    """Working draft that holds Agent-written sections before promotion to a report."""
+    """在提升为报告之前，存放 Agent 撰写章节的工作草稿。"""
 
     __tablename__ = "report_drafts"
     __table_args__ = (
@@ -205,7 +203,7 @@ class ReportDraft(Base, TimestampMixin):
 
 
 class ReportSection(Base, TimestampMixin):
-    """One versioned section inside a report draft."""
+    """报告草稿内一个带版本的章节。"""
 
     __tablename__ = "report_sections"
     __table_args__ = (
@@ -233,12 +231,11 @@ class ReportSection(Base, TimestampMixin):
 
 
 class ReportVerification(Base):
-    """One Verifier verdict on a report version, recorded before any publish decision.
+    """针对某个报告版本的一条 Verifier 结论，记录在任何发布决策之前。
 
-    The row is the queryable proof behind `INV-5`: a report may only be published after a
-    verification verdict exists for its current version. The four booleans mirror the
-    `A-004` checks, so an operator can see which check blocked publication without parsing
-    the JSON detail.
+    这一行是 `INV-5` 可查询的证据：只有当报告的当前版本存在校验结论之后，报告才可以
+    发布。四个布尔列与 `A-004` 的各项检查一一对应，因此运维不必解析 JSON 细节，就能
+    看出是哪一项检查挡住了发布。
     """
 
     __tablename__ = "report_verifications"
@@ -271,7 +268,7 @@ class ReportVerification(Base):
 
 
 class ReportReview(Base):
-    """One human review decision on a report version."""
+    """对某个报告版本的一次人工审核决定。"""
 
     __tablename__ = "report_reviews"
     __table_args__ = (
@@ -310,17 +307,17 @@ class ReportReview(Base):
 
 
 class ReportShareLink(Base, TimestampMixin):
-    """A bearer credential that makes one published PUBLIC report readable without a login.
+    """一种 bearer 凭据：让一份已发布的 `PUBLIC` 报告无需登录即可阅读。
 
-    Only the token's digest is stored: `token_hash`. That is the whole security argument for
-    putting this in the database at all - if this table leaks, what leaks is "somebody once
-    shared this report", not "here is a URL that reads it". The plaintext therefore exists only
-    in the response that created the row, and `list_share_links` can never hand it back.
+    这里只存令牌的摘要：`token_hash`。这也是把它放进数据库的全部安全理由 —— 如果
+    这张表泄露，泄露出去的是「有人曾分享过这份报告」，而不是「这里有一个能读到它
+    的 URL」。因此明文只存在于创建该行的那次响应里，`list_share_links` 永远无法再
+    把它交出来。
 
-    `expires_at` of `NULL` means "no expiry". `revoked_at` of `NULL` means "not revoked".
-    Everything else - wrong token, revoked, expired, report no longer PUBLIC or no longer
-    published - resolves to the same `None`, because telling them apart turns the route into an
-    oracle that answers "did this report ever exist".
+    `expires_at` 为 `NULL` 表示「不过期」。`revoked_at` 为 `NULL` 表示「未被吊销」。
+    其余情况 —— 令牌错误、已吊销、已过期、报告不再是 `PUBLIC` 或不再处于已发布状态
+    —— 全部归结为同一个 `None`，因为区分它们会把这条路由变成一个预言机，去回答
+    「这份报告到底存不存在」。
     """
 
     __tablename__ = "report_share_links"

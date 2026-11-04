@@ -1,4 +1,4 @@
-"""JWT access-token creation and validation."""
+"""JWT 访问令牌的签发与校验。"""
 
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -16,7 +16,7 @@ ACCESS_TOKEN_EXPIRES_SECONDS = ACCESS_TOKEN_EXPIRES_MINUTES * 60
 
 
 class AccessTokenClaims(BaseModel):
-    """Validated claims carried by an access token."""
+    """访问令牌携带的、已校验的声明。"""
 
     sub: str
     username: str
@@ -32,7 +32,7 @@ def create_access_token(
     *,
     expires_minutes: int = ACCESS_TOKEN_EXPIRES_MINUTES,
 ) -> str:
-    """Create a signed access token for an active user."""
+    """为活跃用户签发一个已签名的访问令牌。"""
     now = datetime.now(UTC)
     expires_at = now + timedelta(minutes=expires_minutes)
     roles = sorted(link.role.code for link in user.role_links)
@@ -52,7 +52,7 @@ def create_access_token(
 
 
 def decode_access_token(token: str, settings: Settings) -> AccessTokenClaims:
-    """Decode and validate an access token, raising on invalid input."""
+    """解码并校验访问令牌，输入非法时抛出异常。"""
     try:
         payload = jwt.decode(
             token,

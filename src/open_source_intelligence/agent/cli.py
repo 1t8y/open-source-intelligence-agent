@@ -1,4 +1,4 @@
-"""Command-line entry point for the research Agent and its run history."""
+"""研究 Agent 及其运行历史的命令行入口。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from open_source_intelligence.persistence.session import (
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the Agent action and its filters."""
+    """解析 Agent 动作及其筛选参数。"""
     parser = argparse.ArgumentParser(
         description="Run the research Agent and inspect Agent run history"
     )
@@ -54,14 +54,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
-    """Parse an optional ISO 8601 timestamp."""
+    """解析可选的 ISO 8601 时间戳。"""
     if value is None:
         return None
     return datetime.fromisoformat(value)
 
 
 def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
-    """Execute one research run and return its summary."""
+    """执行一次研究运行并返回其摘要。"""
     if args.topic_id is None:
         raise SystemExit("--topic-id is required for --action run")
     result = run_research_agent(
@@ -76,7 +76,7 @@ def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
 
 
 def history_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
-    """Return one run with its trail, or a filtered run history page."""
+    """返回单次运行及其轨迹，或一页筛选后的运行历史。"""
     if args.run_id is not None:
         run = get_agent_run(session, args.run_id)
         if run is None:
@@ -96,7 +96,7 @@ def history_action(args: argparse.Namespace, session: Session) -> dict[str, Any]
 
 
 def main() -> None:
-    """Run the requested Agent operation and print a JSON payload."""
+    """执行请求的 Agent 操作并打印 JSON 载荷。"""
     args = parse_args()
     if not 1 <= args.run_limit <= RUN_LIMIT_MAX:
         raise SystemExit(f"--run-limit must be between 1 and {RUN_LIMIT_MAX}")

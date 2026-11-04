@@ -1,9 +1,8 @@
-"""Agent run ledger: the run list, one run, and a run's trajectory.
+"""Agent 运行台账：运行列表、单次运行，以及一次运行的轨迹。
 
-The trace hangs off `/{run_id}/steps` rather than being folded into `/{run_id}` so an operator
-can page through runs cheaply and only pull the step-and-tool detail for the run they are
-actually investigating. `/runs` is declared before `/{run_id}` for the same reason the report
-routes declare their literal paths first.
+轨迹挂在 `/{run_id}/steps` 而不是折进 `/{run_id}`，这样运维可以低成本地
+翻页浏览运行，只对真正要排查的那一次再拉取步骤与工具调用的细节。`/runs`
+声明在 `/{run_id}` 之前，理由和报告路由先声明字面量路径一样。
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ DbSession = Annotated[Session, Depends(get_db_session)]
 
 
 class AgentRunResponse(BaseModel):
-    """One research run, with its budget consumption and outcome."""
+    """一次研究运行，连同它的预算消耗与结果。"""
 
     id: int
     pipeline_run_id: int
@@ -61,7 +60,7 @@ class AgentRunResponse(BaseModel):
 
 
 class AgentRunListResponse(BaseModel):
-    """One page of runs, newest first."""
+    """一页运行记录，最新的在前。"""
 
     items: list[AgentRunResponse]
     page: int
@@ -70,7 +69,7 @@ class AgentRunListResponse(BaseModel):
 
 
 class ToolCallResponse(BaseModel):
-    """One recorded tool invocation, with credential-shaped text already redacted."""
+    """一次工具调用记录，其中的凭据形态文本已经过脱敏。"""
 
     id: int
     tool_name: str
@@ -83,7 +82,7 @@ class ToolCallResponse(BaseModel):
 
 
 class AgentStepResponse(BaseModel):
-    """One ordered step and the tool calls hanging off it."""
+    """一个有序步骤，以及挂在这个步骤下的工具调用。"""
 
     id: int
     step_index: int
@@ -96,7 +95,7 @@ class AgentStepResponse(BaseModel):
 
 
 class AgentRunTraceResponse(BaseModel):
-    """A run's trajectory: its steps, its tool calls, and the report it produced."""
+    """一次运行的轨迹：它的步骤、工具调用，以及它产出的报告。"""
 
     run: AgentRunResponse
     topic_name: str | None
@@ -106,14 +105,14 @@ class AgentRunTraceResponse(BaseModel):
 
 
 def _latency_ms(run: AgentRun) -> int | None:
-    """Return the wall-clock duration of a finished run, or `None` while it is open."""
+    """返回一次已完成运行的墙钟耗时；运行尚未结束时返回 `None`。"""
     if run.started_at is None or run.finished_at is None:
         return None
     return int((run.finished_at - run.started_at).total_seconds() * 1000)
 
 
 def _run_response(run: AgentRun) -> AgentRunResponse:
-    """Serialize one run row."""
+    """把一行运行记录序列化成响应。"""
     return AgentRunResponse(
         id=run.id,
         pipeline_run_id=run.pipeline_run_id,
@@ -138,11 +137,10 @@ def _run_response(run: AgentRun) -> AgentRunResponse:
 
 
 def _safe_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Redact credential-shaped substrings before tool arguments leave the process.
+    """在工具参数离开进程之前脱掉凭据形态的子串。
 
-    Tool arguments are written by the tool layer and are not free-form text, but the values can
-    still echo user input. Passing them through the same redaction the logs use keeps one rule
-    for "what may not be exported" instead of two.
+    工具参数由工具层写入，并不是自由文本，但其中的值仍可能回显用户输入。让它们走与日志同一套
+    脱敏，是为了让「哪些内容不允许外带」只有一条规则，而不是两条。
     """
     redacted = redact_text(json.dumps(arguments, ensure_ascii=False, default=str))
     decoded: Any = json.loads(redacted)
@@ -150,7 +148,7 @@ def _safe_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_call_response(call: ToolCall) -> ToolCallResponse:
-    """Serialize one tool call, redacting its free text."""
+    """序列化一次工具调用，并脱敏它的自由文本。"""
     return ToolCallResponse(
         id=call.id,
         tool_name=call.tool_name,
@@ -164,7 +162,7 @@ def _tool_call_response(call: ToolCall) -> ToolCallResponse:
 
 
 def _trace_response(trace: AgentRunTrace) -> AgentRunTraceResponse:
-    """Serialize a whole trajectory in step order."""
+    """按步骤顺序序列化整条轨迹。"""
     return AgentRunTraceResponse(
         run=_run_response(trace.run),
         topic_name=trace.topic_name,
@@ -195,7 +193,7 @@ def get_agent_runs(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
 ) -> AgentRunListResponse:
-    """Return one page of Agent runs, newest first, optionally filtered."""
+    """返回一页 Agent 运行记录，最新的在前，可按条件筛选。"""
     result = list_agent_runs(
         session,
         status=status_filter,
@@ -217,7 +215,7 @@ def get_agent_run_detail(
     session: DbSession,
     run_id: Annotated[int, Path(ge=1)],
 ) -> AgentRunResponse:
-    """Return one Agent run's status, budget and outcome."""
+    """返回一次 Agent 运行的状态、预算与结果。"""
     run = get_agent_run(session, run_id=run_id)
     if run is None:
         raise AgentRunNotFound(f"agent run {run_id} was not found")
@@ -230,11 +228,10 @@ def get_agent_run_steps(
     session: DbSession,
     run_id: Annotated[int, Path(ge=1)],
 ) -> AgentRunTraceResponse:
-    """Return a run's ordered steps and tool calls, so a failure reaches its tool call.
+    """返回一次运行的有序步骤与工具调用，让失败能追到具体的那次调用。
 
-    This is the endpoint the "追到具体工具调用" acceptance is checked against: given a failed
-    run, the response carries the step that failed, the tool that was called, its status, and
-    its error code.
+    「追到具体工具调用」这条验收就是对着这个端点检查的：给定一次失败的运行，响应里带着失败的
+    步骤、当时调用的工具、它的状态与错误码。
     """
     trace = get_agent_run_trace(session, run_id=run_id)
     if trace is None:

@@ -1,4 +1,4 @@
-"""Tests for model draft parsing and validation."""
+"""守护模型草稿解析与校验的用例。"""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def test_rejects_unknown_citation_type() -> None:
 
 
 def test_rejects_non_json_output_without_headings() -> None:
-    """A plain answer with no headings degrades to a single summary section."""
+    """证明没有小标题的纯文本回答会退化成单个摘要章节。"""
     sections = parse_draft_payload("I could not produce a structured draft, so here is text.")
     assert [section.section_key for section in sections] == ["summary"]
 
@@ -135,7 +135,7 @@ def test_rejects_empty_output() -> None:
 def test_draft_section_matches_the_save_section_contract() -> None:
     draft_fields = set(DraftSection.model_fields)
     save_fields = set(SaveReportSectionInput.model_fields)
-    # The runtime computes `content_digest` itself, so it is the single expected difference.
+    # `content_digest` 由运行时自己算，所以它是唯一预期中的差异。
     assert draft_fields == save_fields - {"content_digest"}
 
 

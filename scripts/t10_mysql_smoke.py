@@ -1,4 +1,10 @@
-"""Run T10 report composition and citation checks against MySQL."""
+"""针对 MySQL 跑 T10 的报告组装与引用校验。
+
+脚本先用真实 Agent 产出草稿，再在进程内生成一次报告、又通过 `reports.cli` 子进程生成
+一次，核对两次的版本号与「是否新增版本」是否自洽；随后改动摘要正文，确认版本递增；
+最后塞进一条指向不存在快照的引用，确认生成被 `ReportGenerationError` 拒掉。运行前需
+导出 `DATABASE_URL`，通过判据是打印的 JSON 里各项核对字段都为真、非法引用被拒。
+"""
 
 import json
 import subprocess
@@ -32,7 +38,7 @@ T10_NOW = datetime(2099, 5, 5, 12, 0, tzinfo=UTC)
 
 
 def run_report_cli(agent_run_id: int) -> dict[str, Any]:
-    """Generate one report through the real module CLI and parse its output."""
+    """通过真正的模块 CLI 生成一份报告，并解析它的输出。"""
     completed = subprocess.run(
         [
             sys.executable,
@@ -66,7 +72,7 @@ def _latest_section(session: Session, draft_id: int, section_key: str) -> Report
 
 
 def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
-    """Generate and validate a report from one real Agent draft."""
+    """从一份真实 Agent 草稿生成报告，并逐项校验。"""
     settings = get_settings()
     agent_result = run_research_agent(
         session,
@@ -178,7 +184,7 @@ def run_checks(session: Session, ids: dict[str, int]) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run T10 MySQL smoke checks and print the result payload."""
+    """跑 T10 MySQL 冒烟，并打印结果。"""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
