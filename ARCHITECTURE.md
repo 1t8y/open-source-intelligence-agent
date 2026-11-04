@@ -111,34 +111,175 @@ flowchart TB
 
 ## 6. 模块与目录结构
 
+### 6.1 仓库顶层
+
 ```text
 open-source-intelligence-agent/
-├── ARCHITECTURE.md              # 架构唯一真理源
-├── README.md                    # 文档入口
-├── docs/                        # PRD、API、数据、安全、评测、ADR
-├── src/open_source_intelligence/
-│   ├── api/                     # FastAPI 路由、依赖注入、认证
-│   ├── web/                     # Jinja2/HTMX 管理界面（分组侧栏 + 八个页面）
-│   ├── collectors/              # GitHub/Hugging Face 数据源适配器
-│   ├── pipeline/                # 清洗、快照、候选筛选和质量校验
-│   ├── agent/                   # LangGraph、Tools、Prompts、Guardrails
-│   ├── reports/                 # 模板、版本、审核和发布策略
-│   ├── topics/                  # 主题配置的读侧查询与增删改（T19）
-│   ├── evaluation/              # 数据集、Scorer、回归和成本统计
-│   ├── security/                # RBAC、ACL、脱敏和审计
-│   ├── persistence/             # SQLAlchemy 模型、Repository、迁移
-│   ├── workers/                 # Celery Tasks 和调度定义
-│   └── core/                    # 配置、日志、异常、共享文本辅助和共享类型
-├── prompts/                     # 版本化 Prompt 和评分 Rubric
-├── datasets/                    # 版本化评测集文件（T14，冻结后不可覆盖）
+├── REQUIREMENTS.md              # 需求基线（验收口径）
+├── INTERFACES.md                # 接口基线（HTTP 契约、错误码、权限常量）
+├── ARCHITECTURE.md              # 架构基线（本文件）
+├── README.md / AGENTS.md        # 对外入口 / 协作与流程规则
+├── 使用手册.md                  # 本地实操手册（gitignored，不入库）
+├── pyproject.toml               # 宽范围依赖 + ruff / mypy / pytest 配置
+├── requirements.txt             # 运行时依赖 pin（单一事实来源）
+├── requirements-ci.txt          # -r requirements.txt + mypy / pytest / ruff
+├── Dockerfile                   # 两步装：-r requirements.txt，再 --no-deps .
 ├── alembic.ini                  # Alembic CLI 配置
-├── migrations/                  # 数据库迁移环境和版本脚本
-├── tests/                       # 单元、集成、端到端、安全与评测测试
-├── infra/                       # Compose、环境模板和部署配置
-└── scripts/                     # 初始化、回填和运维脚本
+├── .github/workflows/ci.yml     # lint / 类型 / 测试 / 镜像冒烟
+├── docs/                        # 需求、API、数据、安全、评测、运维文档
+│   ├── adr/                     # ADR-001~005
+│   ├── samples/                 # weekly-report-sample.md
+│   └── assets/                  # README 截图与 demo.mp4
+├── prompts/                     # 版本化 Prompt（draft_v1.md / plan_v1.md）
+├── datasets/                    # 冻结评测集 weekly-agent-quality.v1~v4.json
+├── infra/docker-compose.yml     # mysql / redis / api / worker / beat 五服务
+├── migrations/                  # env.py、script.py.mako、versions/（19 个版本脚本）
+├── scripts/                     # check_docs_drift.py、seed_demo.py、init_demo.py、
+│                                # t*_mysql_smoke.py、verify_t*.ps1
+├── src/open_source_intelligence/ # 见 6.2
+└── tests/                       # 见 6.5（与被测包一一对应）
 ```
 
-模块依赖方向为 `api/web -> application services -> agent/pipeline/reports -> persistence/core`。Agent 只能通过显式 Tool Layer 访问数据库，不允许直接构造 SQL，也不允许调用 Shell。
+### 6.2 源码包内部结构
+
+```text
+src/open_source_intelligence/
+├── __init__.py
+├── core/                        # 配置、日志、共享文本辅助
+│   ├── config.py                # Settings（pydantic-settings，extra="forbid"）
+│   ├── logging.py               # 结构化日志 + 密钥脱敏
+│   └── text.py
+├── persistence/                 # 唯一 SQL 落点
+│   ├── base.py                  # Declarative base、SQL 类型与时间戳约定
+│   ├── session.py               # Engine / Session 工厂
+│   └── models/                  # identity · intelligence · agent · reporting
+│                                # · notifications · evaluation · audit
+├── collectors/                  # 外部数据源适配
+│   ├── github.py / huggingface.py # 两源采集器
+│   ├── http.py / limiter.py     # 重试式 HTTP 与客户端限速
+│   ├── service.py / types.py    # 幂等入库与归一化结构
+│   └── cli.py
+├── pipeline/                    # 确定性数据流水线
+│   ├── snapshots.py             # 每日快照
+│   ├── ranking.py               # 规则式候选排序（不调模型）
+│   ├── contents.py              # README 缓存的唯一生产写入方
+│   ├── daily.py                 # 每日编排：每阶段一条 PipelineRun
+│   ├── research_dispatch.py     # 选研究目标 + 派发
+│   ├── runs.py / queries.py     # 运行生命周期 / 仓库目录读侧
+│   └── cli.py
+├── backfill/                    # 可续跑的历史回填
+│   ├── jobs.py / service.py     # 作业检查点与逐页游标提交
+│   ├── errors.py
+│   └── cli.py
+├── agent/                       # LangGraph 研究 Agent（唯一调模型的地方）
+│   ├── graph.py / state.py / runtime.py # 有界图、状态对象、运行编排
+│   ├── guards.py / profile.py / prompts.py # 注入守卫 / 消融开关 / Prompt 加载
+│   ├── writing.py / recording.py        # 草稿解析 / 轨迹与计数落库
+│   ├── reviews.py / history.py / errors.py
+│   ├── llm/                     # base · factory · messages · openai_compatible
+│   │                            # · offline · errors
+│   ├── retrieval/vector.py      # 词频向量 + 余弦相似度（历史报告召回）
+│   ├── tools/                   # contracts · registry · access · context · errors
+│   │                            # · outcome + 五个白名单工具
+│   ├── tooling.py               # 白名单导出为 JSON Schema
+│   └── cli.py
+├── reports/                     # 报告成稿到发布的全链
+│   ├── composition.py / citations.py        # 成稿与引用校验
+│   ├── verification.py / publishing.py / state.py # 四项校验 / 风险评估 / 状态机
+│   ├── revisions.py / sharing.py            # 编辑回退 / 免登录分享
+│   ├── automation.py                        # 无人值守收口（研究完成后自动成稿）
+│   ├── queries.py / errors.py
+│   └── cli.py
+├── notifications/               # 推送
+│   ├── service.py               # 闸门 → allowlist → 投递 → 记账 → 重试
+│   ├── channels/                # base · email_channel · webhook_channel
+│   │                            # · offline · factory
+│   └── errors.py
+├── evaluation/                  # 离线评测
+│   ├── dataset.py / targets.py / scorers.py / runner.py
+│   ├── cli.py
+│   └── errors.py
+├── observability/               # 只读观测
+│   ├── metrics.py               # 确定性指标聚合
+│   ├── queries.py / errors.py
+├── topics/                      # 主题配置读写
+│   ├── service.py / queries.py / errors.py
+├── security/                    # 认证、鉴权、审计
+│   ├── authorization.py         # 读/写/审/发的唯一裁决点
+│   ├── dependencies.py          # FastAPI 认证、RBAC、审计依赖
+│   ├── passwords.py / tokens.py / bootstrap.py
+│   └── service.py / audit.py / queries.py
+├── api/                         # JSON API
+│   ├── app.py / errors.py / middleware.py / params.py
+│   └── routes/                  # health · auth · topics · repositories · reports
+│                                # · push · metrics · audit · agent_runs · evaluations
+├── web/                         # 服务端渲染管理界面
+│   ├── router.py                # 全部 /ui 页面与写操作
+│   ├── security.py              # Cookie 会话 + CSRF 双提交
+│   ├── sharing.py               # /share/{token}（唯一免会话读面）
+│   ├── markdown.py
+│   ├── templates/               # 17 个页面模板 + partials/ 5 个片段
+│   └── static/                  # app.css、htmx.min.js
+└── workers/                     # Celery
+    ├── celery_app.py / celery_entry.py
+    └── tasks.py                 # 采集 · 快照 · 排序 · 研究 · 成稿 · 发布释放 · 推送重试
+```
+
+### 6.3 模块职责与入口
+
+| 包 | 角色 | 是否调模型 | 运行入口 |
+|---|---|---|---|
+| `api` | HTTP 契约层：路由、Problem Details、请求关联 ID、分页参数 | 否 | `uvicorn open_source_intelligence.api.app:create_app --factory` |
+| `web` | Jinja2 + HTMX 管理界面（左侧分组侧栏 + 右侧内容），复用同一套服务层 | 否 | 挂在同一 `app` 的 `/ui/*` |
+| `collectors` | GitHub / Hugging Face 采集与幂等入库 | 否 | `python -m ...collectors.cli` |
+| `pipeline` | 快照、排序、README 缓存、每日编排、研究派发 | 否 | `python -m ...pipeline.cli --action daily` |
+| `backfill` | 历史仓库回填，按页提交游标可续跑 | 否 | `python -m ...backfill.cli` |
+| `agent` | LangGraph 研究 Agent + 白名单 Tool Layer + 预算与守卫 | **是**（唯一） | `python -m ...agent.cli`；Celery `run_research_agent` |
+| `reports` | 草稿成稿、引用校验、Verifier、发布策略、修订、分享、无人值守收口 | 否 | `python -m ...reports.cli`；`reports.automation.finish_run_report` |
+| `notifications` | 邮件 / Webhook 投递与投递台账 | 否 | 报告发布后的 `push_report`；CLI `--action push` |
+| `evaluation` | 数据集导入、五变体执行、确定性评分、对比报告 | 是（复用 `agent`） | `python -m ...evaluation.cli` |
+| `observability` | 指标聚合与运行账本读侧 | 否 | `GET /api/v1/metrics`、`/ui/dashboard` |
+| `topics` | 主题配置的读查询与增删改 | 否 | API `/topics`、UI `/ui/topics` |
+| `security` | 密码、JWT、RBAC/ACL、审计、初始账号 | 否 | FastAPI 依赖注入 |
+| `persistence` | ORM 模型、会话与迁移元数据 | 否 | Alembic |
+| `workers` | Celery 应用、任务与 beat 表 | 否 | `celery -A ...workers.celery_entry:app worker\|beat` |
+| `core` | 配置、日志、文本辅助 | 否 | 全层引用 |
+
+### 6.4 分层与依赖方向
+
+```text
+api / web                    ← 传输层：只做协议转换、鉴权入口、渲染
+      ↓
+topics / reports / notifications / evaluation / observability
+                             ← 应用服务层：编排领域动作，事务在此收口
+      ↓
+collectors / pipeline / backfill / agent
+                             ← 作业域：确定性流水线 + 唯一模型调用域
+      ↓
+persistence / core           ← 基础设施：ORM 与会话、配置、日志
+```
+
+三条硬规则：
+
+1. `api` 与 `web` **不发 SQL**，读侧一律走各领域 `queries.py`；列表权限过滤落在 SQL 层，否则分页 `total` 会泄露越权行。
+2. Agent 只能经 `agent/tools/registry.py` 的白名单工具访问数据，不得自建 SQL、不得调 Shell；工具之外的路径对它是不可见的。
+3. 模型调用只出现在 `agent/llm/`；`evaluation` 通过 `agent.profile` 的变体开关复用同一套运行时，不另建调用链。
+
+### 6.5 测试目录映射
+
+`tests/` 与被测包按同名目录对应，另有 `tests/support.py`（通用夹具）、`tests/api_support.py`、`tests/reports_support.py` 等按域分的共享构造器：
+
+| 目录 | 覆盖对象 |
+|---|---|
+| `tests/agent/`（含 `tools/`） | 图节点与回边、预算与守卫、Prompt、草稿解析、轨迹、运行复核；五个工具逐个 + registry 契约 |
+| `tests/api/` | 健康、认证、仓库、报告、推送、评测、指标、审计、分享链接 |
+| `tests/web/` | 页面与账本、HTMX 片段边界、Markdown 渲染、推送页、运行复核、分享页 |
+| `tests/pipeline/` | 快照、排序、内容缓存、每日编排、研究派发、运行生命周期 |
+| `tests/reports/` | 发布策略、修订、验证、分享 |
+| `tests/collectors/`、`tests/backfill/` | 双源适配器、分页、限速、README 抓取、幂等入库；回填游标 |
+| `tests/security/`、`tests/topics/` | 鉴权与密码令牌；主题路由与服务 |
+| `tests/evaluation/`、`tests/observability/`、`tests/notifications/` | 数据集、变体、评分器、Runner；指标聚合；推送服务 |
+| `tests/persistence/`、`tests/core/`、`tests/workers/`、`tests/scripts/` | 模型约束；配置与配置对齐守卫；任务与调度；演练脚本的清理逻辑 |
 
 ## 7. 核心数据模型摘要
 
@@ -861,3 +1002,4 @@ API 使用 JSON，错误返回 RFC 7807 Problem Details。列表接口统一支�
 | 2026-10-31 | CI runner 漂移修复：GitHub 的 `ubuntu-latest` 已切到 Ubuntu 26.04，setup-python 在该镜像上找不到 Python 3.12.7，失败发生在安装 Python 阶段。将 `test` / `build` 两个 job 固定为 `ubuntu-24.04`，与 Python 3.12.7 成对锁定；增加 `runs-on: ubuntu-latest` 禁止回归检查 | 14、15 | CI 修复 | workflow YAML 可解析、`tests/core/test_packaging.py` 3 passed、Ruff 通过；mypy 与 pytest 逻辑未改 |
 | 2026-11-01 | CI 两处修复 + 依赖三源对齐：① `check_docs_drift.py:check_endpoints` 原本裸调 `create_app()`，会经 `get_settings()` 读 gitignored 的 `.env`，CI 干净 checkout 没有该文件 → 三个必填字段缺失直接 `ValidationError`；改为显式注入 `Settings(..., app_env="test")`（engine 只构造不连库）；② smoke-test 的 `docker run` 缺 `-p 8000:8000`，容器内 uvicorn 健康但 runner 的 `curl 127.0.0.1:8000` 全程 `Failed to connect`，60 秒窗口耗尽后失败（`docker logs` 末尾的 `Application startup complete` 是事后打印，读起来像"启动太慢"，实为端口未映射）；③ 镜像只读 `pyproject.toml` 宽范围，冷装漂到 fastapi 0.162 / pydantic 2.14.2 / sqlalchemy 2.0.55，与 CI 锁定的 0.136.3 / 2.10.6 / 2.0.34 两套 → 拆出 `requirements.txt` 作为运行时 pin 的单一事实来源，`requirements-ci.txt` 改为 `-r requirements.txt` + 三个测试工具，Dockerfile 两步装（`-r requirements.txt` 再 `--no-deps .`） | 14、15 | CI 修复 | 本机 uvicorn 2 秒 ready、本机 docker 冷启动首个 curl 即通 → 排除"启动慢"，锁定端口缺失；镜像重构建后装到 fastapi 0.136.3 / pydantic 2.10.6 / sqlalchemy 2.0.34 / uvicorn 0.48.0 且 mypy/pytest/ruff 未进镜像；容器 `/health` 3 秒 200；CI 全绿；`1045 passed` |
 | 2026-11-01 | 默认值三处对齐 + 对齐类缺口排查：① `AgentConfig.max_tool_calls` 列默认与 `infra/docker-compose.yml` 兜底仍是 10（`Settings` 与 `.env.example` 早在 T32 就是 20），补到 20——无迁移，该列没有 `server_default`，改的是 Python 侧默认；② 同一次排查用探针在真库上比对，发现 `AGENT_MAX_TOKENS` 的 compose 兜底仍是 12000，而 T24 已把默认值提到 30000，同步修正；③ 新增 `tests/core/test_config_alignment.py` 四项守卫：compose 兜底 ↔ `Settings` 默认（`API_HOST`/`LOG_FORMAT` 作为容器部署的刻意覆盖列白名单并强制白名单条目必须真实存在）、`.env.example` 值 ↔ `Settings` 默认（此前的十项比较器只查键是否出现、不查值）、`AUDIT_RESULTS` ↔ 路由的 `AuditResult` 字面量、`RUN_TYPES` ↔ `pipeline_runs.run_type` 的 CHECK；④ 用临时库跑一遍 `alembic upgrade head` 并读 `information_schema.CHECK_CONSTRAINTS` 比对，27 表 74 条 CHECK 与 ORM 完全一致（含 `IN` 单元素被 MySQL 折叠成 `=` 的归一化） | 6、7、14、15 | T32 收尾 | 反向探针：把 compose 的 `AGENT_MAX_TOOL_CALLS` 改回 10，新增守卫立刻红（`compose '10' != Settings 20`），还原后绿；`1045 passed` 不变；探针脚本在仓库外 `D:/job-workspace/.apitest/` |
+| 2026-11-04 | 目录结构梳理：§6 从「12 个包各一行」重写为五节——顶层树、源码包内部结构、模块职责表、分层依赖方向、测试目录映射。补齐代码里已存在但文档从未列出的三个包：`backfill/`（可续跑回填）、`notifications/`（邮件/Webhook 投递）、`observability/`（指标聚合）；修掉 `web` 的「八个页面」旧口径（现为 17 个页面模板 + `partials/` 5 个片段）。职责表新增「是否调模型」列，把「模型调用只出现在 `agent/llm/`」从散落叙述提升为分层硬规则 | 6、15 | 文档维护 | 目录树与 `find src -type f -name "*.py"`（143 个源文件）逐项对齐；`check_docs_drift.py` 十项全过（31 表 / 64 路由 / head `c6f3d5a8b2e4`） |
