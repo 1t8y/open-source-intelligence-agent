@@ -48,6 +48,9 @@ Thumbs.db
 任务清单.md
 README.backup-*.md
 
+# Local-only Windows start helper (Watt Toolkit CA sync); kept on disk, never published
+scripts/start.ps1
+
 # Local agent memory and session data (kept on disk, not committed)
 .workbuddy/
 
