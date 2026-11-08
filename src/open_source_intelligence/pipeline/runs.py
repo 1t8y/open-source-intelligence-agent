@@ -284,6 +284,60 @@ def list_pipeline_runs(
     return session.scalars(statement).all()
 
 
+@dataclass(frozen=True)
+class PublishDecision:
+    """一份报告最近一次发布策略裁决的可展示摘要。
+
+    `metrics_json` 里 `stage="evaluate"` 的那条运行才是裁决本身；同一份报告后续的
+    `stage="publish"` / `stage="push"` 只是执行结果，不含 `reason_codes`。
+    """
+
+    run_id: int
+    report_id: int
+    resolution: str
+    reason_codes: tuple[str, ...]
+
+
+def latest_publish_decisions(
+    session: Session,
+    *,
+    report_ids: Sequence[int],
+    scan_limit: int = 500,
+) -> dict[int, PublishDecision]:
+    """按报告取最近一次发布裁决，供界面解释「为什么还没发」。
+
+    裁决的 `report_id` 只存在 `metrics_json` 里，跨 MySQL / SQLite 用 SQL 的 JSON 函数过滤
+    会踩方言差异，所以改为一次取回最近的 publish 运行、在 Python 里归组。倒序遍历并只保留
+    每个报告第一次出现的那条，天然是「最近一次」。`scan_limit` 只是给运维表设个上界，
+    平时的每日链路每天每主题只写一条裁决。
+    """
+    wanted = set(report_ids)
+    if not wanted:
+        return {}
+    runs = session.scalars(
+        select(PipelineRun)
+        .where(PipelineRun.run_type == "publish")
+        .order_by(PipelineRun.id.desc())
+        .limit(scan_limit)
+    ).all()
+    decisions: dict[int, PublishDecision] = {}
+    for run in runs:
+        metrics = dict(run.metrics_json or {})
+        if metrics.get("stage") != "evaluate":
+            continue
+        report_id = metrics.get("report_id")
+        if not isinstance(report_id, int) or report_id not in wanted or report_id in decisions:
+            continue
+        reasons = metrics.get("reason_codes") or []
+        decisions[report_id] = PublishDecision(
+            run_id=int(run.id),
+            report_id=report_id,
+            resolution=str(metrics.get("resolution") or ""),
+            reason_codes=tuple(str(reason) for reason in reasons),
+        )
+    return decisions
+
+
 def summarize_pipeline_run(run: PipelineRun) -> PipelineRunSummary:
     """把运行记录转换成可序列化的摘要。"""
     return PipelineRunSummary(

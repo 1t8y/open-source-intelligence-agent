@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -71,6 +71,7 @@ from open_source_intelligence.pipeline.queries import list_repositories
 from open_source_intelligence.pipeline.runs import (
     RUN_STATUSES,
     RUN_TYPES,
+    latest_publish_decisions,
     list_pipeline_runs,
 )
 from open_source_intelligence.reports import queries
@@ -341,6 +342,46 @@ def _label(value: object) -> str:
         # 它是版本号，不是一个词。
         return f"回滚到 v{text.removeprefix('rollback_to_v')}"
     return ENUM_LABELS.get(text, text)
+
+
+#: 发布策略的原因码是给运维看的裁决依据，不是字段泄漏。界面上要把它翻成一句能照着做的
+#: 话，否则「待审核」旁边只有 `FIRST_RUN`，用户既不知道为什么没发，也不知道去哪儿处理。
+#: 键与 `reports/publishing.py` 的 `REASON_*` 一一对应；未映射的码原样透传。
+PUBLISH_REASON_LABELS: dict[str, str] = {
+    "FIRST_RUN": "该主题首份报告，需要人工审核放行",
+    "AGENT_RUN_NOT_CLEAN": "研究运行未干净完成（证据不足或报错）",
+    "VERIFICATION_FAILED": "当前版本验证未通过",
+    "SECURITY_RISK": "检测到提示词注入等安全风险",
+    "SENSITIVE_REPORT": "报告为机密级，需同版本人工审核",
+    "MODEL_OR_PROMPT_CHANGED": "模型或提示词版本相对上期发生变化",
+    "NOT_INTERNAL_VISIBILITY": "可见范围不是内部，需人工确认",
+    "LOW_CITATION_COVERAGE": "引用覆盖率不达标",
+    "SENSITIVE_CONTENT": "正文含敏感内容",
+}
+
+
+def _publish_reasons(codes: Sequence[str]) -> list[str]:
+    """把原因码翻成可展示的中文短句；未知码保留原值。"""
+    return [PUBLISH_REASON_LABELS.get(code, code) for code in codes]
+
+
+def _decision_context(session: Session, report_ids: Sequence[int]) -> dict[str, Any]:
+    """给列表页准备「每份报告为什么没发」的可展示数据。
+
+    键是 report_id，值同时带原始裁决和中文原因，模板不需要再认识 `metrics_json` 的结构。
+    """
+    decisions = latest_publish_decisions(session, report_ids=report_ids)
+    return {
+        "publish_decisions": {
+            report_id: {
+                "run_id": decision.run_id,
+                "resolution": decision.resolution,
+                "reason_codes": decision.reason_codes,
+                "reasons": _publish_reasons(decision.reason_codes),
+            }
+            for report_id, decision in decisions.items()
+        }
+    }
 
 
 templates.env.filters["label"] = _label
@@ -1209,11 +1250,16 @@ def reports_page(
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> HTMLResponse:
     """渲染按权限过滤、分页的报告列表。"""
+    # GET 表单会把「全部」提交成 `status=` 这样的空串，而不是缺省参数；查询层用
+    # `is not None` 判定，空串会变成 `status == ""`，什么都不匹配。词表外的值同理，
+    # 手打错的 URL 不该把只读页面变成空页。两条筛选栏都在这里先归一化。
+    resolved_status = status_filter if status_filter in REPORT_STATUSES else None
+    resolved_visibility = visibility if visibility in REPORT_VISIBILITIES else None
     page_result = queries.list_reports(
         session,
         access_filter=readable_reports_filter(web.user, get_role_codes(web.user)),
-        status=status_filter,
-        visibility=visibility,
+        status=resolved_status,
+        visibility=resolved_visibility,
         page=page,
         page_size=page_size,
     )
@@ -1225,8 +1271,8 @@ def reports_page(
             "current_user": _identity(web.user),
             "page": page_result,
             "topic_names": topic_names,
-            "status_filter": status_filter or "",
-            "visibility_filter": visibility or "",
+            "status_filter": resolved_status or "",
+            "visibility_filter": resolved_visibility or "",
             # 直接取自模型自己的元组，而不是在模板里重抄：一个列出状态机并不存在的状态
             # 的筛选项，只会返回空页，看起来像数据有 bug。
             "status_options": REPORT_STATUSES,
@@ -1236,6 +1282,7 @@ def reports_page(
             # 这和侧边栏条目点开就是 403 是同一个毛病。
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
             "active": "reports",
+            **_decision_context(session, [int(item.id) for item in page_result.items]),
         },
         csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
     )
@@ -1273,6 +1320,7 @@ def _panel(
             **_push_context(session, report.id),
             **_share_context(session, report),
             **_research_trace_context(session, report),
+            **_decision_context(session, [int(report.id)]),
         },
         status_code=status_code,
     )
@@ -1304,6 +1352,7 @@ def report_page(
             **_push_context(session, report.id),
             **_share_context(session, report),
             **_research_trace_context(session, report),
+            **_decision_context(session, [int(report.id)]),
             "active": "reports",
         },
         csrf=request.cookies.get(CSRF_COOKIE) or new_csrf_token(),
@@ -1837,6 +1886,19 @@ def runs_page(
         status=stage_status_filter,
         limit=PIPELINE_RECENT_LIMIT,
     )
+    # 发布/推送阶段的运行记录带着它服务的 report_id，这是从「采集与运行」直达那份报告的
+    # 唯一路径。裁决行的 reason_codes 也在这里翻成中文，失败才不是一句只有码的谜语。
+    pipeline_report_links: dict[int, dict[str, Any]] = {}
+    for run in pipeline_runs:
+        metrics = dict(run.metrics_json or {})
+        report_id = metrics.get("report_id")
+        if not isinstance(report_id, int):
+            continue
+        reasons = metrics.get("reason_codes") or []
+        pipeline_report_links[int(run.id)] = {
+            "report_id": report_id,
+            "reasons": _publish_reasons(tuple(str(reason) for reason in reasons)),
+        }
     return render(
         request,
         "runs.html",
@@ -1863,6 +1925,7 @@ def runs_page(
             "run_types": RUN_TYPES,
             "run_statuses": RUN_STATUSES,
             "pipeline_limit": PIPELINE_RECENT_LIMIT,
+            "pipeline_report_links": pipeline_report_links,
             "active": "runs",
         },
     )
@@ -2041,7 +2104,7 @@ def audit_page(
     request: Request,
     session: DbSession,
     web: WebSessionDep,
-    actor_id: Annotated[int | None, Query(ge=1)] = None,
+    actor_id: Annotated[str | None, Query()] = None,
     action: Annotated[str | None, Query()] = None,
     resource_type: Annotated[str | None, Query()] = None,
     result: Annotated[str | None, Query()] = None,
@@ -2056,12 +2119,19 @@ def audit_page(
         resource_type="audit",
         message="审计日志仅对管理员开放",
     )
+    # 输入框留空时，GET 表单提交的是 `actor_id=`（空串）。若把它声明成 `int | None`，
+    # pydantic 会在进入函数前就抛 422，页面直接空白。这里按字符串接收，再自己归一化：
+    # 空串、非数字、越界值一律视为「不筛选」，合法正整数才转成 int。
+    resolved_actor: int | None = None
+    if actor_id and actor_id.isdigit() and int(actor_id) >= 1:
+        resolved_actor = int(actor_id)
+    resolved_result = result if result in AUDIT_RESULTS else None
     page_result = list_audit_logs(
         session,
-        actor_id=actor_id,
+        actor_id=resolved_actor,
         action=action or None,
         resource_type=resource_type or None,
-        result=result or None,
+        result=resolved_result,
         page=page,
         page_size=LIST_PAGE_SIZE,
     )
@@ -2076,10 +2146,10 @@ def audit_page(
             "ip_addresses": {
                 int(entry.id): format_ip_address(entry.ip_address) for entry in page_result.items
             },
-            "actor_filter": actor_id,
+            "actor_filter": resolved_actor,
             "action_filter": action or "",
             "resource_filter": resource_type or "",
-            "result_filter": result or "",
+            "result_filter": resolved_result or "",
             "result_options": AUDIT_RESULTS,
             "active": "audit",
         },

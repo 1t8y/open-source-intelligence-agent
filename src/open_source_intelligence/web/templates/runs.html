@@ -54,6 +54,7 @@
         <th class="num">耗时</th>
         <th>错误码</th>
         <th>说明</th>
+        <th>报告 / 未发布原因</th>
       </tr>
     </thead>
     <tbody>
@@ -76,6 +77,15 @@
         <td class="truncate" title="{{ run.error_message | redact if run.error_message else '' }}">
           {{- run.error_message | redact if run.error_message else "—" -}}
         </td>
+        <td>
+          {%- set link = pipeline_report_links.get(run.id) -%}
+          {%- if link -%}
+          <a href="/ui/reports/{{ link['report_id'] }}">报告 #{{ link['report_id'] }}</a>
+          {%- if link['reasons'] -%}
+          <div class="hint">{{ link['reasons'] | join("；") }}</div>
+          {%- endif -%}
+          {%- else -%}—{%- endif -%}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -83,6 +93,7 @@
   <p class="hint">
     最多显示最近 {{ pipeline_limit }} 条（一次每日流水线约 8 条）。<b>失败</b>的行在「说明」里写明原因，
     重跑对应阶段即可；「正文缓存」失败只会让报告少一张 README 快照，不影响排名。
+    发布 / 推送阶段的「报告」列给出直达报告详情的链接与未发布原因，点进去即可查看细节、调整内容或提交审核。
   </p>
   {% else %}
   <p class="empty">

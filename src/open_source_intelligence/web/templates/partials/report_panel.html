@@ -30,6 +30,21 @@
     <div><dt>Agent 运行</dt><dd>#{{ report.agent_run_id }}</dd></div>
   </dl>
 
+  {# 「为什么这份报告没进邮箱」要有明确答案：发布策略的裁决原因码翻成中文，并给出
+     去处理它的路径（本页下方的审核/推送动作）。已发布的报告不显示这段。 #}
+  {%- set decisions = publish_decisions | default({}, true) -%}
+  {%- set decision = decisions.get(report.id) -%}
+  {%- if decision and decision['reason_codes'] and report.status != "published" -%}
+  <div class="alert warn" id="publish-reason">
+    <b>未发布原因</b>：{{ decision['reasons'] | join("；") }}
+    {% if decision['resolution'] %}（裁决：{{ decision['resolution'] | label }}）{% endif %}
+    <div class="hint">
+      来自发布决策运行 #{{ decision['run_id'] }}，可在<a href="/ui/runs">采集与运行</a>查看完整链路；
+      在本页可直接运行验证、提交审核决定、编辑或推送。
+    </div>
+  </div>
+  {%- endif -%}
+
   {% if can_write %}
   <div class="actions">
     <form method="post" action="/ui/reports/{{ report.id }}/verify"

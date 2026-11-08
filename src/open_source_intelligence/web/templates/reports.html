@@ -69,7 +69,14 @@
         <td class="num">{{ item.id }}</td>
         <td><a href="/ui/reports/{{ item.id }}">{{ item.title }}</a></td>
         <td>{{ topic_names.get(item.topic_id, "—") }}</td>
-        <td><span class="badge status-{{ item.status }}">{{ item.status | label }}</span></td>
+        <td>
+          <span class="badge status-{{ item.status }}">{{ item.status | label }}</span>
+          {%- set decisions = publish_decisions | default({}, true) -%}
+          {%- set decision = decisions.get(item.id) -%}
+          {%- if decision and decision['reasons'] and item.status != "published" -%}
+          <div class="hint publish-reason">{{ decision['reasons'] | join("；") }}</div>
+          {%- endif -%}
+        </td>
         <td><span class="badge">{{ item.visibility | label }}</span></td>
         <td>{{ item.publish_mode | label }}</td>
         <td class="num">v{{ item.current_version }}</td>
