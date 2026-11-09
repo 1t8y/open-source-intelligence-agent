@@ -1,4 +1,5 @@
 # 运维手册（Operations）
+> 层级：详细规格（展开基线）｜职责：启动、触发与排查的操作步骤｜冲突时以三份根文档为准
 
 这份文档面向**把平台跑起来并让它持续产出的人**。它只写操作：每个动作的准确命令、成功时应该看到什么、失败时先查哪里，以及哪些动作是危险的。设计理由（为什么不这样做）不在这里重复，见 `ARCHITECTURE.md` 与各模块的 `docs/*.md`。
 
@@ -440,7 +441,7 @@ passed: True    regressions: ['agent_no_verifier', 'agent_no_tools']
 | 1 | `reports generate` 直接失败：`readme source not found: repository_contents:99:readme` | `repository_contents`（README 内容缓存）在 `src/` 里**没有任何写入方** —— 只有 `scripts/t7..t17_*` 的演练脚本直写；库里现在是 **0 行**。而 `reports/citations.py:85` 在解析 README 引用时找不到行就**硬失败** | 报告草稿一旦引用 README，**生成这一步就走不通** |
 | 2 | 研究运行稳定停在 `AGENT_EVIDENCE_INCOMPLETE` / `sufficient=false` / `reason="no cached repository content was read"` | 同一个缓存为空导致 `get_repository_content` 工具**每次都失败**（实测失败码 `TOOL_NOT_FOUND`）；而 `agent/llm/offline.py:_collect_evidence` 把工具失败的载荷（`{"error": {...}}`，也是一个 dict）当成"读到了内容"记进证据 —— **探针实测**：喂进一次失败的读缓存调用后 `evidence.contents = {99: {'error': {'code': 'TOOL_NOT_FOUND', ...}}}`，而对照用例（成功载荷）仍被正常吸收。于是模型据此**引用了它从没读到的 README**（实测草稿引用的正是 `repository_contents:99:readme`，与那次失败的 repo_id 一致） | 于是 1 与 2 是同一根因的两面：**只修一面另一面照样发作** —— 只补缓存写入方，失败载荷仍会在缓存为空时把生成带崩；只修证据吸收，报告则只剩指标证据、`sufficient` 仍为 false |
 | 3 | 评测五个变体全 `failed`、`scored_case_count = 0` | 逐条结果是 `EVAL_TOPIC_NOT_FOUND`：数据集里写的是夹具主题名（`AI Agent`），而这个库里只有 `sweep-llm-agent-topic` | 评测链路本身没坏，是**数据集与部署对不上**；改名或更新数据集即可 |
-| 4 | 每天定时任务跑完只有采集/快照/排名，永远没有新报告 | `run_research_agent` **不在 beat 表**（`ARCHITECTURE.md` §9.3 的决定：等报告与发布阶段就绪后再开），而那条前置条件（T11–T13）**已经满足** | 自动编排停在排名；研究与报告必须人工触发 |
+| 4 | 每天定时任务跑完只有采集/快照/排名，永远没有新报告 | `run_research_agent` **不在 beat 表**（`ARCHITECTURE.md` §9.1 的设计决定：研究由每日任务派发，不设第二个时钟） | 自动编排停在排名；研究与报告必须人工触发 |
 
 修法建议（第 1/2 条已在 T23 实施，见 §11 开头；第 3/4 条仍开放）：
 
@@ -494,7 +495,7 @@ docker compose ... exec -T api python -m open_source_intelligence.pipeline.cli -
 
 | 想知道什么 | 看哪 |
 |---|---|
-| 架构、模块边界、实施计划 | `ARCHITECTURE.md`（唯一真理源） |
+| 架构决策、分层依赖、模块边界 | `ARCHITECTURE.md`（设计基线） |
 | HTTP 端点、错误码、界面表 | `docs/api-contract.md` |
 | 权限与审计边界 | `docs/security-and-privacy.md` |
 | 表结构、不变量 | `docs/data-model.md` |

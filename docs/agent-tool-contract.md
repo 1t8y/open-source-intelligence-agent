@@ -1,4 +1,5 @@
 # Agent 工具接口契约
+> 层级：详细规格（展开基线）｜职责：Agent 内部工具、权限与错误码｜冲突时以三份根文档为准
 
 > 适用模块：`src/open_source_intelligence/agent/tools/`  
 > 契约版本：v1.2  

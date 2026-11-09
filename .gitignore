@@ -42,6 +42,7 @@ Thumbs.db
 # The public repo carries the product, not the developer's own scaffolding:
 # stage manuals, diagnostics, task lists and learning notes stay local.
 使用手册.md
+开发进度流水.md
 开源情报Agent*.md
 快速开始.md
 诊断清单.md

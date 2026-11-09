@@ -1,4 +1,5 @@
 # Agent、报告与成本评测方案
+> 层级：详细规格（展开基线）｜职责：质量、成本与回归评测方案｜冲突时以三份根文档为准
 
 > 目标：证明专用 Agent 相比单 Prompt 的增益，并持续监控质量、风险和成本。  
 > 最后更新：2026-10-13（T14 实现落地，第 10 节给出文档与代码的对照）
@@ -224,4 +225,4 @@ baseline_single_prompt  <-  agent_full  <-  agent_no_verifier / agent_no_tools /
 | §8 版本回归与消融 | `evaluation/runner.py:_reference_summary() / _regressed()`、`settings.eval_regression_tolerance` |
 | §9 交付物与上线裁决 | `evaluation/runner.py:ComparisonReport.passed`、`TargetSummary` |
 
-`ARCHITECTURE.md` §9.11 是 T14 的架构说明，`INTERFACES.md` 第 4 节给出评测层的精确函数签名与错误码，`docs/api-contract.md` 第 7 节给出端点与响应形状，`docs/data-model.md` 第 7 节给出四张表的字段与约束。
+`ARCHITECTURE.md` §9.5 给出评测与可观测性的设计约束，`INTERFACES.md` 第 4 节给出评测层的精确函数签名与错误码，`docs/api-contract.md` 第 7 节给出端点与响应形状，`docs/data-model.md` 第 7 节给出四张表的字段与约束。

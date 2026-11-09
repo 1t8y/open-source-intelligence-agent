@@ -1,6 +1,6 @@
 # Open-Source Intelligence Agent
 
-> 项目状态：T1-T32 已完成（实施任务清单见 `ARCHITECTURE.md` §14）
+> 项目状态：T1-T32 已完成（任务台账与进度流水见本地《开发进度流水.md》，不入库；`ARCHITECTURE.md` 只写设计基线）
 
 **自动采集开源项目动态 → 专用研究 Agent 分析、验证 → 生成带可追溯证据的周报 → 风险闸门决定自动发布或人工审核。**
 
@@ -191,6 +191,8 @@ src/open_source_intelligence/
 
 ## 文档索引
 
+> 文档分三层：**事实基线**（三份根文档）→ **详细规格**（下表 `docs/`）→ **过程记录**（本地《使用手册.md》《开发进度流水.md》与 `git log`，不入库）。冲突时以根文档为准。
+
 | 文档                                                                           | 用途                       |
 | ---------------------------------------------------------------------------- | ------------------------ |
 | [docs/architecture-diagram.md](docs/architecture-diagram.md)                 | 系统架构图（Mermaid，逐组件对应代码模块） |
@@ -205,9 +207,9 @@ src/open_source_intelligence/
 | [docs/evaluation.md](docs/evaluation.md)                                     | Agent、报告质量与成本评测方案        |
 | [docs/observability.md](docs/observability.md)                               | 监控指标口径、窗口语义与看板           |
 | [docs/backfill.md](docs/backfill.md)                                         | 历史回填：分页、限流、断点续传与并发守卫     |
-| [docs/development-process.md](docs/development-process.md)                   | 企业流程的个人精简执行版本            |
+| [docs/development-process.md](docs/development-process.md)                   | 阶段门控、测试矩阵与文档职责清单            |
 | [docs/live-run-review.md](docs/live-run-review.md)                           | 五天真实投递复盘：链路实绩、数据走势与剩余缺陷 |
-| [ARCHITECTURE.md](ARCHITECTURE.md)                                           | 架构唯一真理源（设计理由、决策与实施清单）    |
+| [ARCHITECTURE.md](ARCHITECTURE.md)                                           | 设计决策与不变量（结构、分层、数据模型摘要、ADR 索引）    |
 | [REQUIREMENTS.md](REQUIREMENTS.md) / [INTERFACES.md](INTERFACES.md)          | 需求与接口基线                  |
 
 ## License

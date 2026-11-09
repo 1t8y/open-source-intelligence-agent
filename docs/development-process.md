@@ -1,4 +1,5 @@
 # 项目开发流程
+> 层级：流程规范｜职责：阶段门控、测试矩阵与文档维护顺序；不记录任务进度
 
 > 采用企业常见阶段门控，但压缩为个人可执行的轻量流程。  
 > 最后更新：2026-10-09
@@ -44,15 +45,15 @@
 
 ### Gate 3：开发
 
-交付物：可运行的纵向小版本、数据库迁移、测试和变更日志。
+交付物：可运行的纵向小版本、数据库迁移、测试，以及本地过程记录（《使用手册.md》对应阶段、《开发进度流水.md》对应任务）。
 
 执行规则：
 
-- 一次只实施 `ARCHITECTURE.md` 中一个任务。
+- 一次只实施任务台账中的一个任务（台账在本地《开发进度流水.md》；`ARCHITECTURE.md` 不再列任务）。
 - 不先写未经文档记录的接口或数据表。
 - 跨模块对象字段名必须与契约完全一致。
 - 每个任务结束都要运行真实核心路径，不能只报告单测通过。
-- 影响架构的代码变更立即回写 `ARCHITECTURE.md` 和 Changelog。
+- 影响架构的代码变更立即回写 `ARCHITECTURE.md` 的设计章节；变更历史由 `git log` 承担，任务流水记入本地《开发进度流水.md》。
 
 ### Gate 4：测试与评测
 
@@ -130,17 +131,30 @@
 - [ ] 监控指标、告警和运行手册可访问。
 - [ ] 已准备一次真实主题的端到端回放结果。
 
-## 7. 文档产物清单
+## 7. 文档职责清单
 
-- `README.md`：项目入口和文档索引。
-- `REQUIREMENTS.md`：根需求基线、范围、验收和待确认项。
-- `INTERFACES.md`：根接口基线、API/Tool 索引和跨模块对象。
-- `ARCHITECTURE.md`：唯一真理源、任务清单和 Changelog。
-- `docs/requirements.md`：PRD 和验收标准。
-- `docs/api-contract.md`：接口契约。
-- `docs/agent-tool-contract.md`：Agent 内部工具契约。
-- `docs/data-model.md`：数据库模型和不变量。
-- `docs/security-and-privacy.md`：威胁、权限和数据处理。
-- `docs/evaluation.md`：质量、成本和回归评测。
-- `docs/adr/`：关键决策记录。
-- `使用手册.md`：本地维护、被 `.gitignore` 忽略；每个阶段完成后必须更新，记录文件作用、结构关系、模块触发方式、验证状态和下一阶段入口。
+文档分三层，改动前先判断它属于哪一层：
+
+| 层 | 文档 | 职责 | 不写 |
+|---|---|---|---|
+| 事实基线 | `REQUIREMENTS.md` | 做什么、边界、验收标准 | 实现细节、进度 |
+| 事实基线 | `INTERFACES.md` | 模块 / API / Tool 签名、字段、错误码、状态机 | 「哪次任务改的」 |
+| 事实基线 | `ARCHITECTURE.md` | 选型理由、分层依赖、目录结构、数据模型摘要、运行时设计 | 任务清单、Changelog、验证记录 |
+| 详细规格 | `docs/requirements.md` | PRD 与验收标准 | 与根文档冲突的口径 |
+| 详细规格 | `docs/api-contract.md` | 外部 HTTP API 契约 | 任务进度 |
+| 详细规格 | `docs/agent-tool-contract.md` | Agent 内部工具契约 | 任务进度 |
+| 详细规格 | `docs/data-model.md` | 表结构、关系与不变量 | 任务进度 |
+| 详细规格 | `docs/security-and-privacy.md` | 威胁、权限与数据处理 | 任务进度 |
+| 详细规格 | `docs/evaluation.md` | 质量、成本与回归评测方案 | 任务进度 |
+| 详细规格 | `docs/observability.md` / `docs/backfill.md` / `docs/operations.md` | 指标口径 / 回填协议 / 运维操作 | 任务进度 |
+| 决策日志 | `docs/adr/` | 一次决策一份，记选项与理由 | 开发进度流水 |
+| 证据报告 | `docs/ablation-report-c1.md`、`docs/live-run-review.md`、`docs/samples/` | 记录一次真实运行或评测的结论 | 不构成契约 |
+| 入口 | `README.md` | 项目入口与文档索引 | 契约细则 |
+
+**过程层（本地、gitignored、不入库）**：
+
+- `使用手册.md`：每个阶段完成后必须更新，固定五节 —— 新增文件作用、结构关系、触发与查看方式、验证状态、下一阶段入口。
+- `开发进度流水.md`：任务台账、开发进度流水、原 `ARCHITECTURE.md` 变更日志的原文归档。
+- `git log`：提交级变更事实来源；`ARCHITECTURE.md` 不再维护 Changelog。
+
+**修改顺序**：契约冲突先改根文档 → 同步 `docs/` 细则与代码 → 跑 `scripts/check_docs_drift.py` 十项比较 → 跑 ruff / mypy / pytest 门禁。判据是：改动后需要同步修正代码或测试的写基线；只是「记下来以后能查」的写过程层。

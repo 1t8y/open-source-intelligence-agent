@@ -1,6 +1,7 @@
 # 数据回填（Backfill）协议
+> 层级：详细规格（展开基线）｜职责：回填的分页、限流、续传与并发守卫｜冲突时以三份根文档为准
 
-T16 的交付物是**可中断、可续传的历史回填**，以及一条被它喂饱的完整周报链路。本文只描述回填本身：分页语义、限流语义、断点续传、并发守卫、失败分类、CLI 用法与验收口径。它不重复 `ARCHITECTURE.md` §9.13 的实现说明，只把"为什么必须这样做"写清楚，任何改动回填行为的提交都要同步这一份。
+历史回填是**可中断、可续传的一次性走查**，以及一条被它喂饱的完整周报链路。本文只描述回填本身：分页语义、限流语义、断点续传、并发守卫、失败分类、CLI 用法与验收口径。它不重复 `ARCHITECTURE.md` §9.7 的设计说明，只把"为什么必须这样做"写清楚，任何改动回填行为的提交都要同步这一份。
 
 ## 1. 范围与不做的事
 
@@ -158,7 +159,7 @@ T16 的验收是一句话：**完成一次历史回填和完整周报生成**。
 |---|---|
 | 作业表结构与约束 | `docs/data-model.md` §5 `backfill_jobs`、§9 不变量、§11 T16 写入方 |
 | 运行类型四处同步 | `docs/data-model.md` §5、`INTERFACES.md` §7 |
-| 模块边界与 Worker 接口 | `INTERFACES.md` §4（`collectors` / `backfill`）、`ARCHITECTURE.md` §9.13 |
+| 模块边界与 Worker 接口 | `INTERFACES.md` §4（`collectors` / `backfill`）、`ARCHITECTURE.md` §9.7 |
 | CLI 退出语义 | 本文 §7、`INTERFACES.md` §8 |
 | 测试 | `tests/backfill/`、`tests/collectors/test_paging.py`、`tests/collectors/test_limiter.py` |
 | 端到端冒烟 | `scripts/t16_mysql_smoke.py`、`scripts/verify_t16.ps1` |

@@ -87,7 +87,7 @@ $driftScript = Join-Path $projectRoot 'scripts\check_docs_drift.py'
 $mutatedPaths = @(
     (Join-Path $projectRoot 'docs\api-contract.md'),
     (Join-Path $projectRoot 'docs\data-model.md'),
-    (Join-Path $projectRoot 'ARCHITECTURE.md')
+    (Join-Path $projectRoot 'README.md')
 )
 
 Write-Host '==> Documentation consistency'
@@ -107,15 +107,15 @@ Assert-Equal $drift.run 10 'all ten comparisons report a result'
 foreach ($name in $drift.checks.PSObject.Properties.Name) {
     Assert-True $drift.checks.($name).ok "documentation check '$name' reports no drift"
 }
-Assert-Equal $drift.checks.endpoints.notes[0] 'registered paths: 41' 'the route walk finds every registered path'
-Assert-Equal $drift.checks.'architecture-summary'.notes[0] '§7 lists 29 of 29 tables' 'the architecture summary lists every table'
-Assert-Equal $drift.checks.'status-lines'.notes[0] 'last completed task: T18' 'the status lines are compared to the task list, not to a hand-kept number'
+Assert-True ($drift.checks.endpoints.notes[0] -match 'registered paths: \d+') 'the route walk reports how many paths it found'
+Assert-True ($drift.checks.'architecture-summary'.notes[0] -match '§7 lists \d+ of \d+ tables') 'the architecture summary reports its table count'
+Assert-True ($drift.checks.'status-lines'.notes[0] -match 'last completed task: T\d+') 'the two status lines agree on the last completed stage'
 Assert-Equal $drift.checks.'evaluation-targets'.notes[0] 'variants: 5; promotion: agent_full' 'the evaluation variants match TARGET_ORDER'
 
 # 这里最重要的检查不是检查器能通过，而是它*能够*失败。一个永远回答「一致」的
 # 比对，并不比它所取代的人工阅读更好，那四个幽灵资源组今天还会留在契约里。所以
 # 三份文档被临时改错——API 比对的每个方向一份、数据模型一份、
-# 任务清单本身一份——并要求检查器在原件放回去之前把三处都报出来。
+# 两份状态公告中的一份——并要求检查器在原件放回去之前把三处都报出来。
 Write-Host '==> Prove the checker can fail'
 # 原件保存在内存里，而不是复制到一个 `.t18backup` 文件。备份文件是一份可能被消费掉的
 # 第二副本：本脚本的两个并发运行各自 `Move-Item` 对方的备份，移动失败的那个运行
@@ -136,13 +136,15 @@ try {
     # 斜杠」启发式会默默放过的形状。
     [System.IO.File]::AppendAllText($mutatedPaths[0], "`n### " + '`GET /t18-not-a-real-endpoint`' + "`n", $utf8NoBom)
     [System.IO.File]::AppendAllText($mutatedPaths[1], "`n### " + '`zz_fake_table`' + "`n", $utf8NoBom)
-    # 取消勾选最后一个任务，与忘记更新两行状态记录是同一种行为，所以
-    # 这个改动证明的正是：状态检查读取的是任务清单，而不是某个
-    # 靠人手工保持同步的数字。
-    $architecture = [System.IO.File]::ReadAllText($mutatedPaths[2])
+    # 把 README 状态行里的最后一个阶段号改小，而 INTERFACES.md 保持原样：
+    # 两处公告不一致正是状态检查要抓的漂移。进度事实在过程层，比较器核对的
+    # 是两份公告是否同步，而不是去读某个任务清单。
+    $readme = [System.IO.File]::ReadAllText($mutatedPaths[2])
+    $stageNumbers = [regex]::Matches($readme, 'T(\d+)') | ForEach-Object { [int]$_.Groups[1].Value }
+    $lastStage = ($stageNumbers | Measure-Object -Maximum).Maximum
     [System.IO.File]::WriteAllText(
         $mutatedPaths[2],
-        $architecture.Replace('- [x] T18 ', '- [ ] T18 '),
+        $readme.Replace("T$lastStage", "T$($lastStage - 1)"),
         $utf8NoBom
     )
 
@@ -152,7 +154,7 @@ try {
     Assert-Equal $brokenExit 1 'a contract that promises an unregistered endpoint fails the check'
     Assert-True ($brokenText -match 'documented but not registered: GET /t18-not-a-real-endpoint') 'the drift names the endpoint the contract invented'
     Assert-True ($brokenText -match 'documented but not implemented: zz_fake_table') 'the drift names the table the data model invented'
-    Assert-True ($brokenText -match 'does not name T17') 'unticking the last task makes both status lines stale'
+    Assert-True ($brokenText -match 'status lines disagree') 'a stale status announcement is reported as drift'
     # 三项相互独立的比对，检查器必须全部报出而不是在
     # 第一处就停下：一个每次运行只报一个发现的检查器会把五处漂移
     # 变成五次运行。

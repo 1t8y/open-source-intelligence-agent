@@ -1,4 +1,5 @@
 # 消融评测对比报告（板块 C1）
+> 层级：证据报告｜职责：消融评测的结论与量化数据｜不构成契约，不被比较器当事实读
 
 > 用真实模型 `deepseek-chat`（`openai_compatible` / `https://api.deepseek.com`）对数据集
 > `weekly-agent-quality` v4 跑全 5 个评测变体，产出统一的消融对比。

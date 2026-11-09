@@ -21,8 +21,8 @@ T18 的验收标准是「架构、API、数据模型和评测文档与代码一�
    每个 `docs/` 链接都指向一个存在的文件。
 7. **迁移** —— 恰好一个 Alembic head，这样 `upgrade head` 才没有歧义。
 8. **密钥** —— 受版本控制的 `.env.example` 里没有任何凭据形状的值。
-9. **状态行** —— `README.md` 与 `INTERFACES.md` 的状态行，点名
-   `ARCHITECTURE.md` §14 里标记为完成的最后一个任务。
+9. **状态行** —— `README.md` 与 `INTERFACES.md` 的状态行互相一致，都点名
+   最近完成的阶段。进度事实在过程层（本地文件与 `git log`），不再由架构文档推导。
 10. **版本** —— `__version__` 与 `pyproject.toml` 一致。
 
 只有每项检查都通过*并且*每项检查都跑过时，退出码才是 0：`--only` 会收窄输入，所以
@@ -70,16 +70,16 @@ COMPOSE_ONLY_ENV = frozenset(
 #: `docs/data-model.md` 里引出「已设计、尚未实现」那批表的标记。
 PLANNED_TABLE_MARKER = "计划内、尚未实现"
 
-#: 根目录文档，它们的状态行必须点名架构文档标记为完成的最后一个任务。`REQUIREMENTS.md`
-#: 刻意不在其中：它的状态行记录的是用户有没有确认需求基线，那不是任何任务列表能推出来的。
+#: 根目录文档，它们的状态行是同一份对外公告的两处副本，必须点名同一个最近完成阶段。
+#: `REQUIREMENTS.md` 刻意不在其中：它的状态行记录的是用户有没有确认需求基线。
 STATUS_DOCUMENTS = {
     "README.md": "> 项目状态：",
     "INTERFACES.md": "> 文档状态：",
 }
 
-#: `ARCHITECTURE.md` §14 里的任务清单条目，例如
-#: `- [x] T16 数据回填与端到端演示 — ...`。
-TASK_LINE = re.compile(r"^- \[([ x])\] T(\d+) ", re.MULTILINE)
+#: 状态行里的阶段编号，例如 `T1-T32 已完成`。进度事实在过程层，比较器只核对
+#: 两份公告是否点名同一阶段，不从架构文档推导编号。
+STATUS_TASK = re.compile(r"T(\d+)")
 
 #: `docs/evaluation.md` §1 里变体表的第一列，例如
 #: `| \`agent_no_tools\` | 只使用一次候选数据… | … |`。
@@ -405,34 +405,34 @@ def check_architecture_summary() -> Check:
 
 
 def check_status_lines() -> Check:
-    """检查根目录文档的状态行是否点名了最后一个已完成的任务。
+    """检查两份状态公告是否点名同一个最近完成的阶段。
 
-    状态行是读者看到的第一样东西，也是最后才有人去更新的东西。`README.md` 曾把
-    「T1-T12 已完成，进入 T13」这句公告又挂了四个任务，因为没有任何东西拿它去对那份
-    正在被勾选的任务清单。从 `ARCHITECTURE.md` §14 推出答案、并要求标题与它一致，
-    是能抓住这件事的最小比较，而且不必去判断「多旧才算太旧」。
+    状态行是读者看到的第一样东西，也是最后才有人去更新的东西：两处不同步，读者就
+    会拿到两个答案。开发进度流水已移到本地过程层（`开发进度流水.md` 与 `git log`），
+    架构文档不再承载任务清单，因此这里比较的是两份公告彼此一致，而不是从
+    `ARCHITECTURE.md` 推导编号 —— 进度事实本来就不该由基线文档提供。
     """
     check = Check("status-lines")
-    architecture = (PROJECT_ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    completed = [
-        int(match.group(2)) for match in TASK_LINE.finditer(architecture) if match.group(1) == "x"
-    ]
-    if not completed:
-        check.failures.append("ARCHITECTURE.md marks no task complete, so there is nothing to name")
-        return check
-
-    last = max(completed)
+    named: dict[str, set[int]] = {}
     for name, prefix in sorted(STATUS_DOCUMENTS.items()):
         text = (PROJECT_ROOT / name).read_text(encoding="utf-8")
         line = next((item for item in text.splitlines() if item.startswith(prefix)), None)
         if line is None:
             check.failures.append(f"{name} has no status line beginning with {prefix!r}")
-        elif f"T{last}" not in line:
-            check.failures.append(
-                f"{name} status line does not name T{last}, the last task marked complete"
-            )
+            continue
+        stages = {int(value) for value in STATUS_TASK.findall(line)}
+        if not stages:
+            check.failures.append(f"{name} status line names no stage (expected T<n>)")
+            continue
+        named[name] = stages
 
-    check.notes.append(f"last completed task: T{last}")
+    if len(named) == len(STATUS_DOCUMENTS):
+        stages = [value for _, value in sorted(named.items())]
+        if any(value != stages[0] for value in stages[1:]):
+            detail = ", ".join(f"{key}=T{max(value)}" for key, value in sorted(named.items()))
+            check.failures.append(f"status lines disagree on the last stage: {detail}")
+        else:
+            check.notes.append(f"last completed task: T{max(stages[0])}")
     return check
 
 

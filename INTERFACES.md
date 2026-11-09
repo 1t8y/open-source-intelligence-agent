@@ -1,6 +1,6 @@
 # 项目接口基线
 
-> 文档状态：实施基线（T1-T32 已对齐）
+> 文档状态：接口基线（T1-T32 已对齐）
 > 文档版本：v0.16
 > 最后更新：2026-10-16
 
@@ -15,6 +15,8 @@
 | 数据结构 | [docs/data-model.md](docs/data-model.md) | 数据库字段、关系和约束 |
 
 若本文件与详细契约冲突，以本文件确定边界，再同步修正详细文档。
+
+> **职责边界**：本文件只写契约本身 —— 签名、字段、错误码、状态机与跨模块对象。不写「哪次任务改的」，不写开发进度或验证记录；变更历史由 `git log` 承担，阶段流水见本地《开发进度流水.md》。契约冲突时先改根文档再改代码。
 
 ## 2. 通用接口原则
 
@@ -787,7 +789,7 @@ failed       AGENT_INTERNAL_ERROR
 - 新增或修改 Agent Tool：更新 `INTERFACES.md`、`docs/agent-tool-contract.md`、Pydantic 契约和测试。
 - 修改数据库字段或约束：更新 `INTERFACES.md`、`docs/data-model.md` 和迁移。
 - 修改模块依赖方向：必须新增或更新 ADR，并同步 `ARCHITECTURE.md`。
-- 所有不兼容变更必须记录在 `ARCHITECTURE.md` Changelog 中。
+- 所有不兼容变更必须在提交信息中说明，并同步更新受影响的根文档与 `docs/` 契约；`ARCHITECTURE.md` 不设 Changelog，变更历史由 `git log` 承担。
 
 ## 10. 确认条件
 

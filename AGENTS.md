@@ -12,3 +12,9 @@ After completing every project stage, update `使用手册.md` before declaring 
 4. Current validation status, known limitations, and the next stage entry point.
 
 Keep the manual current rather than replacing historical stage knowledge unless an older instruction is no longer valid.
+
+## Document Layers
+
+Three root documents are the fact baseline: REQUIREMENTS.md (what is built and how it is accepted), INTERFACES.md (contracts), ARCHITECTURE.md (design decisions and invariants). docs/*.md expands the baseline; docs/adr/ keeps one decision per file. None of them carries development progress, task checklists or changelogs.
+
+Development progress, stage verification records and task logs stay in local, gitignored files: 使用手册.md (five sections per stage) and 开发进度流水.md (archived task log). Commit-level history belongs to git log. Never add a Changelog or task checklist back into the tracked baseline documents.

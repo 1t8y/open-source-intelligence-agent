@@ -1,4 +1,5 @@
-# 可观测性协议（T15）
+# 可观测性协议
+> 层级：详细规格（展开基线）｜职责：监控指标口径、窗口语义与看板｜冲突时以三份根文档为准
 
 > 版本：v1
 > 最后更新：2026-10-14
@@ -7,11 +8,11 @@
 
 ## 1. 目标与验收
 
-T15 要回答三个运维问题，`ARCHITECTURE.md` §14 把第一个写成了验收条件：
+可观测性要回答三个运维问题，`ARCHITECTURE.md` §12 把第一个写成了验收条件：
 
 1. 任务、Token、延迟、失败率和评测结果**可见**。
 2. `ARCHITECTURE.md` §12 的"常规报告人工阻塞率"有真实数字。
-3. 能从一份失败的报告**追到具体的那次工具调用**（`ARCHITECTURE.md` §14 的验收条件）。
+3. 能从一份失败的报告**追到具体的那次工具调用**（`ARCHITECTURE.md` §12 的验收条件）。
 
 三条都由只读路径满足：监控层不写任何一行，也不新增任何一张表。
 
@@ -106,4 +107,4 @@ UI 与 JSON API **都是 egress 路径**，因此都过 `core/logging.py:redact_
 | 角色守卫 | `security/authorization.py:METRICS_ROLES` |
 | 端点契约 | `docs/api-contract.md` §5、§8 |
 | 跨阶段接口基线 | `INTERFACES.md` §3、§4、§5 |
-| 架构说明 | `ARCHITECTURE.md` §9.12 |
+| 架构说明 | `ARCHITECTURE.md` §9.5 |
