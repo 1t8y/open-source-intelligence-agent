@@ -3,7 +3,7 @@
 
 这份文档面向**把平台跑起来并让它持续产出的人**。它只写操作：每个动作的准确命令、成功时应该看到什么、失败时先查哪里，以及哪些动作是危险的。设计理由（为什么不这样做）不在这里重复，见 `ARCHITECTURE.md` 与各模块的 `docs/*.md`。
 
-**本文的命令都在运行中的五服务栈上逐条实跑过**（2026-10-16，Compose + 真实 MySQL + 真实 GitHub / HF 镜像），输出按原样贴出并去掉无关字段。少数没有实跑的条目在正文里**显式标注**并写明原因 —— 一份没人跑过的运维手册等于一份没人验证过的断言。实跑用的是 `--env-file .env.example`（本地样例口令），命令形状与本文给出的完全一致。
+**本文的命令都在运行中的五服务栈上逐条实跑过**（2026-10-16，Compose + 真实 MySQL + 真实 GitHub / HF 镜像），输出按原样贴出并去掉无关字段。少数没有实跑的条目在正文里**显式标注**并写明原因 —— 一份没人跑过的运维手册等于一份没人验证过的断言。实跑用的是 `--env-file .env.example`（本地样例口令）。2026-11-11 起命令统一增加第二个 `--env-file .env.db`（MySQL 专用变量，见 §2 第 1b 步），上述输出与结论不受影响。
 
 一个前提教训值得先看：**镜像里装的是包，不是挂载的源码**。改完代码不重建，容器里跑的还是上一次构建的版本 —— 实测那份 2026-10-15 17:33 构建的镜像上，`/ui/topics`、`/ui/pushes`、`/ui/audit` 与 `/api/v1/topics` 全是 **404**，而它们对应的代码早已提交。见 §2 第 2 步。
 
@@ -26,21 +26,27 @@
 ## 2. 第一次启动
 
 ```bash
-# 1. 环境文件。compose 的 ${VAR} 替换读的是它，应用自身的 Settings 也从这里取。
+# 1. 应用环境文件。compose 的 ${VAR} 替换读的是它，应用自身的 Settings 也从这里取。
 cp .env.example .env
-#    必须改：MYSQL_PASSWORD / MYSQL_ROOT_PASSWORD / DATABASE_URL 里的口令 / SECRET_KEY
+#    必须改：DATABASE_URL 里的口令 / SECRET_KEY；只保留 Settings 允许的键（extra="forbid"）。
 #    想接真实模型与真实投递再改：AGENT_PROVIDER、AGENT_API_BASE、AGENT_API_KEY、PUSH_DELIVERY 及 SMTP/签名密钥
 
-# 2. 起服务。注意两点：
-#    (a) --env-file：compose 文件在 infra/ 下，compose 默认去 *项目目录* 找 .env，也就是
-#        infra/.env —— 不写 --env-file 就会拿到一整套空变量（实测会打印一堆
+# 1b. MySQL 专用环境文件（本机、不入库）：只放 4 个 MYSQL_* 变量。
+#     MYSQL_DATABASE / MYSQL_USER / MYSQL_PASSWORD 必须与 .env 的 DATABASE_URL 一致；
+#     MYSQL_ROOT_PASSWORD 只在首次用全新数据卷初始化时必填，已有卷可留空。
+#     缺这个文件，mysql 容器会拿到空账号，健康检查每 5 秒打印一条 sha256_password 弃用警告。
+
+# 2. 起服务。注意三点：
+#    (a) 两个 --env-file：compose 文件在 infra/ 下，默认去 *项目目录* 找 .env；
+#        后面的文件覆盖前面的同名键，所以 .env 放应用变量、.env.db 放 MySQL 变量。
+#    (b) 不写 --env-file 就会拿到一整套空变量（实测会打印一堆
 #        'The "DATABASE_URL" variable is not set'，随后 mysql 起不来）。
-#    (b) --build：镜像里装的是包，不是挂载的源码。改了代码不重建，容器里跑的还是旧版本
+#    (c) --build：镜像里装的是包，不是挂载的源码。改了代码不重建，容器里跑的还是旧版本
 #        —— 实测旧镜像上 T19/T20 的页面与端点直接 404。
-docker compose --env-file .env -f infra/docker-compose.yml up -d --build --force-recreate --remove-orphans
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml up -d --build --force-recreate --remove-orphans
 
 # 3. 建表。镜像不自动迁移，迁移永远是一条显式的命令。
-docker compose --env-file .env -f infra/docker-compose.yml exec -T api alembic upgrade head
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T api alembic upgrade head
 ```
 
 第 3 步在已迁移的库上是一条幂等空操作，实测输出（只有这两行 INFO，没有 `Running upgrade`）：
@@ -55,7 +61,7 @@ INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
 curl -s http://127.0.0.1:8000/health
 # {"status":"ok","service":"open-source-intelligence-agent","version":"0.1.0"}
 
-docker compose --env-file .env -f infra/docker-compose.yml ps
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml ps
 ```
 
 ### 2.1 一键初始化：空库直接变成可验证状态（T28）
@@ -65,12 +71,12 @@ docker compose --env-file .env -f infra/docker-compose.yml ps
 ```bash
 # 1) 种子数据：三账号、GitHub 数据源、一个主题、五个候选仓库（各带两天快照与 README 缓存）、
 #    两个推送目标，以及 T25 评测停用的两个边界场景数据形态。幂等，可重复跑。
-docker compose --env-file .env -f infra/docker-compose.yml exec -T api \
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T api \
   python /app/scripts/seed_demo.py
 
 # 2) 端到端：用离线模型跑一次研究 → 生成 → 发布（拨快 now 越过延迟窗口）→ 自动推送，
 #    产出一份真实 published 报告。
-docker compose --env-file .env -f infra/docker-compose.yml exec -T api \
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T api \
   python /app/scripts/init_demo.py
 ```
 
@@ -99,7 +105,7 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T api \
 
 ```bash
 # 密码只能走环境变量 —— 不接受 argv，因为命令行会留在 shell 历史与进程列表里。
-docker compose --env-file .env -f infra/docker-compose.yml exec -T \
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T \
   -e BOOTSTRAP_ADMIN_PASSWORD='<一次性强口令>' api \
   python -m open_source_intelligence.security.bootstrap --username admin --display-name "运维管理员"
 # bootstrap_admin_ready=admin
@@ -110,7 +116,7 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T \
 **其它角色**（`EDITOR` / `VIEWER`）没有 CLI，用下面这段（实跑通过，`created 74 __t22_drill__editor team`）：
 
 ```bash
-docker compose --env-file .env -f infra/docker-compose.yml exec -T -e NEW_PASSWORD='<一次性强口令>' api \
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T -e NEW_PASSWORD='<一次性强口令>' api \
   python - <<'PY'
 import os
 from open_source_intelligence.core.config import get_settings
@@ -171,7 +177,7 @@ GET    /api/v1/topics?q=__t22_drill__  -> 200 | total 0
 白名单是报告出站的**唯一**允许列表：目标不在这张表里，推送接口就等于可以往任何地址发。界面只在管理员的白名单卡里**显示**它，不提供创建入口。
 
 ```bash
-docker compose --env-file .env -f infra/docker-compose.yml exec -T api python - <<'PY'
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T api python - <<'PY'
 from open_source_intelligence.core.config import get_settings
 from open_source_intelligence.persistence.session import create_database_engine, create_session_factory
 from open_source_intelligence.persistence.models.notifications import PushTarget

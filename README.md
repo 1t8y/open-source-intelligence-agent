@@ -115,20 +115,25 @@ flowchart LR
 ## 快速开始
 
 ```bash
-# 1. 准备环境（改掉占位口令与 SECRET_KEY）
+# 1. 准备应用环境文件（改掉占位口令与 SECRET_KEY，只保留 Settings 允许的键）
 cp .env.example .env
 
-# 2. 起五服务栈
-docker compose --env-file .env -f infra/docker-compose.yml up -d --build
+# 2. 另建 .env.db（本机文件，不入库）：只放 MySQL 容器用的 4 个变量
+#    MYSQL_DATABASE / MYSQL_USER / MYSQL_PASSWORD 必须与 .env 的 DATABASE_URL 一致；
+#    MYSQL_ROOT_PASSWORD 只在首次用全新数据卷初始化时必填，已有卷可留空。
+#    两个文件分开的原因：应用 Settings 是 extra="forbid"，.env 里不能出现 MYSQL_*。
 
-# 3. 建表
-docker compose --env-file .env -f infra/docker-compose.yml exec -T api alembic upgrade head
+# 3. 起五服务栈（应用变量取 .env，MySQL 变量取 .env.db）
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml up -d --build
 
-# 4. 种子数据 + 端到端演示（产出真实 published 报告）
-docker compose --env-file .env -f infra/docker-compose.yml exec -T api python /app/scripts/seed_demo.py
-docker compose --env-file .env -f infra/docker-compose.yml exec -T api python /app/scripts/init_demo.py
+# 4. 建表
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T api alembic upgrade head
 
-# 5. 打开首屏
+# 5. 种子数据 + 端到端演示（产出真实 published 报告）
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T api python /app/scripts/seed_demo.py
+docker compose --env-file .env --env-file .env.db -f infra/docker-compose.yml exec -T api python /app/scripts/init_demo.py
+
+# 6. 打开首屏
 # http://127.0.0.1:8000/ui/login  （admin / dev-admin-password-change-me）
 ```
 

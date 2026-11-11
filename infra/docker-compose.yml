@@ -96,8 +96,15 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     volumes:
       - mysql-data:/var/lib/mysql
+    # 真正执行一次认证查询：mysqladmin ping 只探端口，账号密码全错也会返回成功；
+    # 空账号连接还会让 MySQL 8.4 每 5 秒打印一条 sha256_password 弃用警告。
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      test:
+        - CMD-SHELL
+        - >-
+          MYSQL_PWD="$$MYSQL_PASSWORD"
+          mysql --connect-timeout=3 -h 127.0.0.1 -u"$$MYSQL_USER"
+          -N -e 'SELECT 1' >/dev/null 2>&1 || exit 1
       interval: 5s
       timeout: 5s
       retries: 20
