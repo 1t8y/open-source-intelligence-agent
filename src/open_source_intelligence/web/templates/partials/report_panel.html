@@ -14,6 +14,7 @@
     <div class="badges">
       {# 徽章上的字译成中文，class 里的取值保持原样：前者给人读，后者给 CSS 认。 #}
       <span class="badge status-{{ report.status }}">{{ report.status | label }}</span>
+      {% if report_type %}<span class="badge">{{ report_type | label }}</span>{% endif %}
       <span class="badge">{{ report.visibility | label }}</span>
       <span class="badge">{{ report.sensitivity | label }}</span>
       <span class="badge">{{ report.publish_mode | label }}</span>

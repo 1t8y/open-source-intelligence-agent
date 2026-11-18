@@ -95,6 +95,9 @@ class GraphDependencies:
     draft_prompt: str
     tool_schemas: tuple[ToolSchema, ...] = ()
     run_verifier: bool = True
+    #: 本次运行报告类型要求的章节键名，由运行时按 `topic.report_type` 注入。
+    #: 起草校验与「缺少章节」判断都以它为准，而不是写死趋势六节。
+    section_keys: tuple[str, ...] = REPORT_SECTION_KEYS
 
 
 def _elapsed_ms(started: float) -> int:
@@ -129,7 +132,7 @@ def _draft_messages(
                 role="user",
                 content=(
                     f"上一份草稿未被接受，原因是：{rejection}\n"
-                    "请重新输出完整的 JSON 对象：sections 是数组，六个 section_key 各出现一次，"
+                    "请重新输出完整的 JSON 对象：sections 是数组，每个 section_key 各出现一次，"
                     "每节都带至少一条 citations；除了这个 JSON 对象不要输出任何其它文字。"
                 ),
             )
@@ -686,13 +689,11 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         completion_tokens += turn.completion_tokens
         cost += turn.cost
         try:
-            sections = parse_draft_payload(turn.text)
+            sections = parse_draft_payload(turn.text, deps.section_keys)
         except DraftPayloadError as exc:
             rejection = str(exc)
             continue
-        absent = [
-            key for key in REPORT_SECTION_KEYS if key not in {s.section_key for s in sections}
-        ]
+        absent = [key for key in deps.section_keys if key not in {s.section_key for s in sections}]
         if absent:
             rejection = f"缺少章节 {', '.join(absent)}"
             continue
@@ -729,11 +730,11 @@ def _write_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
             "guard_triggered": guard_triggered,
         }
 
-    # Markdown 兜底（模型无视了 JSON 契约）可能只带回少于六个模板章节。
+    # Markdown 兜底（模型无视了 JSON 契约）可能只带回少于模板章节数。
     # 这是可恢复的内容而非崩溃：把到手的存下来并把运行标记为待复核，而不是
     # 把一份只写了一半的报告当成干净完成。
     present_keys = {section.section_key for section in sections}
-    missing_keys = [key for key in REPORT_SECTION_KEYS if key not in present_keys]
+    missing_keys = [key for key in deps.section_keys if key not in present_keys]
     draft_incomplete = bool(missing_keys)
 
     # 章节写入是确定性的，且受报告模板约束，所以它们走自己的预算，从不与

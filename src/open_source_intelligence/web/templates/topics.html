@@ -55,6 +55,7 @@
     <thead>
       <tr>
         <th>名称</th>
+        <th>报告类型</th>
         <th>说明</th>
         <th>语言</th>
         <th>关键词</th>
@@ -70,6 +71,7 @@
       {% for topic in page.items %}
       <tr>
         <td><a href="/ui/topics/{{ topic.id }}">{{ topic.name }}</a></td>
+        <td><span class="badge">{{ topic.report_type | label }}</span></td>
         <td class="truncate">{{ topic.description or "—" }}</td>
         <td class="mono">{{ topic.languages_json | join(", ") if topic.languages_json else "不限" }}</td>
         <td class="mono">{{ topic.keywords_json | join(", ") if topic.keywords_json else "不限" }}</td>

@@ -16,7 +16,12 @@ from open_source_intelligence.agent.llm.messages import (
     is_tool_error_payload,
     tool_error_payload,
 )
-from open_source_intelligence.agent.llm.offline import _collect_evidence, compose_sections
+from open_source_intelligence.agent.llm.offline import (
+    _collect_evidence,
+    _detect_section_keys,
+    compose_hot_tool_sections,
+    compose_sections,
+)
 
 REPO_ID = 99
 
@@ -266,3 +271,101 @@ def test_an_unread_readme_is_not_reported_as_missing() -> None:
     risks = body["risks"]
     assert "未读取 README" in risks
     assert "没有缓存到" not in risks
+
+
+def hot_tool_messages() -> list[ChatMessage]:
+    """构造一份带画像、指标与 README 的热门工具观测轮次。"""
+    messages: list[ChatMessage] = []
+    for index, (repo_id, stars, language) in enumerate(
+        ((1, 30000, "TypeScript"), (2, 20000, "Python")),
+        start=1,
+    ):
+        messages.append(tool_call(f"p{index}", "get_repository_profile", repo_id))
+        messages.append(
+            observation(
+                f"p{index}",
+                "get_repository_profile",
+                {
+                    "full_name": f"tool/{repo_id}",
+                    "description": f"Tool number {repo_id}.",
+                    "language": language,
+                    "stars": stars,
+                    "forks": stars // 10,
+                },
+            )
+        )
+        messages.append(tool_call(f"m{index}", "query_repo_metrics", repo_id))
+        messages.append(
+            observation(
+                f"m{index}",
+                "query_repo_metrics",
+                series((13, stars - 100), (14, stars)),
+            )
+        )
+        messages.append(tool_call(f"c{index}", "get_repository_content", repo_id))
+        messages.append(
+            observation(
+                f"c{index}",
+                "get_repository_content",
+                {
+                    "repo_id": repo_id,
+                    "source_url": f"https://github.com/tool/{repo_id}/blob/main/README.md",
+                    "content": f"# tool/{repo_id}\n\n## Core capabilities\n"
+                    "- Plan multi-file edits\n- Run commands in a bounded loop\n",
+                    "content_hash": "0" * 64,
+                    "truncated": False,
+                    "untrusted": True,
+                },
+            )
+        )
+    return messages
+
+
+def test_hot_tool_offline_draft_has_five_sections() -> None:
+    """证明离线桩能为热门工具追踪产出五节，而不是趋势六节。"""
+    sections = compose_hot_tool_sections(_collect_evidence(hot_tool_messages()))
+    keys = [section["section_key"] for section in sections]
+
+    assert keys == ["overview", "tools", "capabilities", "adoption", "appendix"]
+    assert all(section["citations"] for section in sections)
+
+
+def test_hot_tool_tools_section_extracts_core_capabilities() -> None:
+    """证明 `tools` 一节从 README 里提炼核心功能，而不是只写仓库名。"""
+    sections = compose_hot_tool_sections(_collect_evidence(hot_tool_messages()))
+    tools = next(s["content_markdown"] for s in sections if s["section_key"] == "tools")
+
+    assert "tool/1" in tools
+    assert "Plan multi-file edits" in tools
+    assert "Run commands in a bounded loop" in tools
+
+
+def test_detect_section_keys_tells_hot_tool_from_trend() -> None:
+    """证明章节结构是从起草提示（系统消息）识别出来的。"""
+    hot_tool_prompt = "热门工具盘点的章节：overview、tools、capabilities、adoption、appendix"
+    trend_prompt = "趋势报告的章节：summary、trend、highlights、risks、recommendation、appendix"
+
+    assert _detect_section_keys([ChatMessage(role="system", content=hot_tool_prompt)]) == (
+        "overview",
+        "tools",
+        "capabilities",
+        "adoption",
+        "appendix",
+    )
+    assert _detect_section_keys([ChatMessage(role="system", content=trend_prompt)]) == (
+        "summary",
+        "trend",
+        "highlights",
+        "risks",
+        "recommendation",
+        "appendix",
+    )
+    # 没有系统消息时回退趋势六节。
+    assert _detect_section_keys([]) == (
+        "summary",
+        "trend",
+        "highlights",
+        "risks",
+        "recommendation",
+        "appendix",
+    )

@@ -32,11 +32,12 @@ from open_source_intelligence.agent.llm.messages import (
     ToolSchema,
 )
 from open_source_intelligence.agent.profile import AGENT_FULL, WRITE_TOOL, ExecutionProfile
-from open_source_intelligence.agent.prompts import load_prompt
+from open_source_intelligence.agent.prompts import load_report_prompt
 from open_source_intelligence.agent.recording import StepRecorder
 from open_source_intelligence.agent.state import AgentState, VerificationResult
 from open_source_intelligence.agent.tooling import build_tool_schemas
 from open_source_intelligence.agent.tools.context import ToolContext
+from open_source_intelligence.agent.tools.contracts import section_keys_for
 from open_source_intelligence.agent.tools.registry import (
     WHITELIST,
     ToolRegistry,
@@ -320,6 +321,8 @@ def run_research_agent(
     topic = session.get(Topic, topic_id)
     if topic is None:
         raise ValueError(f"topic {topic_id} does not exist")
+    report_type = topic.report_type
+    section_keys = section_keys_for(report_type)
 
     resolved_start, resolved_end = resolve_window(
         topic,
@@ -376,6 +379,7 @@ def run_research_agent(
         authorized_topic_ids=frozenset({topic_id}),
         allowed_tools=allowed_tools,
         max_tool_calls=tool_budget,
+        section_keys=section_keys,
     )
     deps = GraphDependencies(
         client=resolved_client,
@@ -383,9 +387,12 @@ def run_research_agent(
         session=session,
         recorder=recorder,
         context=context,
-        draft_prompt=load_prompt("draft", config.prompt_version, settings.agent_prompts_dir),
+        draft_prompt=load_report_prompt(
+            "draft", report_type, config.prompt_version, settings.agent_prompts_dir
+        ),
         tool_schemas=_plan_schemas(resolved_registry, allowed_tools),
         run_verifier=profile.run_verifier,
+        section_keys=section_keys,
     )
     graph = build_research_graph(deps)
     initial_state: AgentState = {
@@ -406,7 +413,9 @@ def run_research_agent(
         "messages": [
             ChatMessage(
                 role="system",
-                content=load_prompt("plan", config.prompt_version, settings.agent_prompts_dir),
+                content=load_report_prompt(
+                    "plan", report_type, config.prompt_version, settings.agent_prompts_dir
+                ),
             ),
             ChatMessage(
                 role="user",

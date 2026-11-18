@@ -28,7 +28,11 @@ from open_source_intelligence.persistence.models.reporting import (
     ReportVersion,
 )
 from open_source_intelligence.reports.citations import resolve_citation
-from open_source_intelligence.reports.composition import _compose_from_resolved, generate_report
+from open_source_intelligence.reports.composition import (
+    _compose_from_resolved,
+    _trend_stats_block,
+    generate_report,
+)
 from open_source_intelligence.reports.errors import ReportGenerationError
 
 
@@ -409,10 +413,62 @@ def test_the_key_numbers_table_is_computed_not_drafted() -> None:
         window_start=NOW,
         window_end=NOW,
         candidate_full_names=("example/a", "example/b"),
-        movements=(("example/a", 300), ("example/b", 3)),
+        stats_block=_trend_stats_block((("example/a", 300), ("example/b", 3))),
     )
 
     assert "关键数字（系统统计）" in markdown
     assert "| example/a | +300 | 99.0% |" in markdown
     assert "| example/b | +3 | 1.0% |" in markdown
     assert "| **合计** | **+303** | 100% |" in markdown
+
+
+def test_hot_tool_report_renders_tool_stats_and_sections(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """证明热门工具追踪主题产出的报告换用工具榜与五节结构，而非趋势六节。"""
+    from open_source_intelligence.agent.tools.contracts import HOT_TOOL_SECTION_KEYS
+    from open_source_intelligence.persistence.models.reporting import ReportDraft, ReportSection
+
+    seeded = seed_topic(workspace, repo_count=1)
+    seeded.topic.report_type = "hot_tool"
+    agent_run = workspace.add_agent_run(seeded.topic.id)
+    draft = ReportDraft(agent_run_id=agent_run.id, topic_id=seeded.topic.id, status="draft")
+    session.add(draft)
+    session.flush()
+
+    metric_ref = "repo_snapshots:acme/repo-1:2026-10-11"
+    readme_ref = "repository_contents:acme/repo-1:readme"
+    section_bodies = {
+        "overview": "本期热门工具整体升温。",
+        "tools": "核心功能包括 3 个模块：采集、检索、编排。",
+        "capabilities": "这些工具共同折射出 Agent 插件化趋势。",
+        "adoption": "建议试用排名最靠前的工具。",
+        "appendix": "证据规模见引用与证据一节。",
+    }
+    for key in HOT_TOOL_SECTION_KEYS:
+        citations = [{"source_type": "metric", "source_ref": metric_ref}]
+        if key in {"tools", "capabilities"}:
+            citations.append({"source_type": "readme", "source_ref": readme_ref})
+        session.add(
+            ReportSection(
+                report_draft_id=draft.id,
+                section_key=key,
+                version=1,
+                content_markdown=section_bodies[key],
+                content_digest=content_digest(section_bodies[key]),
+                citations_json=citations,
+            )
+        )
+    session.flush()
+
+    result = generate_report(session, agent_run_id=agent_run.id, now=NOW)
+    report = session.get(Report, result.report_id)
+    assert report is not None
+    assert "热门工具追踪" in report.title
+    assert "热门工具榜（系统统计）" in report.content_markdown
+    for title in ("本期概览", "热门工具盘点", "能力洞察", "采纳建议", "附录"):
+        assert f"## {title}" in report.content_markdown
+    # 趋势六节不再出现在热门工具追踪报告里。
+    assert "## 趋势观察" not in report.content_markdown
+    assert "## 风险与不确定性" not in report.content_markdown

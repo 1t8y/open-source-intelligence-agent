@@ -104,6 +104,7 @@ users --< audit_logs
 | `min_stars` | INT | NOT NULL DEFAULT 0 | 最低 star |
 | `window_days` | INT | NOT NULL | 分析窗口 |
 | `max_candidates` | INT | NOT NULL | Agent 候选上限 |
+| `report_type` | VARCHAR(32) | NOT NULL DEFAULT `trend` | 报告类型：`trend`（趋势追踪）/ `hot_tool`（热门工具追踪），受 `report_type_valid` CHECK 约束 |
 | `publish_mode` | VARCHAR(32) | NOT NULL | `AUTO`、`AUTO_WITH_DELAY`、`MANUAL` |
 | `enabled` | TINYINT(1) | NOT NULL | 是否启用 |
 | `created_by` | BIGINT UNSIGNED | FK users.id | 创建人 |

@@ -56,6 +56,7 @@
         <th class="num">#</th>
         <th>标题</th>
         <th>主题</th>
+        <th>报告类型</th>
         <th>状态</th>
         <th>可见范围</th>
         <th>发布模式</th>
@@ -69,6 +70,7 @@
         <td class="num">{{ item.id }}</td>
         <td><a href="/ui/reports/{{ item.id }}">{{ item.title }}</a></td>
         <td>{{ topic_names.get(item.topic_id, "—") }}</td>
+        <td><span class="badge">{{ topic_report_types.get(item.topic_id, "trend") | label }}</span></td>
         <td>
           <span class="badge status-{{ item.status }}">{{ item.status | label }}</span>
           {%- set decisions = publish_decisions | default({}, true) -%}

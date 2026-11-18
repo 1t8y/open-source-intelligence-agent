@@ -44,7 +44,8 @@ MAX_CITATIONS = 50
 MIN_PRIOR_REPORT_LIMIT = 1
 MAX_PRIOR_REPORT_LIMIT = 20
 
-REPORT_SECTION_KEYS = (
+#: 「趋势追踪」报告的章节键名，保持既有六节结构不变。
+TREND_SECTION_KEYS = (
     "summary",
     "trend",
     "highlights",
@@ -52,6 +53,41 @@ REPORT_SECTION_KEYS = (
     "recommendation",
     "appendix",
 )
+
+#: 「热门工具追踪」报告的章节键名：核心是逐仓库盘点核心功能（`tools`），而不是
+#: star 涨跌的走向判断，因此用「能力洞察」与「采纳建议」取代趋势类的「趋势」与「风险」。
+HOT_TOOL_SECTION_KEYS = (
+    "overview",
+    "tools",
+    "capabilities",
+    "adoption",
+    "appendix",
+)
+
+#: 报告类型 -> 该类型要求起草的章节，顺序即报告渲染顺序。
+SECTION_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "trend": TREND_SECTION_KEYS,
+    "hot_tool": HOT_TOOL_SECTION_KEYS,
+}
+
+#: 所有已知章节键名（跨类型并集，去重）。`SaveReportSectionInput` 用它在 Pydantic 层
+#: 挡住明显的垃圾值；「是否属于当前报告类型」这一更窄的判断由保存工具与图各自执行。
+ALL_SECTION_KEYS: tuple[str, ...] = tuple(
+    dict.fromkeys((*TREND_SECTION_KEYS, *HOT_TOOL_SECTION_KEYS))
+)
+
+
+def section_keys_for(report_type: str) -> tuple[str, ...]:
+    """返回某报告类型要求的章节键名；未知类型回退到趋势类型。
+
+    回退到趋势类型是保守默认：`report_type` 受数据库 CHECK 约束，正常不会出现未知值，
+    这里回退只是让「读到一行无法识别的类型」不至于让报告生成直接崩掉。
+    """
+    return SECTION_KEYS_BY_TYPE.get(report_type, TREND_SECTION_KEYS)
+
+
+#: 既有代码里直接引用六个章节的地方，沿用趋势章节键名（默认行为）。
+REPORT_SECTION_KEYS = TREND_SECTION_KEYS
 
 
 class StrictModel(BaseModel):
@@ -217,9 +253,14 @@ class SaveReportSectionInput(StrictModel):
     @field_validator("section_key")
     @classmethod
     def validate_section_key(cls, value: str) -> str:
-        """只允许写入报告模板中列出的章节。"""
-        if value not in REPORT_SECTION_KEYS:
-            raise ValueError(f"section_key must be one of: {', '.join(REPORT_SECTION_KEYS)}")
+        """只允许写入已知章节键名。
+
+        这里挡的是「明显不属于任何报告类型」的垃圾值；是否属于当前运行报告类型的那几个
+        章节，由保存工具按 `ToolContext.section_keys` 再校验一次 —— 那需要读到运行上下文，
+        而 Pydantic 层拿不到它。
+        """
+        if value not in ALL_SECTION_KEYS:
+            raise ValueError(f"section_key must be one of: {', '.join(ALL_SECTION_KEYS)}")
         return value
 
 

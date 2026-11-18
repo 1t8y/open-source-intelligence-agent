@@ -15,10 +15,11 @@ from typing import Any, Literal, cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from open_source_intelligence.agent.tools.contracts import REPORT_SECTION_KEYS, CitationRef
+from open_source_intelligence.agent.tools.contracts import CitationRef, section_keys_for
 from open_source_intelligence.core.config import Settings, get_settings
 from open_source_intelligence.core.logging import redact_text
 from open_source_intelligence.persistence.base import utc_now
+from open_source_intelligence.persistence.models.intelligence import Topic
 from open_source_intelligence.persistence.models.reporting import (
     REPORT_SOURCE_TYPES,
     Report,
@@ -28,7 +29,7 @@ from open_source_intelligence.persistence.models.reporting import (
 from open_source_intelligence.security.audit import record_audit_event
 
 from .citations import resolve_citation
-from .composition import SECTION_TITLES
+from .composition import SECTION_TITLES_BY_TYPE
 from .errors import ReportGenerationError, ReportNotFoundError
 
 #: 与 `CitationRef.source_type` 对齐；库里存的是普通字符串，所以必须收窄类型。
@@ -123,11 +124,14 @@ def count_sensitive_markers(content: str) -> int:
     return redacted.count(PLACEHOLDER) - content.count(PLACEHOLDER)
 
 
-def _check_structure(report: Report, bodies: dict[str, str]) -> tuple[bool, list[str]]:
+def _check_structure(
+    report: Report,
+    bodies: dict[str, str],
+    section_keys: tuple[str, ...],
+    titles: dict[str, str],
+) -> tuple[bool, list[str]]:
     """检查模板的每个章节是否都保留到了渲染后的产物里。"""
-    missing = [
-        SECTION_TITLES[key] for key in REPORT_SECTION_KEYS if SECTION_TITLES[key] not in bodies
-    ]
+    missing = [titles[key] for key in section_keys if titles[key] not in bodies]
     title_ok = report.content_markdown.splitlines()[:1] == [f"# {report.title}"]
     if not title_ok:
         missing.insert(0, report.title)
@@ -137,6 +141,7 @@ def _check_structure(report: Report, bodies: dict[str, str]) -> tuple[bool, list
 def _check_citations(
     session: Session,
     report: Report,
+    section_keys: tuple[str, ...],
 ) -> tuple[bool, float, list[str], list[str]]:
     """返回当前版本的引用健康状况，以及逐章节的覆盖率。"""
     rows = session.scalars(
@@ -146,7 +151,7 @@ def _check_citations(
         )
     ).all()
     covered = {row.section_key for row in rows}
-    missing_sections = [key for key in REPORT_SECTION_KEYS if key not in covered]
+    missing_sections = [key for key in section_keys if key not in covered]
     unresolved: list[str] = []
     for row in rows:
         if not row.source_ref:
@@ -166,15 +171,20 @@ def _check_citations(
             )
         except (ReportGenerationError, ValueError):
             unresolved.append(row.source_ref)
-    coverage = (len(REPORT_SECTION_KEYS) - len(missing_sections)) / len(REPORT_SECTION_KEYS)
+    coverage = (len(section_keys) - len(missing_sections)) / len(section_keys)
     return not missing_sections and not unresolved, coverage, missing_sections, unresolved
 
 
-def _check_numbers(bodies: dict[str, str], metric_sections: set[str]) -> tuple[bool, list[str]]:
+def _check_numbers(
+    bodies: dict[str, str],
+    metric_sections: set[str],
+    section_keys: tuple[str, ...],
+    titles: dict[str, str],
+) -> tuple[bool, list[str]]:
     """检查写了数字的章节是否至少引用了一个指标快照。"""
     offenders: list[str] = []
-    for key in REPORT_SECTION_KEYS:
-        title = SECTION_TITLES[key]
+    for key in section_keys:
+        title = titles[key]
         body = bodies.get(title, "")
         if any(character.isdigit() for character in body) and key not in metric_sections:
             offenders.append(key)
@@ -206,6 +216,13 @@ def verify_report(
     if report is None:
         raise ReportNotFoundError(f"report {report_id} does not exist")
 
+    # 报告类型来自它的主题，而不是报告行：主题才是「这份报告按哪种结构产出」的唯一事实
+    # 来源。主题若已被删除这里会拿到 `None`，此时回退到趋势类型（结构与验证保持一致）。
+    topic = session.get(Topic, report.topic_id)
+    report_type = topic.report_type if topic is not None else "trend"
+    section_keys = section_keys_for(report_type)
+    titles = SECTION_TITLES_BY_TYPE[report_type]
+
     bodies = split_section_bodies(report.content_markdown)
     metric_sections = set(
         session.scalars(
@@ -217,9 +234,11 @@ def verify_report(
         ).all()
     )
 
-    structure_ok, missing_headings = _check_structure(report, bodies)
-    citations_ok, coverage, _missing_sections, unresolved = _check_citations(session, report)
-    numbers_ok, number_offenders = _check_numbers(bodies, metric_sections)
+    structure_ok, missing_headings = _check_structure(report, bodies, section_keys, titles)
+    citations_ok, coverage, _missing_sections, unresolved = _check_citations(
+        session, report, section_keys
+    )
+    numbers_ok, number_offenders = _check_numbers(bodies, metric_sections, section_keys, titles)
     sensitivity_ok, markers, mismatch = _check_sensitivity(report, report.content_markdown)
 
     reasons: list[str] = []

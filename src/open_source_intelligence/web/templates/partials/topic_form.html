@@ -1,9 +1,9 @@
 {#
   主题表单的字段集合，被「新建」与「编辑」两处共用。
-  共用而不是各写一份：九个字段里加一个、改一个上下界，只应该改一个地方 ——
+  共用而不是各写一份：十个字段里加一个、改一个上下界，只应该改一个地方 ——
   两份表单的漂移表现为"新建能填的字段编辑里没有"，而且只有用户会发现。
 
-  `form` 由 `web/router.py:_topic_form_fields` 算好，永远是九个字符串键，所以这里不需要
+  `form` 由 `web/router.py:_topic_form_fields` 算好，永远是十个字符串键，所以这里不需要
   再写一遍默认值：留空到底是 0 还是 7 这类判断只该有一处。
 #}
 <div class="form-grid">
@@ -19,6 +19,15 @@
       <option value="{{ mode }}" {% if form.get('publish_mode', 'MANUAL') == mode %}selected{% endif %}>{{ mode | label }}</option>
       {% endfor %}
     </select>
+  </label>
+  <label>
+    <span>报告类型</span>
+    <select name="report_type">
+      {% for value in report_types %}
+      <option value="{{ value }}" {% if form.get('report_type', 'trend') == value %}selected{% endif %}>{{ value | label }}</option>
+      {% endfor %}
+    </select>
+    <small class="hint">趋势追踪=净增/升温判断；热门工具追踪=热门仓库核心功能盘点</small>
   </label>
   <label>
     <span>状态</span>

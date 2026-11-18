@@ -57,7 +57,11 @@ from open_source_intelligence.persistence.models.agent import (
 )
 from open_source_intelligence.persistence.models.audit import AUDIT_RESULTS
 from open_source_intelligence.persistence.models.identity import User
-from open_source_intelligence.persistence.models.intelligence import TOPIC_PUBLISH_MODES, Topic
+from open_source_intelligence.persistence.models.intelligence import (
+    TOPIC_PUBLISH_MODES,
+    TOPIC_REPORT_TYPES,
+    Topic,
+)
 from open_source_intelligence.persistence.models.notifications import (
     PUSH_STATUSES,
     PushTarget,
@@ -303,6 +307,9 @@ ENUM_LABELS: dict[str, str] = {
     "AUTO": "自动",
     "AUTO_WITH_DELAY": "延迟自动",
     "MANUAL": "手动",
+    # 报告类型：主题产出哪种报告。
+    "trend": "趋势追踪",
+    "hot_tool": "热门工具追踪",
     # Agent 步骤轨迹。`step_type` 是实际运行的图节点，`status` 是它的判定；两者在
     # 运行页上成对打印（`规划 · 正常`），毕竟原始码读起来像调用栈帧。
     "plan": "规划",
@@ -676,6 +683,14 @@ def _topic_names(session: Session, topic_ids: set[int]) -> dict[int, str]:
     if not topic_ids:
         return {}
     rows = session.execute(select(Topic.id, Topic.name).where(Topic.id.in_(topic_ids))).all()
+    return {int(row[0]): str(row[1]) for row in rows}
+
+
+def _topic_report_types(session: Session, topic_ids: set[int]) -> dict[int, str]:
+    """为列表页建立主题 id 到报告类型的映射，供报告列表/详情打报告类型徽章。"""
+    if not topic_ids:
+        return {}
+    rows = session.execute(select(Topic.id, Topic.report_type).where(Topic.id.in_(topic_ids))).all()
     return {int(row[0]): str(row[1]) for row in rows}
 
 
@@ -1264,6 +1279,7 @@ def reports_page(
         page_size=page_size,
     )
     topic_names = _topic_names(session, {item.topic_id for item in page_result.items})
+    topic_report_types = _topic_report_types(session, {item.topic_id for item in page_result.items})
     return render(
         request,
         "reports.html",
@@ -1271,6 +1287,7 @@ def reports_page(
             "current_user": _identity(web.user),
             "page": page_result,
             "topic_names": topic_names,
+            "topic_report_types": topic_report_types,
             "status_filter": resolved_status or "",
             "visibility_filter": resolved_visibility or "",
             # 直接取自模型自己的元组，而不是在模板里重抄：一个列出状态机并不存在的状态
@@ -1311,6 +1328,7 @@ def _panel(
             "report": report,
             "detail": detail,
             "topic_name": _topic_name(session, report.topic_id),
+            "report_type": _topic_report_types(session, {report.topic_id}).get(report.topic_id),
             "flash": flash,
             "error": error,
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
@@ -1345,6 +1363,7 @@ def report_page(
             "report": report,
             "detail": detail,
             "topic_name": _topic_name(session, report.topic_id),
+            "report_type": _topic_report_types(session, {report.topic_id}).get(report.topic_id),
             "flash": None,
             "error": None,
             "can_write": not get_role_codes(web.user).isdisjoint(REPORT_WRITE_ROLES),
@@ -2239,6 +2258,7 @@ TOPIC_FORM_FIELDS: tuple[str, ...] = (
     "name",
     "description",
     "publish_mode",
+    "report_type",
     "languages",
     "keywords",
     "min_stars",
@@ -2253,6 +2273,7 @@ TOPIC_FORM_DEFAULTS: dict[str, str] = {
     "name": "",
     "description": "",
     "publish_mode": "MANUAL",
+    "report_type": "trend",
     "languages": "",
     "keywords": "",
     "min_stars": "0",
@@ -2266,7 +2287,7 @@ def _topic_form_fields(topic: Topic | None, form: Mapping[str, str] | None) -> d
     """返回主题表单要显示的值，一律转成文本。
 
     刻意按这个顺序取三个来源。被拒绝之后，运维自己填的内容必须活下来，否则为了改一个
-    字段要重打九个；首次打开时，数据库里的那行才是事实；而新建主题没有行，就用上面的
+    字段要重打十个；首次打开时，数据库里的那行才是事实；而新建主题没有行，就用上面的
     列默认值顶上。
     """
     if form:
@@ -2277,6 +2298,7 @@ def _topic_form_fields(topic: Topic | None, form: Mapping[str, str] | None) -> d
         "name": topic.name,
         "description": topic.description or "",
         "publish_mode": topic.publish_mode,
+        "report_type": topic.report_type,
         "languages": ", ".join(topic.languages_json or []),
         "keywords": ", ".join(topic.keywords_json or []),
         "min_stars": str(topic.min_stars),
@@ -2296,8 +2318,12 @@ def _topic_values(raw: Mapping[str, str]) -> dict[str, Any]:
     publish_mode = (raw.get("publish_mode") or "").strip()
     if publish_mode not in TOPIC_PUBLISH_MODES:
         raise _FormInvalid(f"发布模式必须是 {'、'.join(TOPIC_PUBLISH_MODES)} 之一")
+    report_type = (raw.get("report_type") or "trend").strip()
+    if report_type not in TOPIC_REPORT_TYPES:
+        raise _FormInvalid(f"报告类型必须是 {'、'.join(TOPIC_REPORT_TYPES)} 之一")
     values: dict[str, Any] = {
         "publish_mode": publish_mode,
+        "report_type": report_type,
         "description": (raw.get("description") or "").strip() or None,
         "languages": _split_terms(raw.get("languages") or ""),
         "keywords": _split_terms(raw.get("keywords") or ""),
@@ -2350,6 +2376,7 @@ def _topics_context(
         "enabled_filter": enabled or "",
         "can_write": not get_role_codes(web.user).isdisjoint(TOPIC_WRITE_ROLES),
         "publish_modes": TOPIC_PUBLISH_MODES,
+        "report_types": TOPIC_REPORT_TYPES,
         "notice": notice,
         "error": error,
         "form": _topic_form_fields(None, form),
@@ -2457,6 +2484,7 @@ def topic_page(
             "topic": topic,
             "can_write": not get_role_codes(web.user).isdisjoint(TOPIC_WRITE_ROLES),
             "publish_modes": TOPIC_PUBLISH_MODES,
+            "report_types": TOPIC_REPORT_TYPES,
             "notice": TOPIC_NOTICES.get((ok or "").strip()),
             "error": None,
             "form": _topic_form_fields(topic, None),
@@ -2474,6 +2502,7 @@ def create_topic_action(
     name: Annotated[str, Form()] = "",
     description: Annotated[str, Form()] = "",
     publish_mode: Annotated[str, Form()] = "",
+    report_type: Annotated[str, Form()] = "",
     languages: Annotated[str, Form()] = "",
     keywords: Annotated[str, Form()] = "",
     min_stars: Annotated[str, Form()] = "",
@@ -2488,6 +2517,7 @@ def create_topic_action(
         "name": name,
         "description": description,
         "publish_mode": publish_mode,
+        "report_type": report_type,
         "languages": languages,
         "keywords": keywords,
         "min_stars": min_stars,
@@ -2533,6 +2563,7 @@ def update_topic_action(
     name: Annotated[str, Form()] = "",
     description: Annotated[str, Form()] = "",
     publish_mode: Annotated[str, Form()] = "",
+    report_type: Annotated[str, Form()] = "",
     languages: Annotated[str, Form()] = "",
     keywords: Annotated[str, Form()] = "",
     min_stars: Annotated[str, Form()] = "",
@@ -2551,6 +2582,7 @@ def update_topic_action(
         "name": name,
         "description": description,
         "publish_mode": publish_mode,
+        "report_type": report_type,
         "languages": languages,
         "keywords": keywords,
         "min_stars": min_stars,

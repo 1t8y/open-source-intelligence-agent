@@ -251,7 +251,7 @@ SectionRef {
 
 **约束**
 
-- `section_key` 只能来自报告模板白名单：`summary`、`trend`、`highlights`、`risks`、`recommendation`、`appendix`。
+- `section_key` 只能来自报告模板白名单，取值随主题的报告类型分派：`trend`（趋势追踪）用 `summary`、`trend`、`highlights`、`risks`、`recommendation`、`appendix`；`hot_tool`（热门工具追踪）用 `overview`、`tools`、`capabilities`、`adoption`、`appendix`。Pydantic 层只挡「不属于任何类型」的键，是否属于当前报告类型由保存工具按 `ToolContext.section_keys` 窄校验。
 - `content_markdown` 最大 20000 字符。
 - 使用 `(agent_run_id, section_key, content_digest)` 实现幂等，重复保存返回原有版本。
 - 保存后不得自动发布。

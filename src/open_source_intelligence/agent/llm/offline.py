@@ -20,6 +20,7 @@ from functools import cache
 from typing import Any, TypeGuard
 
 from open_source_intelligence.agent.tools.contracts import (
+    HOT_TOOL_SECTION_KEYS,
     MAX_PRIOR_REPORT_LIMIT,
     REPORT_SECTION_KEYS,
     CitationRef,
@@ -502,6 +503,170 @@ def compose_sections(evidence: _Evidence) -> list[dict[str, Any]]:
     ]
 
 
+def _extract_capabilities(content: str) -> list[str]:
+    """从 README 里确定性提取核心功能列表项。
+
+    只取项目符号开头的行，并且不复制整段原文 —— 每条都被截断到可读长度。这是
+    桩模型对「逐仓库提炼核心功能」的确定性近似：真实模型会按 prompt 重写，桩只
+    负责让离线运行也能产出 `tools` 一节的证据。
+    """
+    items: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("- ", "* ", "+ ")):
+            text = stripped[2:].strip()
+            if text and len(text) <= 160:
+                items.append(text)
+        if len(items) >= 5:
+            break
+    return items
+
+
+def _profile_field(evidence: _Evidence, repo_id: int, key: str) -> str:
+    """返回画像里的字符串字段，取不到时给空串。"""
+    profile = evidence.profiles.get(repo_id)
+    if not isinstance(profile, dict):
+        return ""
+    value = profile.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def compose_hot_tool_sections(evidence: _Evidence) -> list[dict[str, Any]]:
+    """把研究快照变成「热门工具追踪」五节的确定性草稿。
+
+    与 `compose_sections`（趋势六节）相对：核心是逐仓库盘点核心功能（`tools`），
+    star 只是「有多热」的佐证，不是主线。每节至少带一条引用，含数字的章节用
+    metric 引用（与报告验证器 `NUMBER_WITHOUT_METRIC` 的判据一致）。
+    """
+    repo_ids = evidence.repo_ids()
+
+    def _stars(repo_id: int) -> int:
+        profile = evidence.profiles.get(repo_id)
+        return _int_field(profile, "stars") if isinstance(profile, dict) else 0
+
+    ranked = sorted(repo_ids, key=lambda repo_id: (-_stars(repo_id), repo_id))
+
+    metric_citations = [
+        _metric_citation(repo_id, evidence.metrics[repo_id])
+        for repo_id in repo_ids
+        if evidence.metrics.get(repo_id)
+    ]
+    readme_citations = [
+        _readme_citation(repo_id) for repo_id in repo_ids if repo_id in evidence.contents
+    ]
+    prior_citations = [
+        _prior_report_citation(report_id)
+        for report in evidence.prior_reports
+        if _is_real_int(report.get("report_id"))
+        for report_id in [report["report_id"]]
+    ]
+
+    languages = sorted(
+        {
+            _profile_field(evidence, repo_id, "language")
+            for repo_id in repo_ids
+            if _profile_field(evidence, repo_id, "language")
+        }
+    )
+
+    # overview：整体判断 —— 有多少个工具、集中在什么语言，不逐个罗列。
+    overview_lines = [f"本期共盘点 {len(repo_ids)} 个热门 AI 工具，覆盖 skill、插件与 Agent 方向。"]
+    if languages:
+        overview_lines.append(f"工具主要使用 {'、'.join(languages)} 实现。")
+    overview_lines.append("以下按热度逐一盘点核心功能，供发现、更新与迭代自身 AI 工具栈参考。")
+
+    # tools：全文重心，逐个候选仓库盘点核心功能。
+    tools_lines: list[str] = []
+    for repo_id in ranked:
+        full_name = _profile_field(evidence, repo_id, "full_name")
+        label = full_name or f"repo#{repo_id}"
+        description = _profile_field(evidence, repo_id, "description")
+        content = evidence.contents.get(repo_id)
+        caps = (
+            _extract_capabilities(content.get("content", "")) if isinstance(content, dict) else []
+        )
+        tools_lines.append(f"### {label}")
+        description = description.rstrip("。. ") if description else "待人工复核"
+        tools_lines.append(f"定位：{description}。")
+        if caps:
+            tools_lines.append("核心功能：")
+            tools_lines.extend(f"- {cap}" for cap in caps)
+        else:
+            tools_lines.append("核心功能：待人工复核（本期未读取 README）。")
+        profile = evidence.profiles.get(repo_id)
+        forks = _int_field(profile, "forks") if isinstance(profile, dict) else 0
+        tools_lines.append(f"热度：{_stars(repo_id)} stars、{forks} forks。")
+        tools_lines.append("")
+
+    # capabilities：归纳能力趋势，不重复 tools 的逐项清单。
+    capabilities_lines = ["这些工具共同折射出以下能力趋势："]
+    if languages:
+        capabilities_lines.append(
+            f"- 实现语言以 {'、'.join(languages)} 为主，与主流 Agent 生态对齐。"
+        )
+    capabilities_lines.append(
+        "- Agent 能力正从单一模型调用走向工具编排与插件化（skill / plugin）。"
+    )
+    capabilities_lines.append(
+        "- 多数工具强调「有界循环 + 可观测」：把推理、工具调用与护栏组合成可控流程。"
+    )
+
+    # adoption：落到具体工具与理由。
+    adoption_lines: list[str] = []
+    if ranked:
+        leader = ranked[0]
+        leader_label = _profile_field(evidence, leader, "full_name") or f"repo#{leader}"
+        adoption_lines.append(
+            f"建议优先试用 {leader_label}：热度最高，作为同类工具选型的第一参照。"
+        )
+    adoption_lines.append(
+        "其余工具按团队技术栈（Python / TypeScript）与集成形态"
+        "（CLI / IDE 插件 / 框架）评估后再采纳。"
+    )
+    adoption_lines.append("上述建议仅基于已入库指标与缓存内容，正式采纳前应由人工复核关键能力。")
+
+    appendix_lines = [
+        "数据来源：",
+        f"- 指标序列：{len(metric_citations)} 组，"
+        f"共覆盖 {sum(len(evidence.metrics.get(repo_id, [])) for repo_id in repo_ids)} 个快照"
+        "（repo_snapshots）。",
+        f"- 缓存 README：{len(evidence.contents)} 个（repository_contents，标记为不可信输入）。",
+        f"- 历史报告：{len(evidence.prior_reports)} 篇（reports）。",
+        "仓库 README 属于外部不可信文本，仅用于提炼核心功能，不直接引用其原文。",
+    ]
+
+    raw_sections: dict[str, tuple[list[str], list[CitationRef]]] = {
+        "overview": (overview_lines, metric_citations + readme_citations),
+        "tools": (tools_lines, metric_citations + readme_citations),
+        "capabilities": (capabilities_lines, metric_citations + readme_citations),
+        "adoption": (adoption_lines, metric_citations + readme_citations),
+        "appendix": (appendix_lines, metric_citations + readme_citations + prior_citations),
+    }
+    return [
+        {
+            "section_key": section_key,
+            "content_markdown": "\n".join(lines),
+            "citations": [citation.model_dump() for citation in citations],
+        }
+        for section_key in HOT_TOOL_SECTION_KEYS
+        for lines, citations in [raw_sections[section_key]]
+    ]
+
+
+def _detect_section_keys(messages: Sequence[ChatMessage]) -> tuple[str, ...]:
+    """从起草提示（系统消息）识别本次运行要求的章节结构。
+
+    热门工具追踪的起草提示会点名 `capabilities` 这个键（趋势报告用 `highlights`），
+    据此区分。识别不到时回退趋势六节 —— 正是报告类型的默认值。
+    """
+    for message in messages:
+        if message.role != "system":
+            continue
+        if "capabilities" in message.content:
+            return HOT_TOOL_SECTION_KEYS
+    return REPORT_SECTION_KEYS
+
+
 class OfflineModelClient:
     """模型客户端契约的确定性、无网络实现。"""
 
@@ -616,6 +781,15 @@ class OfflineModelClient:
         return self._turn(text="证据收集完成。")
 
     def _write_turn(self, messages: Sequence[ChatMessage]) -> ModelTurn:
-        """把各节草稿作为 JSON 文档返回，交给运行时解析。"""
-        payload = {"sections": compose_sections(_collect_evidence(messages))}
+        """把各节草稿作为 JSON 文档返回，交给运行时解析。
+
+        章节结构按起草提示要求的报告类型分派：热门工具追踪产出五节，其余回退趋势六节。
+        """
+        section_keys = _detect_section_keys(messages)
+        evidence = _collect_evidence(messages)
+        if section_keys == HOT_TOOL_SECTION_KEYS:
+            sections = compose_hot_tool_sections(evidence)
+        else:
+            sections = compose_sections(evidence)
+        payload = {"sections": sections}
         return self._turn(text=json.dumps(payload, ensure_ascii=False, sort_keys=True))

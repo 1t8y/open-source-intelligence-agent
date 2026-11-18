@@ -60,6 +60,15 @@ class DataSource(Base, TimestampMixin):
 #: 模板里重新敲一遍的列表迟早会走样。
 TOPIC_PUBLISH_MODES: tuple[str, ...] = ("AUTO", "AUTO_WITH_DELAY", "MANUAL")
 
+#: `topics.report_type` 允许的取值，决定该主题产出哪种报告。
+#:
+#: * `trend`（趋势追踪）：沿既有链路产出趋势报告 —— 净增 star、升温/降温判断、拉动者与风险。
+#: * `hot_tool`（热门工具追踪）：产出工具盘点报告 —— 热门仓库的核心功能、能力洞察与采纳建议。
+#:
+#: 与 `publish_mode` 一样单独命名：章节结构、草稿 Prompt、报告编排与验证都以它为准，界面也
+#: 只应该提供这两个取值，而不是在模板里再敲一份。
+TOPIC_REPORT_TYPES: tuple[str, ...] = ("trend", "hot_tool")
+
 
 class Topic(Base, TimestampMixin):
     """监控主题与候选筛选策略。"""
@@ -73,6 +82,10 @@ class Topic(Base, TimestampMixin):
             f"publish_mode IN ({', '.join(repr(mode) for mode in TOPIC_PUBLISH_MODES)})",
             name="publish_mode_valid",
         ),
+        CheckConstraint(
+            f"report_type IN ({', '.join(repr(value) for value in TOPIC_REPORT_TYPES)})",
+            name="report_type_valid",
+        ),
     )
 
     id: Mapped[uint64_pk]
@@ -83,6 +96,9 @@ class Topic(Base, TimestampMixin):
     min_stars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     max_candidates: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    #: 该主题产出的报告类型，决定研究 Agent 起草哪些章节、报告如何编排与验证。
+    #: 默认 `trend` 让「未显式选择的主题」保持既有行为不变。
+    report_type: Mapped[str] = mapped_column(String(32), nullable=False, default="trend")
     publish_mode: Mapped[str] = mapped_column(String(32), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by: Mapped[int] = mapped_column(

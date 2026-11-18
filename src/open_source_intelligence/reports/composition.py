@@ -12,7 +12,11 @@ from pydantic import ValidationError
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from open_source_intelligence.agent.tools.contracts import REPORT_SECTION_KEYS, CitationRef
+from open_source_intelligence.agent.tools.contracts import (
+    REPORT_SECTION_KEYS,
+    CitationRef,
+    section_keys_for,
+)
 from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.agent import AgentRun
 from open_source_intelligence.persistence.models.intelligence import (
@@ -34,14 +38,29 @@ from .citations import ResolvedCitation, resolve_citation
 from .errors import ReportGenerationError
 from .state import transition_report
 
-SECTION_TITLES = {
-    "summary": "本周摘要",
-    "trend": "趋势观察",
-    "highlights": "重点项目",
-    "risks": "风险与不确定性",
-    "recommendation": "行动建议",
-    "appendix": "附录",
+#: 各报告类型的章节键名 -> 中文标题。趋势类型沿用既有六节；热门工具追踪用五节，
+#: 其中 `tools`（热门工具盘点）是重心，`capabilities`/`adoption` 取代趋势类的
+#: `trend`/`risks`。渲染与验证都以这里为准，`verify_report` 也复用同一张表。
+SECTION_TITLES_BY_TYPE: dict[str, dict[str, str]] = {
+    "trend": {
+        "summary": "本周摘要",
+        "trend": "趋势观察",
+        "highlights": "重点项目",
+        "risks": "风险与不确定性",
+        "recommendation": "行动建议",
+        "appendix": "附录",
+    },
+    "hot_tool": {
+        "overview": "本期概览",
+        "tools": "热门工具盘点",
+        "capabilities": "能力洞察",
+        "adoption": "采纳建议",
+        "appendix": "附录",
+    },
 }
+
+#: 兼容别名：趋势类型仍是最常见的默认，旧的 `SECTION_TITLES` 引用保持不变。
+SECTION_TITLES = SECTION_TITLES_BY_TYPE["trend"]
 _NUMBER_PATTERN = re.compile(r"\d")
 
 
@@ -153,6 +172,62 @@ def _movement_rows(
     return movements
 
 
+def _trend_stats_block(movements: Sequence[tuple[str, int]]) -> str:
+    """渲染趋势报告的「关键数字（系统统计）」表：各候选在窗口内的 stars 净增与占比。"""
+    lines = ["**关键数字（系统统计）**", "", "| 仓库 | 净增 stars | 占合计 |", "|---|---:|---:|"]
+    total = sum(delta for _, delta in movements)
+    for full_name, delta in movements:
+        share = f"{delta * 100.0 / total:.1f}%" if total > 0 else "—"
+        lines.append(f"| {full_name} | {delta:+,} | {share} |")
+    total_share = "100%" if total > 0 else "—"
+    lines.append(f"| **合计** | **{total:+,}** | {total_share} |")
+    return "\n".join(lines)
+
+
+def _tool_profile_rows(
+    session: Session,
+    *,
+    topic_id: int,
+) -> list[tuple[str, int, int, str, str]]:
+    """返回每个研究候选的画像摘要，供热门工具追踪报告的工具榜使用。
+
+    热度与体量（star / fork）以及语言、一句话描述都是系统已知的事实，这里直接读出来，
+    而不是让模型去复述 —— 与趋势报告不把百分比交给模型是同一个理由。
+    """
+    rows = session.execute(
+        select(
+            Repository.full_name,
+            Repository.stars,
+            Repository.forks,
+            Repository.language,
+            Repository.description,
+        )
+        .join(TopicRepository, TopicRepository.repository_id == Repository.id)
+        .where(
+            TopicRepository.topic_id == topic_id,
+            TopicRepository.selected_for_agent.is_(True),
+        )
+        .order_by(TopicRepository.rank.asc())
+    ).all()
+    return [
+        (str(full_name), int(stars), int(forks), str(language or "—"), str(description or ""))
+        for full_name, stars, forks, language, description in rows
+    ]
+
+
+def _tool_stats_block(rows: Sequence[tuple[str, int, int, str, str]]) -> str:
+    """渲染热门工具追踪报告的「热门工具榜（系统统计）」表。"""
+    lines = [
+        "**热门工具榜（系统统计）**",
+        "",
+        "| 仓库 | stars | forks | 语言 |",
+        "|---|---:|---:|---|",
+    ]
+    for full_name, stars, forks, language, _description in rows:
+        lines.append(f"| {full_name} | {stars:,} | {forks:,} | {language} |")
+    return "\n".join(lines)
+
+
 def _compose_from_resolved(
     title: str,
     sections: dict[str, ReportSection],
@@ -161,14 +236,20 @@ def _compose_from_resolved(
     window_start: datetime,
     window_end: datetime,
     candidate_full_names: Sequence[str] = (),
-    movements: Sequence[tuple[str, int]] = (),
+    section_keys: tuple[str, ...] = REPORT_SECTION_KEYS,
+    titles: dict[str, str] | None = None,
+    stats_block: str | None = None,
 ) -> str:
     """按确定的章节顺序渲染固定的报告模板。
 
     标题之后跟一段简短的来源说明，读者不必翻数据库就能看清这份报告究竟由哪个候选集合、
     哪个快照窗口产生。这正是「两期结论不同的报告可以被解释」的原因：输入（候选 + 窗口）
     就印在输出（结论）旁边。
+
+    `section_keys` 与 `titles` 决定渲染哪些章节、用什么标题；`stats_block` 是放在正文之前
+    的系统统计表（趋势类型的净增榜，或热门工具追踪的工具榜），由调用方按报告类型算好。
     """
+    resolved_titles = titles or SECTION_TITLES
     lines = [f"# {title}", ""]
 
     # 来源说明：本次运行实际选中的候选集合、快照窗口，以及有多少个不同的快照支撑了这些
@@ -192,20 +273,12 @@ def _compose_from_resolved(
 
     # 读者最先核对的数字，由系统算出而非由模型撰写。把它们放在正文之上，某个章节里的
     # 错误数字就会与表格对不上，而不是孤零零地成为页面上唯一的数字。
-    if movements:
-        total = sum(delta for _, delta in movements)
-        lines.extend(
-            ["**关键数字（系统统计）**", "", "| 仓库 | 净增 stars | 占合计 |", "|---|---:|---:|"]
-        )
-        for full_name, delta in movements:
-            share = f"{delta * 100.0 / total:.1f}%" if total > 0 else "—"
-            lines.append(f"| {full_name} | {delta:+,} | {share} |")
-        total_share = "100%" if total > 0 else "—"
-        lines.extend([f"| **合计** | **{total:+,}** | {total_share} |", ""])
+    if stats_block:
+        lines.extend([stats_block, ""])
 
-    for key in REPORT_SECTION_KEYS:
+    for key in section_keys:
         section = sections[key]
-        lines.extend([f"## {SECTION_TITLES[key]}", "", section.content_markdown.strip(), ""])
+        lines.extend([f"## {resolved_titles[key]}", "", section.content_markdown.strip(), ""])
 
     if resolved_sources:
         lines.extend(["## 引用与证据", ""])
@@ -251,13 +324,17 @@ def generate_report(
     if topic is None:
         raise ReportGenerationError(f"topic {draft.topic_id} does not exist")
 
+    report_type = topic.report_type
+    section_keys = section_keys_for(report_type)
+    titles = SECTION_TITLES_BY_TYPE[report_type]
+
     sections = _latest_sections(session, draft.id)
-    missing = [key for key in REPORT_SECTION_KEYS if key not in sections]
+    missing = [key for key in section_keys if key not in sections]
     if missing:
         raise ReportGenerationError(f"draft is missing sections: {', '.join(missing)}")
 
     resolved_sources: dict[tuple[str, str], ResolvedCitation] = {}
-    for key in REPORT_SECTION_KEYS:
+    for key in section_keys:
         section = sections[key]
         citations = _parse_citations(section)
         if not citations:
@@ -271,9 +348,22 @@ def generate_report(
             resolved_sources[(key, citation.source_ref)] = citation
 
     generated_at = now or utc_now()
-    resolved_title = title or (
-        f"{topic.name} 开源技术情报周报（{agent_run.window_end.date().isoformat()}）"
-    )
+    if report_type == "hot_tool":
+        default_title = f"{topic.name} 热门工具追踪（{agent_run.window_end.date().isoformat()}）"
+        stats_block = _tool_stats_block(_tool_profile_rows(session, topic_id=draft.topic_id))
+    else:
+        default_title = (
+            f"{topic.name} 开源技术情报周报（{agent_run.window_end.date().isoformat()}）"
+        )
+        stats_block = _trend_stats_block(
+            _movement_rows(
+                session,
+                topic_id=draft.topic_id,
+                window_start=agent_run.window_start,
+                window_end=agent_run.window_end,
+            )
+        )
+    resolved_title = title or default_title
     markdown = _compose_from_resolved(
         resolved_title,
         sections,
@@ -281,12 +371,9 @@ def generate_report(
         window_start=agent_run.window_start,
         window_end=agent_run.window_end,
         candidate_full_names=_candidate_full_names(session, draft.topic_id),
-        movements=_movement_rows(
-            session,
-            topic_id=draft.topic_id,
-            window_start=agent_run.window_start,
-            window_end=agent_run.window_end,
-        ),
+        section_keys=section_keys,
+        titles=titles,
+        stats_block=stats_block,
     )
 
     report = session.scalar(

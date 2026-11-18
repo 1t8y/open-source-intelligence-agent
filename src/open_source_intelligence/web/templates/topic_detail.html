@@ -74,6 +74,10 @@
       <dt>发布模式</dt>
       <dd>{{ topic.publish_mode | label }}<code class="mono" style="margin-left:8px">{{ topic.publish_mode }}</code></dd>
     </div>
+    <div>
+      <dt>报告类型</dt>
+      <dd>{{ topic.report_type | label }}<code class="mono" style="margin-left:8px">{{ topic.report_type }}</code></dd>
+    </div>
   </dl>
   <p class="hint">
     每日采集按这三个参数从仓库目录里挑候选（<a href="/ui/repositories?topic_id={{ topic.id }}">看这个主题的候选</a>），

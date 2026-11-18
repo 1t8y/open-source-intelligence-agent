@@ -9,7 +9,8 @@ from open_source_intelligence.persistence.base import utc_now
 from open_source_intelligence.persistence.models.reporting import ReportDraft, ReportSection
 
 from .context import ToolContext
-from .contracts import SaveReportSectionInput, SectionRef
+from .contracts import TOOL_INVALID_ARGUMENT, SaveReportSectionInput, SectionRef
+from .errors import ToolExecutionError
 from .outcome import ToolOutcome
 
 
@@ -32,7 +33,18 @@ def save_report_section(
     ctx: ToolContext,
     payload: SaveReportSectionInput,
 ) -> ToolOutcome:
-    """保存一个章节版本；内容摘要相同时直接返回已有版本。"""
+    """保存一个章节版本；内容摘要相同时直接返回已有版本。
+
+    `section_key` 还要过一道「属于当前报告类型」的窄校验：Pydantic 层只挡下了
+    不属于任何类型的垃圾键名，而这里拒绝的是一份热门工具追踪运行里冒出来的
+    `summary` 之类 —— 那会让草稿混进不属于本报告的章节。
+    """
+    if payload.section_key not in ctx.section_keys:
+        raise ToolExecutionError(
+            TOOL_INVALID_ARGUMENT,
+            f"section_key {payload.section_key!r} is not allowed for this report type; "
+            f"expected one of {', '.join(ctx.section_keys)}",
+        )
     draft = _load_or_create_draft(session, ctx)
     existing = session.scalar(
         select(ReportSection).where(

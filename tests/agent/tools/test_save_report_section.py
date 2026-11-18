@@ -5,7 +5,11 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from support import Workspace
 
-from open_source_intelligence.agent.tools.contracts import TOOL_INVALID_ARGUMENT
+from open_source_intelligence.agent.tools.context import ToolContext
+from open_source_intelligence.agent.tools.contracts import (
+    HOT_TOOL_SECTION_KEYS,
+    TOOL_INVALID_ARGUMENT,
+)
 from open_source_intelligence.agent.tools.registry import build_default_registry
 from open_source_intelligence.persistence.models.reporting import ReportDraft, ReportSection
 
@@ -134,6 +138,37 @@ def test_unknown_section_key_is_rejected(workspace: Workspace) -> None:
             "section_key": "freeform",
             "content_markdown": "text",
             "content_digest": "digest-xyz",
+        },
+    )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == TOOL_INVALID_ARGUMENT
+    assert _section_count(workspace.session) == 0
+
+
+def test_section_outside_report_type_is_rejected(workspace: Workspace) -> None:
+    """证明热门工具追踪运行拒绝趋势章节键：结构必须按报告类型对齐。"""
+    topic, run = _seed(workspace)
+    registry = build_default_registry()
+    # 热门工具追踪的运行只允许写它的五个章节键。
+    ctx = ToolContext(
+        agent_run_id=run.id,
+        topic_id=topic.id,
+        authorized_topic_ids=frozenset({topic.id}),
+        allowed_tools=("save_report_section",),
+        max_tool_calls=10,
+        section_keys=HOT_TOOL_SECTION_KEYS,
+    )
+
+    result = registry.invoke(
+        "save_report_section",
+        ctx,
+        workspace.session,
+        {
+            "section_key": "summary",
+            "content_markdown": "trend section",
+            "content_digest": "digest-out-of-type",
         },
     )
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from open_source_intelligence.agent.tools.contracts import TREND_SECTION_KEYS
+
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
@@ -14,6 +16,9 @@ class ToolContext:
     authorized_topic_ids: frozenset[int]
     allowed_tools: tuple[str, ...]
     max_tool_calls: int
+    #: 本次运行报告类型允许写入的章节键名，由运行时按 `topic.report_type` 注入。
+    #: `save_report_section` 据此拒绝不属于当前类型的章节，模型无法通过参数伪造。
+    section_keys: tuple[str, ...] = TREND_SECTION_KEYS
     tool_call_count: int = 0
     #: 已写入的 `tool_calls` 行 id，按序排列。`registry` 每记录一条就追加进来；
     #: 图再把尾部这些 id 收进它即将写入的步骤，因为执行调用时步骤行还不存在。

@@ -62,6 +62,7 @@ FIELD_COLUMNS: Final[dict[str, str]] = {
     "min_stars": "min_stars",
     "window_days": "window_days",
     "max_candidates": "max_candidates",
+    "report_type": "report_type",
     "publish_mode": "publish_mode",
     "enabled": "enabled",
 }

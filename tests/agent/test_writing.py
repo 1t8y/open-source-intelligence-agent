@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from open_source_intelligence.agent.tools.contracts import (
+    HOT_TOOL_SECTION_KEYS,
     REPORT_SECTION_KEYS,
     SaveReportSectionInput,
 )
@@ -142,3 +143,37 @@ def test_draft_section_matches_the_save_section_contract() -> None:
 def test_draft_section_reuses_the_shared_section_whitelist() -> None:
     with pytest.raises(ValueError):
         DraftSection(section_key="metrics", content_markdown="x")
+
+
+def _hot_tool_payload(**overrides: Any) -> str:
+    sections = [
+        {"section_key": key, "content_markdown": f"## {key}", "citations": []}
+        for key in HOT_TOOL_SECTION_KEYS
+    ]
+    if overrides:
+        sections[0].update(overrides)
+    return json.dumps({"sections": sections}, ensure_ascii=False)
+
+
+def test_parses_hot_tool_sections_when_requested() -> None:
+    """证明传入报告类型章节键名时，热门工具追踪的结构被接受。"""
+    sections = parse_draft_payload(_hot_tool_payload(), section_keys=HOT_TOOL_SECTION_KEYS)
+    assert [section.section_key for section in sections] == list(HOT_TOOL_SECTION_KEYS)
+
+
+def test_hot_tool_rejects_trend_sections() -> None:
+    """证明用热门工具追踪的章节校验趋势六节时会被拒：结构必须按报告类型对齐。"""
+    with pytest.raises(DraftPayloadError):
+        parse_draft_payload(_payload(), section_keys=HOT_TOOL_SECTION_KEYS)
+
+
+def test_hot_tool_markdown_fallback_maps_hot_tool_headings() -> None:
+    text = (
+        "## 本期概览\n整体升温。\n\n"
+        "## 热门工具盘点\n- 工具甲\n\n"
+        "## 能力洞察\n- 插件化\n\n"
+        "## 采纳建议\n- 试用\n\n"
+        "## 附录\n见上。\n"
+    )
+    sections = parse_draft_payload(text, section_keys=HOT_TOOL_SECTION_KEYS)
+    assert [section.section_key for section in sections] == list(HOT_TOOL_SECTION_KEYS)

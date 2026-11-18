@@ -56,6 +56,29 @@ def load_prompt(stage: str, version: str, directory: str | None = None) -> str:
     return text
 
 
+def load_report_prompt(
+    stage: str,
+    report_type: str,
+    version: str,
+    directory: str | None = None,
+) -> str:
+    """返回某报告类型在某 Prompt 版本下、某一阶段的指令。
+
+    趋势报告（`trend`）沿用裸名资产（`draft_v1.md` / `plan_v1.md`）；热门工具追踪
+    （`hot_tool`）优先读 `{stage}_hot_tool_{version}.md`，缺文件时回退到裸名资产。回退
+    不是兜底糊弄：它让「还没写专属 Prompt 的类型」暂时套用趋势指令，而不是直接崩掉。
+    """
+    if stage not in PROMPT_STAGES:
+        raise ValueError(f"unknown prompt stage: {stage}")
+    if report_type != "trend":
+        candidate = resolve_prompts_dir(directory) / f"{stage}_{report_type}_{version}.md"
+        if candidate.is_file():
+            text = candidate.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+    return load_prompt(stage, version, directory)
+
+
 def clear_prompt_cache() -> None:
     """清空 Prompt 缓存，供测试和环境变量重载使用。"""
     load_prompt.cache_clear()

@@ -236,6 +236,39 @@ def test_runtime_completes_a_full_research_trail(session: Session, workspace: Wo
     assert all(section.citations_json for section in sections)
 
 
+def test_runtime_completes_a_hot_tool_research_trail(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """证明热门工具追踪主题走完同一条研究链路，只是产出五节而非六节。"""
+    seeded = seed_topic(workspace, repo_count=2)
+    seeded.topic.report_type = "hot_tool"
+    session.commit()
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        now=NOW,
+    )
+
+    assert result.status == "completed"
+    assert result.error_code is None
+    assert result.section_count == 5
+
+    sections = session.scalars(
+        select(ReportSection).where(ReportSection.report_draft_id == result.report_draft_id)
+    ).all()
+    assert {section.section_key for section in sections} == {
+        "overview",
+        "tools",
+        "capabilities",
+        "adoption",
+        "appendix",
+    }
+    assert all(section.citations_json for section in sections)
+
+
 def test_runtime_records_every_tool_call_against_the_run(
     session: Session,
     workspace: Workspace,

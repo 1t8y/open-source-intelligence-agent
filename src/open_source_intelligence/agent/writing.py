@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from open_source_intelligence.agent.tools.contracts import (
+    ALL_SECTION_KEYS,
     MAX_CITATIONS,
     MAX_SECTION_CHARS,
     REPORT_SECTION_KEYS,
@@ -46,6 +47,19 @@ _SECTION_HEADINGS: dict[str, str] = {
     "行动建议": "recommendation",
     "appendix": "appendix",
     "附录": "appendix",
+    "overview": "overview",
+    "概览": "overview",
+    "本期概览": "overview",
+    "tools": "tools",
+    "工具": "tools",
+    "热门工具": "tools",
+    "热门工具盘点": "tools",
+    "capabilities": "capabilities",
+    "能力": "capabilities",
+    "能力洞察": "capabilities",
+    "adoption": "adoption",
+    "采纳": "adoption",
+    "采纳建议": "adoption",
 }
 _HEADING_PATTERN = re.compile(r"^#{1,4}\s*(.+?)\s*$", re.MULTILINE)
 
@@ -71,9 +85,13 @@ class DraftSection(BaseModel):
     @field_validator("section_key")
     @classmethod
     def validate_section_key(cls, value: str) -> str:
-        """只有报告模板里的章节可以被起草。"""
-        if value not in REPORT_SECTION_KEYS:
-            raise ValueError(f"section_key must be one of: {', '.join(REPORT_SECTION_KEYS)}")
+        """只有已知章节键名可以被起草。
+
+        这里只挡「不属于任何报告类型」的键名；是否属于当前报告类型的那一套，由
+        `parse_draft_payload` 按 `section_keys` 参数核对。
+        """
+        if value not in ALL_SECTION_KEYS:
+            raise ValueError(f"section_key must be one of: {', '.join(ALL_SECTION_KEYS)}")
         return value
 
 
@@ -108,17 +126,19 @@ def _extract_json(text: str) -> Any:
     raise DraftPayloadError("model response did not contain a JSON object")
 
 
-def _split_markdown_sections(text: str) -> list[DraftSection]:
+def _split_markdown_sections(text: str, section_keys: tuple[str, ...]) -> list[DraftSection]:
     """把纯 Markdown 的回答按标题切分成章节。
 
     这是给「无视 JSON 契约、直接写了份正常报告」的模型准备的兜底。每个
-    `## heading` 成为一个章节；能映射到已知键名的标题被保留，而没有标题的
+    `## heading` 成为一个章节；能映射到当前报告类型键名的标题被保留，而没有标题的
     段落会挂到第一个已知章节上。这些章节不带引用，因此会在 `verify` 阶段
     被标记为待复核，而不是带着捏造的证据发布出去。
     """
     stripped = text.strip()
     if not stripped:
         raise DraftPayloadError("model response was empty")
+
+    allowed = frozenset(section_keys)
 
     # 先标出各标题的位置；第一个标题之前的内容属于导语，直接丢掉。
     matches = list(_HEADING_PATTERN.finditer(stripped))
@@ -130,7 +150,7 @@ def _split_markdown_sections(text: str) -> list[DraftSection]:
     for index, match in enumerate(matches):
         heading = match.group(1).strip()
         key = _SECTION_HEADINGS.get(heading.lower())
-        if key is None:
+        if key is None or key not in allowed:
             continue
         end = matches[index + 1].start() if index + 1 < len(matches) else len(stripped)
         body = stripped[match.end() : end].strip()
@@ -138,7 +158,7 @@ def _split_markdown_sections(text: str) -> list[DraftSection]:
             continue
         sections.append(DraftSection(section_key=key, content_markdown=body[:MAX_SECTION_CHARS]))
     if not sections:
-        # 有标题，但没有一个是报告章节：模型答的是别的东西（一份计划、一句道歉、
+        # 有标题，但没有一个是当前报告类型的章节：模型答的是别的东西（一份计划、一句道歉、
         # 一段工具轨迹）。返回空列表会被记为「保存了 0 个章节，内容可
         # 恢复」并送人工复核，而诚实的读法是：根本没有草稿到达。
         raise DraftPayloadError(
@@ -159,17 +179,23 @@ def _dedupe_keep_first(sections: list[DraftSection]) -> list[DraftSection]:
     return ordered
 
 
-def parse_draft_payload(text: str) -> list[DraftSection]:
+def parse_draft_payload(
+    text: str,
+    section_keys: tuple[str, ...] = REPORT_SECTION_KEYS,
+) -> list[DraftSection]:
     """校验模型草稿响应，并为每个模板槽位返回一个章节。
 
     JSON 是主契约，必须每个章节恰好出现一次。若模型改用 Markdown
     作答，则按标题切分；缺失的章节就保持缺失（由调用方判断这是否可
     复核），而不是在这里编造出来。
+
+    `section_keys` 是本次运行报告类型要求的章节键名 —— 图按 `topic.report_type`
+    传入，因此趋势报告与热门工具追踪报告各自校验自己那一套结构。
     """
     try:
         raw = _extract_json(text)
     except DraftPayloadError:
-        return _dedupe_keep_first(_split_markdown_sections(text))
+        return _dedupe_keep_first(_split_markdown_sections(text, section_keys))
     try:
         payload = DraftPayload.model_validate(raw)
     except ValidationError as exc:
@@ -177,9 +203,9 @@ def parse_draft_payload(text: str) -> list[DraftSection]:
             f"draft payload failed validation: {exc.error_count()} error(s)"
         ) from exc
     keys = sorted(section.section_key for section in payload.sections)
-    if keys != sorted(REPORT_SECTION_KEYS):
+    if keys != sorted(section_keys):
         raise DraftPayloadError(
             "draft must contain each report section exactly once: "
-            f"expected {sorted(REPORT_SECTION_KEYS)}, got {keys}"
+            f"expected {sorted(section_keys)}, got {keys}"
         )
     return list(payload.sections)

@@ -51,6 +51,7 @@ WriteUser = Annotated[User, Depends(require_roles(*TOPIC_WRITE_ROLES))]
 DbSession = Annotated[Session, Depends(get_db_session)]
 
 PublishMode = Literal["AUTO", "AUTO_WITH_DELAY", "MANUAL"]
+ReportType = Literal["trend", "hot_tool"]
 
 TopicTerm = Annotated[str, Field(min_length=1, max_length=64)]
 
@@ -85,6 +86,7 @@ class TopicResponse(BaseModel):
     min_stars: int
     window_days: int
     max_candidates: int
+    report_type: str
     publish_mode: str
     enabled: bool
     created_by: int
@@ -117,6 +119,7 @@ class _TopicFields(BaseModel):
     min_stars: int | None = Field(default=None, ge=0)
     window_days: int | None = Field(default=None, ge=1, le=365)
     max_candidates: int | None = Field(default=None, ge=1, le=200)
+    report_type: ReportType | None = None
     enabled: bool | None = None
 
 
@@ -167,6 +170,7 @@ def _to_response(topic: Topic) -> TopicResponse:
         min_stars=topic.min_stars,
         window_days=topic.window_days,
         max_candidates=topic.max_candidates,
+        report_type=topic.report_type,
         publish_mode=topic.publish_mode,
         enabled=topic.enabled,
         created_by=topic.created_by,

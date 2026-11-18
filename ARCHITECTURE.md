@@ -147,7 +147,8 @@ open-source-intelligence-agent/
 │   ├── adr/                     # ADR-001~005
 │   ├── samples/                 # weekly-report-sample.md
 │   └── assets/                  # README 截图与 demo.mp4
-├── prompts/                     # 版本化 Prompt（draft_v1.md / plan_v1.md）
+├── prompts/                     # 版本化 Prompt（draft_v1.md / plan_v1.md；报告类型另有
+│                                # draft_hot_tool_v1.md / plan_hot_tool_v1.md）
 ├── datasets/                    # 冻结评测集 weekly-agent-quality.v1~v4.json
 ├── infra/docker-compose.yml     # mysql / redis / api / worker / beat 五服务
 ├── migrations/                  # env.py、script.py.mako、versions/（19 个版本脚本）
@@ -478,7 +479,7 @@ Celery Beat
 
 ### 9.3 报告生成、验证与发布
 
-- `reports/composition.py` 只读取指定运行的草稿与最新章节版本，按固定顺序合成 Markdown，**不重新调用模型**；六个章节必须齐全，每节至少一条引用，含数字的章节至少一条 `metric` 引用。
+- `reports/composition.py` 只读取指定运行的草稿与最新章节版本，按固定顺序合成 Markdown，**不重新调用模型**；章节按 `topic.report_type` 分派 —— `trend`（趋势追踪，默认）六节 `summary`/`trend`/`highlights`/`risks`/`recommendation`/`appendix`，`hot_tool`（热门工具追踪）五节 `overview`/`tools`/`capabilities`/`adoption`/`appendix`，每节至少一条引用，含数字的章节至少一条 `metric` 引用。统计表同样按类型分派：趋势类渲染净增 star 与占比，热门工具类渲染 stars/forks/语言，派生数字一律由本模块计算、不让模型写。
 - 引用解析三类（`repo_snapshots` / `repository_contents` / `reports`），按版本归属；未发布的报告不能作为正式引用。报告版本不可变：内容变化追加新版本，幂等生成不增版本，回退同样追加。
 - `reports/verification.py` 在发布前对**已持久化报告**重跑结构、引用、数字、敏感四项检查，而不是信任撰写期草稿；每次验证写一行 `report_verifications`。
 - 发布决策是「上限 + 收紧」：`publish_mode` 是上限，验证失败、低引用覆盖、敏感内容、`CONFIDENTIAL`、运行不干净、命中注入、首次配置、模型 / Prompt / 工具策略变化、`AUTO` 下非内部可见，都会让决策收紧为 `pending_review`；`MANUAL` 额外要求同版本 `approve` 审核。

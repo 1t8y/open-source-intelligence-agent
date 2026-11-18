@@ -630,6 +630,7 @@ Agent 只能调用以下白名单工具：
 - `agent_steps` 在运行内按 `step_index` 唯一递增。
 - `agent_configs` 唯一键为 `(name, version)`；`agent_runs` 必须绑定 `pipeline_run_id`、`topic_id` 和 `agent_config_id`。
 - 每个 `agent_run` 最多一个 `report_drafts` 行（`UNIQUE(agent_run_id)`）；`report_sections` 在草稿内按 `(report_draft_id, section_key, version)` 唯一，幂等键为 `(report_draft_id, section_key, content_digest)`。
+- `topics.report_type` 决定该主题产出哪种报告，取值 `trend`（趋势追踪，默认）/ `hot_tool`（热门工具追踪），受 `report_type_valid` CHECK 约束。章节键名由它分派：`trend` 对应 `summary`/`trend`/`highlights`/`risks`/`recommendation`/`appendix` 六节，`hot_tool` 对应 `overview`/`tools`/`capabilities`/`adoption`/`appendix` 五节。起草 Prompt、草稿解析、报告编排与验证都以 `topic.report_type` 为准（`section_keys_for`），主题被删除时回退 `trend`。
 - `repository_contents` 唯一键为 `(repository_id, content_type)`。
 - `tool_calls` 必须关联 `agent_run_id`，只保存脱敏且截断后的参数与结果摘要；工具预算与白名单由 `agent_configs.tool_policy_json` 提供，运行时再收敛为 `ToolContext.allowed_tools`。
 - 五个工具中只有 `save_report_section` 写数据且只写当前运行草稿；其余四个工具不得产生任何领域写入，由注册表的只读写保护强制并在冒烟中验证。
