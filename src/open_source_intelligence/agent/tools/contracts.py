@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Generic, Literal, TypeVar
 
@@ -88,6 +89,92 @@ def section_keys_for(report_type: str) -> tuple[str, ...]:
 
 #: 既有代码里直接引用六个章节的地方，沿用趋势章节键名（默认行为）。
 REPORT_SECTION_KEYS = TREND_SECTION_KEYS
+
+
+#: 白名单证据工具名，与 `graph.py` 的验证节点、`offline.py` 的桩模型共享。
+PROFILE_TOOL = "get_repository_profile"
+METRICS_TOOL = "query_repo_metrics"
+CONTENT_TOOL = "get_repository_content"
+PRIOR_TOOL = "search_prior_reports"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceRequirement:
+    """某类报告要通过证据校验所需收集的证据规格。
+
+    - `per_candidate_tools`：仓库级证据，**每个**候选仓库都必须有成功观测；
+    - `at_least_one_tools`：仓库级证据，全体候选**至少一份**成功观测；
+    - `at_least_one_topic_tools`：主题级证据（不绑定单个仓库），至少一次成功观测。
+
+    趋势类沿用既有语义（每候选画像 + 指标，至少一份正文 + 一次历史基线）；热门工具
+    追踪以「逐仓库盘点核心功能」为主线，正文（README）是每候选的硬要求，指标退为
+    「至少一份」的佐证。两者证据下限都是 `2 × 候选数 + 2`，但语义不同。
+    """
+
+    per_candidate_tools: tuple[str, ...]
+    at_least_one_tools: tuple[str, ...]
+    at_least_one_topic_tools: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchBudgetSpec:
+    """某类报告研究运行的预算加值。
+
+    `extra_*` 是在 `Settings` 基础预算（`agent_max_*`）之上的加值，而不是替换：
+    `trend` 加值为零，保持既有预算不变；新报告类型若要更多轮次/调用，只在这里加，
+    不动 `Settings` 默认值，也不改 `agent_configs` 存储值。
+    """
+
+    extra_loops: int = 0
+    extra_model_calls: int = 0
+    extra_tool_calls: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchSpec:
+    """一类报告的研究规格：证据要求 + 预算加值。"""
+
+    evidence: EvidenceRequirement
+    budget: ResearchBudgetSpec
+
+
+#: 报告类型 -> 研究规格。未来新增报告类型只需在这里加一个条目，验证器与预算门槛
+#: 会自动跟随，无需改 `graph.py` / `runtime.py` 里的分派逻辑。
+RESEARCH_SPECS_BY_TYPE: dict[str, ResearchSpec] = {
+    "trend": ResearchSpec(
+        evidence=EvidenceRequirement(
+            per_candidate_tools=(PROFILE_TOOL, METRICS_TOOL),
+            at_least_one_tools=(CONTENT_TOOL,),
+            at_least_one_topic_tools=(PRIOR_TOOL,),
+        ),
+        budget=ResearchBudgetSpec(),
+    ),
+    "hot_tool": ResearchSpec(
+        evidence=EvidenceRequirement(
+            per_candidate_tools=(PROFILE_TOOL, CONTENT_TOOL),
+            at_least_one_tools=(METRICS_TOOL,),
+            at_least_one_topic_tools=(PRIOR_TOOL,),
+        ),
+        # 逐仓库盘点核心功能要比趋势类多读 `n - 1` 份正文，分布在更多轮次里，也更容易
+        # 在 nudge 引导补证据时撞上轮次上限。多给两轮循环与两次模型调用，避免像真实模型
+        # 那样证据没凑齐就停。
+        budget=ResearchBudgetSpec(extra_loops=2, extra_model_calls=2),
+    ),
+}
+
+
+def research_spec_for(report_type: str) -> ResearchSpec:
+    """返回某报告类型的研究规格；未知类型回退到趋势类型。
+
+    回退原因与 `section_keys_for` 一致：`report_type` 受数据库 CHECK 约束，正常不会
+    出现未知值，这里只是让读到无法识别的类型不至于让研究运行直接崩掉。
+    """
+    return RESEARCH_SPECS_BY_TYPE.get(report_type, RESEARCH_SPECS_BY_TYPE["trend"])
+
+
+def evidence_requirement_for(report_type: str) -> EvidenceRequirement:
+    """返回某报告类型的证据规格。"""
+    return research_spec_for(report_type).evidence
 
 
 class StrictModel(BaseModel):

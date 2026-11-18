@@ -667,6 +667,20 @@ def _detect_section_keys(messages: Sequence[ChatMessage]) -> tuple[str, ...]:
     return REPORT_SECTION_KEYS
 
 
+def _is_hot_tool_prompt(messages: Sequence[ChatMessage]) -> bool:
+    """识别规划/起草系统提示是否要求「热门工具追踪」报告。
+
+    规划提示与起草提示都点明「热门工具追踪」，起草提示还额外出现 `capabilities`
+    章节键名；两者任一命中即判定为热门工具追踪。
+    """
+    for message in messages:
+        if message.role != "system":
+            continue
+        if "热门工具追踪" in message.content or "capabilities" in message.content:
+            return True
+    return False
+
+
 class OfflineModelClient:
     """模型客户端契约的确定性、无网络实现。"""
 
@@ -767,9 +781,15 @@ class OfflineModelClient:
                 ]
             )
 
+        # 深读 README 是最贵的一步：趋势报告只需至少一份正文做定性交叉核对，桩只把它
+        # 花在排名靠前的候选上；热门工具追踪的正文是「逐仓库盘点核心功能」的主线，必须
+        # 覆盖全部候选，否则那些没读 README 的工具只能落得「待人工复核」。
+        content_candidates = (
+            candidates if _is_hot_tool_prompt(messages) else candidates[: self._content_repo_limit]
+        )
         pending = [
             repo_id
-            for repo_id in candidates[: self._content_repo_limit]
+            for repo_id in content_candidates
             if ("get_repository_content", repo_id) not in requested
         ]
         if pending:

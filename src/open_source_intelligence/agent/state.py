@@ -100,4 +100,4 @@ class AgentState(TypedDict, total=False):
     error_code: str | None
     error_message: str | None
     incomplete: bool
-    readme_nudged: bool
+    evidence_nudged: bool

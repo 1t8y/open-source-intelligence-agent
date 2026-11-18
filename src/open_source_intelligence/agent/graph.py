@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, Literal
@@ -55,9 +55,15 @@ from open_source_intelligence.agent.state import (
 )
 from open_source_intelligence.agent.tools.context import ToolContext
 from open_source_intelligence.agent.tools.contracts import (
+    CONTENT_TOOL,
+    METRICS_TOOL,
+    PRIOR_TOOL,
+    PROFILE_TOOL,
     REPORT_SECTION_KEYS,
+    EvidenceRequirement,
     SectionRef,
     ToolResult,
+    evidence_requirement_for,
 )
 from open_source_intelligence.agent.tools.registry import ToolRegistry
 from open_source_intelligence.agent.writing import (
@@ -98,6 +104,9 @@ class GraphDependencies:
     #: 本次运行报告类型要求的章节键名，由运行时按 `topic.report_type` 注入。
     #: 起草校验与「缺少章节」判断都以它为准，而不是写死趋势六节。
     section_keys: tuple[str, ...] = REPORT_SECTION_KEYS
+    #: 本次运行的报告类型，由运行时按 `topic.report_type` 注入。验证节点据此分派
+    #: 证据要求（每候选需要哪些工具、全体至少一份哪些工具）。
+    report_type: str = "trend"
 
 
 def _elapsed_ms(started: float) -> int:
@@ -422,11 +431,71 @@ def _observe_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     return {"evidence": evidence, "guard_triggered": guard_triggered}
 
 
-def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
-    """检查这份证据基础能否支撑一份内部周报草稿。
+#: 证据工具名 -> 中文标签，用于验证理由与 nudge 提示。
+_TOOL_LABELS: dict[str, str] = {
+    PROFILE_TOOL: "画像",
+    METRICS_TOOL: "指标",
+    CONTENT_TOOL: "缓存内容",
+    PRIOR_TOOL: "历史报告基线",
+}
 
-    草稿需要的远不止计数器：每个候选都必须带画像与指标序列，必须查过该主题
-    已发布的历史以取得基线，并且至少有一个候选读过它缓存的内容。
+#: 缺失证据 -> 给规划器的一句话指引，点出该补哪个工具。
+_NUDGE_INSTRUCTIONS: dict[str, str] = {
+    PROFILE_TOOL: "调用 `get_repository_profile` 为缺失的候选仓库补齐画像",
+    METRICS_TOOL: "调用 `query_repo_metrics` 至少为一个候选仓库获取指标序列",
+    CONTENT_TOOL: "调用 `get_repository_content` 至少阅读一个候选仓库（优先排名最靠前的）",
+    PRIOR_TOOL: "调用 `search_prior_reports` 查询该主题的历史报告",
+}
+
+
+def _index_evidence(
+    evidence: Sequence[EvidenceRef],
+) -> tuple[dict[str, set[int]], set[str]]:
+    """把证据按「仓库级 / 主题级」索引，供验证节点按报告类型分派。
+
+    仓库级证据绑定 `repo_id`，主题级证据（如历史报告查询）不绑定。失败观测在任何
+    分支看到它之前就被跳过。
+    """
+    repo_evidence: dict[str, set[int]] = {}
+    topic_evidence: set[str] = set()
+    for item in evidence:
+        if not item.ok:
+            continue
+        if item.repo_id is not None:
+            repo_evidence.setdefault(item.tool_name, set()).add(item.repo_id)
+        else:
+            topic_evidence.add(item.tool_name)
+    return repo_evidence, topic_evidence
+
+
+def _first_missing_evidence(
+    requirement: EvidenceRequirement,
+    repo_evidence: dict[str, set[int]],
+    topic_evidence: set[str],
+    candidates: list[int],
+) -> str | None:
+    """返回模型最值得补的一类缺失证据的工具名。
+
+    优先「全体至少一份」的软要求（模型最容易漏），其次是「每个候选都要」的硬要求。
+    """
+    for tool in requirement.at_least_one_tools:
+        if candidates and not repo_evidence.get(tool):
+            return tool
+    for tool in requirement.at_least_one_topic_tools:
+        if candidates and tool not in topic_evidence:
+            return tool
+    for tool in requirement.per_candidate_tools:
+        if any(repo_id not in repo_evidence.get(tool, ()) for repo_id in candidates):
+            return tool
+    return None
+
+
+def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
+    """检查这份证据基础能否支撑一份草稿。
+
+    草稿需要的远不止计数器：证据要求由报告类型决定（`contracts.research_spec_for`）——
+    趋势类要求每个候选带画像与指标，热门工具追踪要求每个候选带画像与已读正文，两者都
+    要求至少一份主题级历史基线。
     """
     started = time.perf_counter()
     if not deps.run_verifier:
@@ -456,40 +525,31 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
     guard_triggered = bool(state.get("guard_triggered")) or any(
         item.guard_triggered for item in evidence
     )
-    profiles = {
-        item.repo_id
-        for item in evidence
-        if item.ok and item.tool_name == "get_repository_profile" and item.repo_id is not None
-    }
-    metrics = {
-        item.repo_id
-        for item in evidence
-        if item.ok and item.tool_name == "query_repo_metrics" and item.repo_id is not None
-    }
-    content_repos = {
-        item.repo_id
-        for item in evidence
-        if item.ok and item.tool_name == "get_repository_content" and item.repo_id is not None
-    }
-    has_prior_baseline = any(
-        item.ok and item.tool_name == "search_prior_reports" for item in evidence
-    )
+
+    requirement = evidence_requirement_for(deps.report_type)
+    repo_evidence, topic_evidence = _index_evidence(evidence)
+
     covered = sorted(
-        repo_id for repo_id in candidates if repo_id in profiles and repo_id in metrics
+        repo_id
+        for repo_id in candidates
+        if all(repo_id in repo_evidence.get(tool, ()) for tool in requirement.per_candidate_tools)
     )
-    missing = sorted(
-        repo_id for repo_id in candidates if repo_id not in profiles or repo_id not in metrics
-    )
+    missing = sorted(set(candidates) - set(covered))
+    content_repos = repo_evidence.get(CONTENT_TOOL, set())
+    has_prior_baseline = PRIOR_TOOL in topic_evidence
 
     reasons: list[str] = []
     if not candidates:
         reasons.append("no candidate repository was selected for this topic")
     if missing:
-        reasons.append(f"{len(missing)} candidate repository(ies) lack profile or metric evidence")
-    if candidates and not has_prior_baseline:
-        reasons.append("no prior report baseline was queried")
-    if candidates and not content_repos:
-        reasons.append("no cached repository content was read")
+        labels = " + ".join(_TOOL_LABELS[tool] for tool in requirement.per_candidate_tools)
+        reasons.append(f"{len(missing)} candidate repository(ies) lack {labels} evidence")
+    for tool in requirement.at_least_one_tools:
+        if candidates and not repo_evidence.get(tool):
+            reasons.append(f"no {_TOOL_LABELS[tool]} was read")
+    for tool in requirement.at_least_one_topic_tools:
+        if candidates and tool not in topic_evidence:
+            reasons.append(f"no {_TOOL_LABELS[tool]} was queried")
     if guard_triggered:
         reasons.append("untrusted content contained instruction-like text")
 
@@ -509,32 +569,32 @@ def _verify_node(state: AgentState, deps: GraphDependencies) -> dict[str, Any]:
         latency_ms=_elapsed_ms(started),
     )
 
-    # 针对模型反复留着不补的那个缺口推一把：它做完画像 + 指标 + 历史就
-    # 停下，从不读 README，于是验证器一直「不充分」，直到预算耗尽。当
-    # 唯一缺的一类就是缓存内容时，直接告诉规划器缺什么，而不是让它去猜。
-    # 只发一次，这样仍然满足不了条件的运行不会每轮都堆积同一句话。
+    # 针对模型反复留着不补的那个缺口推一把：直接告诉规划器缺的是哪一类证据，而不是
+    # 让它去猜。只发一次，这样仍然满足不了条件的运行不会每轮都堆积同一句话。
     nudge_messages: list[ChatMessage] = []
+    missing_tool = _first_missing_evidence(requirement, repo_evidence, topic_evidence, candidates)
     if (
         not result.sufficient
         and candidates
-        and not content_repos
+        and missing_tool is not None
         and not guard_triggered
-        and not state.get("readme_nudged", False)
+        and not state.get("evidence_nudged", False)
     ):
+        label = _TOOL_LABELS[missing_tool]
+        instruction = _NUDGE_INSTRUCTIONS[missing_tool]
         nudge_messages = [
             ChatMessage(
                 role="user",
                 content=(
-                    "证据校验仍未通过：你已经为所有候选仓库取了画像和指标、查询了历史报告，"
-                    "但还没有阅读任何一份候选仓库的缓存内容。请调用 `get_repository_content` "
-                    "至少阅读一个候选仓库（优先排名最靠前的），否则整轮证据会被判为不完整。"
+                    f"证据校验仍未通过：缺少「{label}」这一类证据。请{instruction}，"
+                    "否则整轮证据会被判为不完整。"
                 ),
             )
         ]
     return {
         "verification": result,
         "guard_triggered": guard_triggered,
-        "readme_nudged": bool(state.get("readme_nudged", False)) or bool(nudge_messages),
+        "evidence_nudged": bool(state.get("evidence_nudged", False)) or bool(nudge_messages),
         "messages": nudge_messages,
     }
 

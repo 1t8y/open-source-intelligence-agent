@@ -56,9 +56,10 @@ def _evidence(*, tool_name: str, repo_id: int | None = None, ok: bool = True) ->
 
 
 def _verify_deps() -> Mock:
-    """一个依赖替身，只暴露 `_verify_node` 会读的两样东西。"""
+    """一个依赖替身，只暴露 `_verify_node` 会读的几样东西。"""
     deps = Mock()
     deps.run_verifier = True
+    deps.report_type = "trend"
     deps.recorder.record.return_value = Mock()
     return deps
 
@@ -87,7 +88,7 @@ def test_verify_nudges_the_planner_when_no_content_was_read() -> None:
     assert result["verification"].sufficient is False
     assert len(result["messages"]) == 1
     assert "get_repository_content" in result["messages"][0].content
-    assert result["readme_nudged"] is True
+    assert result["evidence_nudged"] is True
 
 
 def test_verify_does_not_nudge_twice() -> None:
@@ -95,7 +96,7 @@ def test_verify_does_not_nudge_twice() -> None:
     state = _state(
         candidate_repo_ids=[1],
         evidence=[_evidence(tool_name="get_repository_profile", repo_id=1)],
-        readme_nudged=True,
+        evidence_nudged=True,
     )
 
     result = _verify_node(state, _verify_deps())  # type: ignore[arg-type]
@@ -119,6 +120,49 @@ def test_verify_does_not_nudge_when_content_was_read() -> None:
 
     assert result["verification"].sufficient is True
     assert result["messages"] == []
+
+
+def test_verify_hot_tool_requires_content_per_candidate() -> None:
+    """热门工具追踪把正文当主线：每个候选都要有缓存内容，指标退为至少一份。"""
+    deps = _verify_deps()
+    deps.report_type = "hot_tool"
+    state = _state(
+        candidate_repo_ids=[1, 2],
+        evidence=[
+            _evidence(tool_name="get_repository_profile", repo_id=1),
+            _evidence(tool_name="get_repository_profile", repo_id=2),
+            _evidence(tool_name="get_repository_content", repo_id=1),
+            _evidence(tool_name="query_repo_metrics", repo_id=1),
+            _evidence(tool_name="search_prior_reports"),
+        ],
+    )
+
+    result = _verify_node(state, deps)  # type: ignore[arg-type]
+
+    assert result["verification"].sufficient is False
+    assert result["verification"].missing_repo_ids == [2]
+
+
+def test_verify_hot_tool_passes_when_every_candidate_has_content() -> None:
+    """证明热门工具追踪在「每候选画像 + 正文、至少一份指标 + 历史基线」时放行。"""
+    deps = _verify_deps()
+    deps.report_type = "hot_tool"
+    state = _state(
+        candidate_repo_ids=[1, 2],
+        evidence=[
+            _evidence(tool_name="get_repository_profile", repo_id=1),
+            _evidence(tool_name="get_repository_profile", repo_id=2),
+            _evidence(tool_name="get_repository_content", repo_id=1),
+            _evidence(tool_name="get_repository_content", repo_id=2),
+            _evidence(tool_name="query_repo_metrics", repo_id=1),
+            _evidence(tool_name="search_prior_reports"),
+        ],
+    )
+
+    result = _verify_node(state, deps)  # type: ignore[arg-type]
+
+    assert result["verification"].sufficient is True
+    assert result["verification"].covered_repo_ids == [1, 2]
 
 
 def test_routes_to_write_once_evidence_is_sufficient() -> None:

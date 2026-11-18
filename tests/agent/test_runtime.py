@@ -33,7 +33,7 @@ from open_source_intelligence.agent.runtime import (
     evidence_tool_floor,
     run_research_agent,
 )
-from open_source_intelligence.agent.tools.contracts import TOOL_INTERNAL_ERROR
+from open_source_intelligence.agent.tools.contracts import TOOL_INTERNAL_ERROR, research_spec_for
 from open_source_intelligence.agent.tools.errors import ToolExecutionError
 from open_source_intelligence.agent.tools.registry import (
     ToolRegistry,
@@ -269,6 +269,29 @@ def test_runtime_completes_a_hot_tool_research_trail(
     assert all(section.citations_json for section in sections)
 
 
+def test_hot_tool_research_reads_every_candidate_content(
+    session: Session,
+    workspace: Workspace,
+) -> None:
+    """热门工具追踪的正文是每候选硬要求：离线桩也要覆盖全部候选，而非只读前几个。"""
+    seeded = seed_topic(workspace, repo_count=3)
+    seeded.topic.report_type = "hot_tool"
+    session.commit()
+
+    result = run_research_agent(
+        session,
+        topic_id=seeded.topic.id,
+        settings=build_settings(),
+        now=NOW,
+    )
+
+    assert result.status == "completed"
+    assert result.verification is not None
+    assert result.verification.sufficient is True
+    # 三个候选都读到了正文，而不是只有离线桩默认的 content_repo_limit（2）个。
+    assert result.verification.content_repo_ids == [repo.id for repo in seeded.repositories]
+
+
 def test_runtime_records_every_tool_call_against_the_run(
     session: Session,
     workspace: Workspace,
@@ -340,9 +363,23 @@ def test_every_tool_call_is_attached_to_the_step_that_made_it(
 
 
 def test_the_tool_budget_floor_matches_the_evidence_the_verifier_demands() -> None:
-    """`2 × 候选数 + 2`：每个候选各一份画像与一组指标，再加一份 README、一次基线查询。"""
+    """`2 × 候选数 + 2`：趋势类每候选画像+指标，热门工具类每候选画像+正文，下限数值一致。"""
     assert evidence_tool_floor(0) == 2
     assert evidence_tool_floor(5) == 12
+    # 热门工具追踪的证据规格不同（正文是每候选硬要求、指标退为至少一份），但下限同样是
+    # `2n + 2`。未来若新增第三种报告类型改变了每候选证据数量，这里会自动跟随注册表。
+    assert evidence_tool_floor(5, "hot_tool") == 12
+
+
+def test_hot_tool_budget_spec_adds_headroom_trend_keeps_default() -> None:
+    """热门工具追踪要逐仓库读正文，需要更多轮次与模型调用；趋势类保持原有预算不变。"""
+    trend = research_spec_for("trend")
+    hot_tool = research_spec_for("hot_tool")
+
+    assert trend.budget.extra_loops == 0
+    assert trend.budget.extra_model_calls == 0
+    assert hot_tool.budget.extra_loops > 0
+    assert hot_tool.budget.extra_model_calls > 0
 
 
 def test_the_default_tool_budget_leaves_headroom_above_the_evidence_floor() -> None:

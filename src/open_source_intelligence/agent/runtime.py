@@ -37,7 +37,11 @@ from open_source_intelligence.agent.recording import StepRecorder
 from open_source_intelligence.agent.state import AgentState, VerificationResult
 from open_source_intelligence.agent.tooling import build_tool_schemas
 from open_source_intelligence.agent.tools.context import ToolContext
-from open_source_intelligence.agent.tools.contracts import section_keys_for
+from open_source_intelligence.agent.tools.contracts import (
+    evidence_requirement_for,
+    research_spec_for,
+    section_keys_for,
+)
 from open_source_intelligence.agent.tools.registry import (
     WHITELIST,
     ToolRegistry,
@@ -153,12 +157,14 @@ def _plan_schemas(
     )
 
 
-def evidence_tool_floor(candidate_count: int) -> int:
+def evidence_tool_floor(candidate_count: int, report_type: str = "trend") -> int:
     """返回验证器有可能通过之前，一次运行所需的最少工具调用数。
 
-    验证器要求三类证据（`graph._verify_node`）：每个候选的画像**和**指标、
-    至少一份缓存的 README、至少一次历史报告查询。也就是 `2 x 候选数 + 2`
-    次调用，任何低于它的预算都会产出一个无论模型推理多好都不可能成功的运行。
+    验证器要求三类证据（`graph._verify_node`）：每个候选的仓库级证据、全体候选至少
+    一份的仓库级证据、至少一次主题级证据（历史报告查询）。这三类的**数量**由报告类型
+    的证据规格决定 —— 趋势类要求每候选「画像 + 指标」，热门工具追踪要求每候选
+    「画像 + 正文」，所以下限都等于 `2 × 候选数 + 2`，但语义不同。任何低于它的预算
+    都会产出一个无论模型推理多好都不可能成功的运行。
 
     它存在的原因是这两个数字曾各自独立配置并逐渐脱节：默认候选上限是 5，而默认
     预算曾是 10，于是每次定时运行都把最后一次调用花在第十次画像/指标查询上，从不
@@ -166,7 +172,12 @@ def evidence_tool_floor(candidate_count: int) -> int:
     悄无声息。工具调用不花 token（只有请求它们的模型轮次才花），所以这个下限是
     把预算抬上去，而不是把候选集缩小：后一种做法会悄悄缩窄报告的覆盖面。
     """
-    return 2 * max(0, candidate_count) + 2
+    requirement = evidence_requirement_for(report_type)
+    return (
+        len(requirement.per_candidate_tools) * max(0, candidate_count)
+        + len(requirement.at_least_one_tools)
+        + len(requirement.at_least_one_topic_tools)
+    )
 
 
 def load_or_create_config(session: Session, settings: Settings) -> AgentConfig:
@@ -371,8 +382,12 @@ def run_research_agent(
     recorder = StepRecorder(session, agent_run)
     recorder.mark_running()
 
-    # 配置的上限是天花板而非目标：证据门槛会在它下面设一个下限。
-    tool_budget = max(config.max_tool_calls, evidence_tool_floor(len(candidate_ids)))
+    # 报告类型的证据/预算规格：证据门槛按类型分派，预算加值按类型叠加（趋势类为零）。
+    spec = research_spec_for(report_type)
+    # 配置的上限是天花板而非目标：证据门槛会在它下面设一个下限，报告类型的加值再叠
+    # 在天花板之上（工具调用不花 token，多给只是允许收集更充分的证据）。
+    tool_budget = max(config.max_tool_calls, evidence_tool_floor(len(candidate_ids), report_type))
+    tool_budget += spec.budget.extra_tool_calls
     context = ToolContext(
         agent_run_id=agent_run.id,
         topic_id=topic_id,
@@ -393,6 +408,7 @@ def run_research_agent(
         tool_schemas=_plan_schemas(resolved_registry, allowed_tools),
         run_verifier=profile.run_verifier,
         section_keys=section_keys,
+        report_type=report_type,
     )
     graph = build_research_graph(deps)
     initial_state: AgentState = {
@@ -402,8 +418,8 @@ def run_research_agent(
         "window_end": resolved_end,
         "candidate_repo_ids": candidate_ids,
         "prompt_version": config.prompt_version,
-        "max_loops": config.max_loops,
-        "max_model_calls": config.max_model_calls,
+        "max_loops": config.max_loops + spec.budget.extra_loops,
+        "max_model_calls": config.max_model_calls + spec.budget.extra_model_calls,
         "max_tool_calls": tool_budget,
         "max_tokens": config.max_tokens,
         "max_cost": config.max_cost,

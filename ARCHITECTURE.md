@@ -468,8 +468,8 @@ Celery Beat
 ### 9.2 研究 Agent 与工具层
 
 - 有界五节点 LangGraph `plan -> tool -> observe -> verify -> write`；`verify` 通过条件边回到 `plan`，形成「证据缺口 → 继续研究」的显式回边。`plan` 是研究阶段唯一调用模型的位置。
-- 三档预算 `max_loops` / `max_model_calls` / `max_tool_calls` 来自 `agent_configs`。工具预算的有效值取 `max(配置值, evidence_tool_floor(候选数) = 2n + 2)`：验证器要求每个候选一份画像与一份指标，另加历史报告基线、至少一份 README。工具调用不计费，只有请求它的模型轮次计费，所以抬预算而不是砍候选；默认值必须留出余量，不能与下限持平。
-- `verify` 要求四类证据齐备；不满足时把缺口写进 `VerificationResult` 并回边补研究。章节写入使用独立预算，不与研究阶段的工具预算竞争。`needs_review` 是结果不是异常，不作为错误重试。
+- 三档预算 `max_loops` / `max_model_calls` / `max_tool_calls` 来自 `agent_configs`。工具预算的有效值取 `max(配置值, evidence_tool_floor(候选数, report_type))`：证据要求按报告类型分派（`contracts.research_spec_for`），趋势类每候选「画像 + 指标」、热门工具追踪每候选「画像 + 正文」，另加至少一份指标/正文与一次历史报告基线，下限都是 `2n + 2`。热门工具追踪因逐仓库读正文，运行时在基础预算上叠加 `ResearchBudgetSpec` 的加值（多两轮循环与两次模型调用）；趋势类加值为零，原预算不变。工具调用不计费，只有请求它的模型轮次计费，所以抬预算而不是砍候选；默认值必须留出余量，不能与下限持平。
+- `verify` 按报告类型的证据规格检查证据是否齐备；不满足时把缺口写进 `VerificationResult` 并回边补研究，缺的是哪一类证据由 nudge 直接点出（只发一次，靠 `evidence_nudged` 防重复）。章节写入使用独立预算，不与研究阶段的工具预算竞争。`needs_review` 是结果不是异常，不作为错误重试。
 - 工具调用统一经 `ToolRegistry.invoke()` 的固定顺序：白名单 → 运行策略 → 预算 → Schema 校验 → handler → 只读写保护 → `tool_calls` 记录。授权范围由运行时注入的 `ToolContext` 决定，不接受模型参数伪造；仓库类工具要求仓库属于授权主题。
 - 失败与成功的载荷都是 dict，**构造与判据必须放在同一处**（`agent/llm/messages.py`）。`tool_calls.agent_step_id` 在步骤行落库后回填；未挂到步骤上的调用仍保留，因为一次在步骤落库前被预算硬停的运行，失败证据恰在这些行里。
 - 不可信外部文本（README）先经 Prompt Guard：命中即隔离，停止研究回边，落 `AGENT_PROMPT_INJECTION` / `needs_review` / `security_risk=True`。**守卫是隔离，不是说服**：目标是不让被污染的输入进入决策链，不是让模型抵抗住。
