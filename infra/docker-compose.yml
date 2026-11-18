@@ -76,6 +76,10 @@ x-app-environment: &app-environment
   PUSH_WEBHOOK_CA_BUNDLE: ${PUSH_WEBHOOK_CA_BUNDLE:-}
   EVAL_ENABLED: ${EVAL_ENABLED:-true}
   EVAL_REGRESSION_TOLERANCE: ${EVAL_REGRESSION_TOLERANCE:-0.02}
+  #: 容器内信任的 CA 证书包：certifi 默认链 + 本机 Watt Toolkit 的 SteamTools 根证书。
+  #: Watt Toolkit 以 TUN 模式劫持 GitHub 流量并回签自签名证书，只有把它的根证书加进
+  #: 信任链，容器内的采集才能直连 api.github.com（证书由 infra/certs/ 挂载进 /certs）。
+  SSL_CERT_FILE: ${SSL_CERT_FILE:-/certs/ca-bundle.pem}
 
 x-app-image: &app-image
   build:
@@ -123,6 +127,8 @@ services:
     <<: *app-image
     environment: *app-environment
     extra_hosts: *github-hosts
+    volumes:
+      - ./certs:/certs:ro
     command: ["python", "-m", "uvicorn", "open_source_intelligence.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       mysql:
@@ -142,6 +148,8 @@ services:
     <<: *app-image
     environment: *app-environment
     extra_hosts: *github-hosts
+    volumes:
+      - ./certs:/certs:ro
     command: ["python", "-m", "celery", "-A", "open_source_intelligence.workers.celery_entry:app", "worker", "--loglevel=INFO", "--concurrency=2"]
     depends_on:
       mysql:
@@ -153,6 +161,8 @@ services:
     <<: *app-image
     environment: *app-environment
     extra_hosts: *github-hosts
+    volumes:
+      - ./certs:/certs:ro
     command: ["python", "-m", "celery", "-A", "open_source_intelligence.workers.celery_entry:app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
     depends_on:
       redis:

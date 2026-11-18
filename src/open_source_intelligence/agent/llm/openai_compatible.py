@@ -120,6 +120,7 @@ class OpenAICompatibleClient:
         self._input_price_per_mtok = input_price_per_mtok
         self._output_price_per_mtok = output_price_per_mtok
         self._client = client
+        self._is_deepseek = "deepseek" in self._api_base.lower()
 
     @property
     def provider(self) -> str:
@@ -164,6 +165,16 @@ class OpenAICompatibleClient:
             "messages": [_encode_message(message) for message in messages],
             "max_tokens": self._max_tokens,
         }
+        if self._is_deepseek:
+            # DeepSeek V3.2+/V4 默认开启思考模式：思考链会吃掉 completion 预算，
+            # 并在对象中途截断长 JSON，导致草稿解析器报「不是 JSON 对象」或章节
+            # 重复。结构化输出（工具调用、JSON 草稿）在非思考模式下更稳定、更快、
+            # 也更便宜，因此对 DeepSeek 显式关闭思考。
+            payload["thinking"] = {"type": "disabled"}
+            if not tools:
+                # 起草阶段（无工具）要求模型直接吐一个 JSON 对象；对应 Prompt 已含
+                # 「JSON」字样，满足该模式的提示词要求。
+                payload["response_format"] = {"type": "json_object"}
         if tools:
             payload["tools"] = [_encode_tool(tool) for tool in tools]
             payload["tool_choice"] = "auto"

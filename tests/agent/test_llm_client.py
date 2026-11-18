@@ -278,6 +278,59 @@ def test_openai_client_omits_tools_when_none_are_offered() -> None:
     assert "tools" not in captured["body"]
 
 
+def _deepseek_client(handler: Handler) -> OpenAICompatibleClient:
+    return OpenAICompatibleClient(
+        api_base="https://api.deepseek.com",
+        api_key="test-key",
+        model="deepseek-v4-flash",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def test_deepseek_draft_disables_thinking_and_forces_json() -> None:
+    """DeepSeek 默认思考模式会让 JSON 草稿不稳定，起草阶段要关思考并强制 JSON。"""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    _deepseek_client(handler).complete([ChatMessage(role="user", content="json draft")], ())
+    body = captured["body"]
+    assert body["thinking"] == {"type": "disabled"}
+    assert body["response_format"] == {"type": "json_object"}
+    assert "tools" not in body
+
+
+def test_deepseek_plan_keeps_thinking_off_but_skips_json_mode() -> None:
+    """工具调用阶段不强制 JSON，但仍关闭思考以稳定工具选择。"""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    _deepseek_client(handler).complete([ChatMessage(role="user", content="plan")], TOOLS)
+    body = captured["body"]
+    assert body["thinking"] == {"type": "disabled"}
+    assert "response_format" not in body
+    assert "tools" in body
+
+
+def test_non_deepseek_client_stays_vanilla() -> None:
+    """非 DeepSeek 端点不应被注入 DeepSeek 特有的 thinking / response_format。"""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    _client(handler).complete([ChatMessage(role="user", content="json draft")], ())
+    body = captured["body"]
+    assert "thinking" not in body
+    assert "response_format" not in body
+
+
 def test_openai_client_maps_rate_limit() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request
