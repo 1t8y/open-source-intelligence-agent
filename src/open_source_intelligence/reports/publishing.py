@@ -37,6 +37,7 @@ from open_source_intelligence.persistence.models.reporting import (
     ReportVersion,
 )
 from open_source_intelligence.pipeline.runs import (
+    classify_error,
     fail_pipeline_run,
     finish_pipeline_run,
     mark_pipeline_run_running,
@@ -471,41 +472,55 @@ def publish_or_request_review(
         attempt=1,
     )
     mark_pipeline_run_running(session, pipeline_run, started_at=moment)
-    verification = verify_report(
-        session,
-        report_id=report_id,
-        settings=resolved_settings,
-        now=moment,
-    )
-    decision = evaluate_publish_policy(
-        session,
-        report_id=report_id,
-        verification=verification,
-        settings=resolved_settings,
-        now=moment,
-    )
+    try:
+        verification = verify_report(
+            session,
+            report_id=report_id,
+            settings=resolved_settings,
+            now=moment,
+        )
+        decision = evaluate_publish_policy(
+            session,
+            report_id=report_id,
+            verification=verification,
+            settings=resolved_settings,
+            now=moment,
+        )
 
-    if report.status == "pending_review":
-        # 只有人工评审才能清掉这个状态；重新评估不得推进它。
-        pass
-    elif report.status == "published":
-        # 已经发出去了，没有可决定的东西。
-        pass
-    elif report.status == "scheduled":
-        # 已经排好队；`publish_at` 归放行驱动器管。
-        pass
-    elif report.status == "approved":
-        # 批准就是明确同意，所以立即入队并跳过撤稿窗口 —— 与 `publish_due_reports`
-        # 处理 approved 报告时做的动作一致。
-        transition_report(report, "scheduled")
-        report.publish_at = moment
-    elif decision.requires_review:
-        transition_report(report, "pending_review")
-        report.publish_at = None
-    else:
-        transition_report(report, "scheduled")
-        report.publish_at = decision.publish_at
-    session.flush()
+        if report.status == "pending_review":
+            # 只有人工评审才能清掉这个状态；重新评估不得推进它。
+            pass
+        elif report.status == "published":
+            # 已经发出去了，没有可决定的东西。
+            pass
+        elif report.status == "scheduled":
+            # 已经排好队；`publish_at` 归放行驱动器管。
+            pass
+        elif report.status == "approved":
+            # 批准就是明确同意，所以立即入队并跳过撤稿窗口 —— 与 `publish_due_reports`
+            # 处理 approved 报告时做的动作一致。
+            transition_report(report, "scheduled")
+            report.publish_at = moment
+        elif decision.requires_review:
+            transition_report(report, "pending_review")
+            report.publish_at = None
+        else:
+            transition_report(report, "scheduled")
+            report.publish_at = decision.publish_at
+        session.flush()
+    except Exception as exc:
+        # 运行行在函数开头就已提交为 `running`；异常若直接冒出去，它会永远悬在那里。
+        # 先解除可能存在的「只可回滚」状态，再写终态，最后照旧把原始异常交还调用方。
+        session.rollback()
+        code = getattr(exc, "code", None)
+        fail_pipeline_run(
+            session,
+            pipeline_run,
+            error_code=code if isinstance(code, str) else classify_error("publish", exc),
+            error_message=str(exc),
+            finished_at=_run_closed_at(now, moment),
+        )
+        raise
 
     finish_pipeline_run(
         session,

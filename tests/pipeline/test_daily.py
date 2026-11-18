@@ -380,3 +380,36 @@ def test_an_unexpected_collect_failure_still_closes_the_run(
         assert run.status == "failed"
         assert run.error_code == "COLLECTOR_FAILED"
         assert run.finished_at is not None
+
+
+def test_collect_stage_closes_its_run_when_a_database_error_poisons_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """数据库错误让会话只可回滚；写终态之前必须先解除这个状态。
+
+    与上一个用例不同，这里抛的不是普通异常：一次失败的 SQL 会把 Session 标记为
+    rollback-only，随后 `fail_pipeline_run` 的提交会被拒绝，运行行反而停在 `running`。
+    """
+    session_factory = build_session_factory()
+    with session_factory() as session:
+
+        def broken(*_args: object, **_kwargs: object) -> None:
+            # 违反 NOT NULL 的待写入对象会让 flush 失败，进而把 Session 标记为
+            # 只可回滚 —— 这正是「upsert 时数据库报错」在生产里的样子。
+            session.add(Topic(name=None))  # type: ignore[arg-type]
+            session.flush()
+
+        monkeypatch.setattr(daily, "collect_repositories", broken)
+
+        with pytest.raises(PipelineStageError):
+            run_daily_pipeline(
+                session,
+                business_date=BUSINESS_DATE,
+                collectors=[StubCollector([build_item(1)])],
+                limit=10,
+            )
+
+        run = session.scalars(select(PipelineRun).order_by(PipelineRun.id.desc())).first()
+        assert run is not None
+        assert run.status == "failed"
+        assert run.finished_at is not None

@@ -265,6 +265,9 @@ def run_contents_stage(
             refresh_after=refresh_after,
         )
     except Exception as exc:  # noqa: BLE001 - 记录后重新抛出为阶段错误
+        # 数据库类失败会把会话标记为只可回滚；不先解除它，下面写运行终态的
+        # 提交本身就会被拒绝，那一行反而永远停在 `running`。
+        session.rollback()
         error_code = classify_error("contents", exc)
         message = describe_error(exc)
         fail_pipeline_run(session, run, error_code=error_code, error_message=message)

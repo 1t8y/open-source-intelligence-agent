@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from open_source_intelligence.agent.errors import AGENT_ERROR_HINTS, AgentRunReviewError
 from open_source_intelligence.agent.reviews import (
@@ -416,23 +417,22 @@ def add_web_surface(app: FastAPI) -> None:
     async def forbidden_handler(request: Request, exc: WebForbidden) -> Response:
         # htmx 交换进来的拒绝落在一个小容器里。整张 403 页面会被嵌进卡片内部 ——
         # 正是触发片段要避免的那个毛病 —— 所以交换请求只拿一行提示，状态码照旧保留。
-        if _is_htmx(request):
-            return templates.TemplateResponse(
-                request,
-                "partials/alert.html",
-                {"message": exc.message, "current_user": None, "csrf_token": ""},
-                status_code=status.HTTP_403_FORBIDDEN,
-            )
-        return templates.TemplateResponse(
+        # 模板渲染是同步的（Jinja 会读盘）；协程处理器会被 Starlette 直接 await，
+        # 不像普通页面端点那样自动进线程池，因此这里显式让出事件循环。
+        context = {"message": exc.message, "current_user": None, "csrf_token": ""}
+        name = "partials/alert.html" if _is_htmx(request) else "forbidden.html"
+        return await run_in_threadpool(
+            templates.TemplateResponse,
             request,
-            "forbidden.html",
-            {"message": exc.message, "current_user": None, "csrf_token": ""},
+            name,
+            context,
             status_code=status.HTTP_403_FORBIDDEN,
         )
 
     @app.exception_handler(WebNotFound)
     async def not_found_handler(request: Request, exc: WebNotFound) -> Response:
-        return templates.TemplateResponse(
+        return await run_in_threadpool(
+            templates.TemplateResponse,
             request,
             "not_found.html",
             {"message": exc.message, "current_user": None, "csrf_token": ""},

@@ -243,6 +243,19 @@ def test_huggingface_treats_a_full_page_as_more_to_come() -> None:
     assert collector.collect_page(page=1, per_page=3).has_more is True
 
 
+def test_huggingface_counts_the_raw_page_when_deciding_has_more() -> None:
+    """满页里混入脏条目时，结束信号仍应来自源返回的原始条目数。"""
+    payload: list[object] = [{"id": "a"}, {"id": "b"}, None]
+    collector = HuggingFaceCollector(
+        build_http(httpx.MockTransport(lambda _: httpx.Response(200, json=payload)))
+    )
+
+    page = collector.collect_page(page=1, per_page=3)
+
+    assert len(page.items) == 2
+    assert page.has_more is True
+
+
 def test_huggingface_rejects_a_non_list_body() -> None:
     """字典形状的响应体是来源错误，不是空页。"""
     from open_source_intelligence.collectors.types import SourceUnavailableError

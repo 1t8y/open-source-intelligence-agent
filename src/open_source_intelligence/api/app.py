@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
+from starlette.concurrency import run_in_threadpool
 
 from open_source_intelligence import __version__
 from open_source_intelligence.core.config import Settings, get_settings
@@ -52,7 +53,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
-        engine.dispose()
+        # 同步 Engine 的连接池关闭会逐条关闭 DBAPI 连接；放在事件循环线程上会挡住
+        # 正在收尾的请求，因此交给线程池，和其余同步 I/O 的处置保持一致。
+        await run_in_threadpool(engine.dispose)
 
     app = FastAPI(
         title=resolved_settings.app_name,

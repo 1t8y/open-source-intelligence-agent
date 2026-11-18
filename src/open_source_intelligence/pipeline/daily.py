@@ -105,6 +105,8 @@ def run_collect_stage(
     try:
         summary = collect_repositories(session, collectors, limit=limit)
     except Exception as exc:  # noqa: BLE001 - 记录后重新抛出为阶段错误
+        # 先解除「只可回滚」状态：flush/commit 失败后的会话连写运行终态都会被拒绝。
+        session.rollback()
         # provider 层面的失败是 `CollectorError`，已经按 provider 汇总过了。其它任何异常
         # （`limit` 不合法、upsert 时的数据库错误）都会逃出服务层，没有这个分支，运行行会
         # 一直停在 `running` —— 正是这个状态让死掉的批次与活着的批次无法区分。
@@ -169,6 +171,8 @@ def run_snapshot_stage(
     try:
         snapshot_count = create_daily_snapshots(session, snapshot_date=business_date)
     except Exception as exc:  # noqa: BLE001 - 记录后重新抛出为阶段错误
+        # 先解除「只可回滚」状态：flush/commit 失败后的会话连写运行终态都会被拒绝。
+        session.rollback()
         error_code = classify_error("snapshot", exc)
         message = describe_error(exc)
         fail_pipeline_run(session, run, error_code=error_code, error_message=message)
@@ -205,6 +209,7 @@ def run_rank_stage(
     try:
         ranked = rank_topic_candidates(session, topic, as_of_date=business_date)
     except Exception as exc:  # noqa: BLE001 - 一个主题不能拦住其它主题
+        session.rollback()
         error_code = classify_error("rank", exc)
         message = describe_error(exc)
         fail_pipeline_run(session, run, error_code=error_code, error_message=message)

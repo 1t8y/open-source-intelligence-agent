@@ -429,13 +429,17 @@ def push_after_publish(
         return []
     outcomes: list[PushOutcome] = []
     for target in list_targets(session):
+        # 目标属性先取成局部值：下面的回滚会让 ORM 对象过期，而拒绝审计仍要写清楚
+        # 「本来要发给谁」，不能依赖回滚后重新加载对象。
+        channel = target.channel
+        target_id = target.id
         try:
             outcomes.append(
                 push_report(
                     session,
                     report_id=report_id,
-                    channel=target.channel,
-                    target_id=target.id,
+                    channel=channel,
+                    target_id=target_id,
                     actor_id=actor_id,
                     settings=resolved,
                     notifier=notifier,
@@ -443,6 +447,9 @@ def push_after_publish(
                 )
             )
         except Exception as exc:  # 自动推送绝不能破坏发布，无论哪一步失败。
+            # 失败可能来自 flush/commit，此时会话已被标记为只可回滚；不先解除它，
+            # 连这条拒绝证据也写不进去，异常反而会冒出去打断发布。
+            session.rollback()
             record_audit_event(
                 session,
                 action="report.push",
@@ -451,8 +458,8 @@ def push_after_publish(
                 result="denied",
                 actor_id=actor_id,
                 metadata_json={
-                    "channel": target.channel,
-                    "target_id": target.id,
+                    "channel": channel,
+                    "target_id": target_id,
                     "auto": True,
                     "error": redact_text(str(exc))[:MAX_DETAIL_LENGTH],
                 },

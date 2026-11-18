@@ -753,3 +753,25 @@ def test_publish_due_reports_rejects_a_non_positive_limit(
     """清扫范围为零是编程错误，不是悄悄什么都不做。"""
     with pytest.raises(ValueError, match="limit must be at least 1"):
         publish_due_reports(session, now=NOW, limit=0)
+
+
+def test_publish_or_request_review_closes_its_run_when_evaluation_crashes(
+    session: Session,
+    report_case: SeededReport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """评估崩溃时异常照旧抛出，但已提交的 running 行必须拿到终态。"""
+    from open_source_intelligence.reports import publishing
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("evaluation crashed")
+
+    monkeypatch.setattr(publishing, "evaluate_publish_policy", broken)
+
+    with pytest.raises(RuntimeError, match="evaluation crashed"):
+        publish_or_request_review(session, report_id=report_case.report_id, now=NOW)
+
+    runs = list_pipeline_runs(session, run_type="publish")
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
+    assert runs[0].finished_at is not None

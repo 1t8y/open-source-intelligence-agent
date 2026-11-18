@@ -48,6 +48,9 @@ Thumbs.db
 诊断清单.md
 任务清单.md
 README.backup-*.md
+# 本地生成的架构/流程示意 HTML（可视化预览产物，非交付文档）
+架构流程图.html
+*.流程图.html
 
 # Local-only Windows start helper (Watt Toolkit CA sync); kept on disk, never published
 scripts/start.ps1

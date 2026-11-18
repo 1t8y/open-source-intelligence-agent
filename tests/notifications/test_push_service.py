@@ -622,3 +622,28 @@ def test_live_webhook_channel_carries_the_test_escape_hatches() -> None:
     assert live.channel == "webhook"
     assert live._allow_private is True  # noqa: SLF001 - 断言适配器的接线
     assert live._verify == "/tmp/ca.pem"  # noqa: SLF001 - 断言适配器的接线
+
+
+def test_auto_push_records_denial_when_a_database_error_poisons_the_session(
+    session: Session,
+    workspace: Workspace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自动推送遇到数据库错误时，也要先把会话恢复可写，再留下拒绝证据。"""
+    from open_source_intelligence.notifications import service as push_service
+
+    report = seed_pushable_report(session, workspace, status=PUBLISHED)
+    workspace.add_push_target()
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        # flush 失败会把 Session 标记为只可回滚；不解除它，连审计行都写不进去。
+        session.add(Topic(name=None))  # type: ignore[arg-type]
+        session.flush()
+
+    monkeypatch.setattr(push_service, "push_report", broken)
+
+    assert push_after_publish(session, report_id=report.id) == []
+    events = session.scalars(
+        select(AuditLog).where(AuditLog.action == "report.push", AuditLog.result == "denied")
+    ).all()
+    assert len(events) == 1

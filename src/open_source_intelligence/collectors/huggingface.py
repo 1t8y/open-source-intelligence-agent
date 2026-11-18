@@ -68,7 +68,9 @@ class HuggingFaceCollector:
         items = tuple(
             self._normalize(item, observed_at) for item in payload if isinstance(item, dict)
         )
-        return CollectedPage(page=page, items=items, has_more=len(items) == per_page)
+        # 结束信号取自源返回的原始页：归一化会丢掉不合规的条目，若拿过滤后的
+        # 条目数判满页，一页里混入脏数据就会被误判成列表尽头并提前收尾。
+        return CollectedPage(page=page, items=items, has_more=len(payload) == per_page)
 
     def describe_query(self) -> dict[str, Any]:
         """返回该采集器分页遍历的搜索参数。"""
