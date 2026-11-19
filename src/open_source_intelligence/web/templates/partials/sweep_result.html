@@ -9,7 +9,7 @@
       <td>{{ entry.status }}</td>
       <td>{{ entry.publish_mode }}</td>
       <td>{{ entry.error_code or "—" }}</td>
-      <td>{{ entry.published_at or "—" }}</td>
+      <td>{{ entry.published_at | localdt if entry.published_at else "—" }}</td>
     </tr>
     {% endfor %}
   </tbody>

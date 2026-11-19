@@ -11,6 +11,7 @@ from support import Workspace, build_session_factory, build_settings
 from open_source_intelligence.evaluation import runner as evaluation_runner
 from open_source_intelligence.notifications import service as notifications_service
 from open_source_intelligence.reports import publishing, verification
+from open_source_intelligence.web import router as web_router
 
 
 @pytest.fixture()
@@ -47,3 +48,6 @@ def publish_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(publishing, "get_settings", lambda: settings)
     monkeypatch.setattr(notifications_service, "get_settings", lambda: settings)
     monkeypatch.setattr(evaluation_runner, "get_settings", lambda: settings)
+    # 界面层的 `localdt` 过滤器要在渲染时知道展示时区；同样不能依赖本机 `.env`
+    # （CI 上没有这个文件）。
+    monkeypatch.setattr(web_router, "get_settings", lambda: settings)

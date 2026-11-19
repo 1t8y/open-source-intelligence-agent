@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Final
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -29,7 +30,7 @@ from open_source_intelligence.agent.reviews import (
     record_run_review,
 )
 from open_source_intelligence.backfill.jobs import JOB_STATUSES, list_jobs, summarize_jobs
-from open_source_intelligence.core.config import Settings
+from open_source_intelligence.core.config import Settings, get_settings
 from open_source_intelligence.core.logging import redact_text
 from open_source_intelligence.evaluation.dataset import list_datasets
 from open_source_intelligence.evaluation.runner import list_runs as list_eval_runs
@@ -250,6 +251,37 @@ def _redacted_json(value: object) -> str:
 
 templates.env.filters["redact"] = _redact
 templates.env.filters["redacted_json"] = _redacted_json
+
+
+def _localdt(value: object, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Jinja 过滤器：把库里的 naive UTC 时间渲染成本地时区时间，并带上偏移量。
+
+    数据库里的每一列时间都是 UTC（`persistence/base.py` 统一写入），页面过去直接对它
+    `strftime`，于是 `18:55 UTC` 被当成傍晚读，而它其实是第二天凌晨的那封邮件。只改
+    格式不够：读者得能一眼看出这一串数字属于哪个时区，所以返回值末尾带上 `+0800`
+    这类真实偏移，而不是靠一句写在页面别处的说明。
+
+    `None` 渲染成破折号，与模板里其他空值保持一致。
+    """
+    if value is None:
+        return "—"
+    if isinstance(value, str):
+        # 清扫结果这类返回值把时间序列化成了 ISO 字符串（`publish_due_reports`），
+        # 同一个过滤器要能一起处理，否则页面上就出现两种口径的时间。
+        try:
+            moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    elif isinstance(value, datetime):
+        moment = value
+    else:
+        return str(value)
+    zone = ZoneInfo(get_settings().app_timezone)
+    local = (moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment).astimezone(zone)
+    return f"{local.strftime(fmt)} {local.strftime('%z')}"
+
+
+templates.env.filters["localdt"] = _localdt
 
 
 #: 平台存储的枚举码对应的展示标签。**只翻译标签 —— 取值仍是契约里的码。** 下拉框
@@ -2197,6 +2229,10 @@ TOPIC_NOTICES: dict[str, str] = {
     "disabled": "已停用该主题，下一次采集不会运行它。",
 }
 
+#: 主题详情页里「这个主题的报告」一屏显示多少份。主题页是配置页，不是报告中心 ——
+#: 列出最近几份足以回答「它产出过什么」，再多就把它变成第二个报告列表。
+TOPIC_REPORT_LIST_LIMIT: Final[int] = 10
+
 #: 某种拒绝用哪个 HTTP 状态回应。与 JSON API 的划分相同，于是读状态码的客户端在两个
 #: 界面上看到的是同一个含义。
 TOPIC_ERROR_STATUS: dict[str, int] = {
@@ -2476,12 +2512,21 @@ def topic_page(
         raise WebNotFound(f"主题 {topic_id} 不存在")
     if not can_read_topic(web.user, topic, get_role_codes(web.user)):
         raise WebForbidden(f"当前用户无权查看主题 {topic_id}", action="topic.read")
+    # 与报告中心同一个查询、同一条权限谓词：主题页能看到的报告，就是这个人有权读的
+    # 那些；`total` 也不会把看不见的行算进去。
+    topic_reports = queries.list_reports(
+        session,
+        access_filter=readable_reports_filter(web.user, get_role_codes(web.user)),
+        topic_id=topic_id,
+        page_size=TOPIC_REPORT_LIST_LIMIT,
+    )
     return render(
         request,
         "topic_detail.html",
         {
             "current_user": _identity(web.user),
             "topic": topic,
+            "topic_reports": topic_reports,
             "can_write": not get_role_codes(web.user).isdisjoint(TOPIC_WRITE_ROLES),
             "publish_modes": TOPIC_PUBLISH_MODES,
             "report_types": TOPIC_REPORT_TYPES,

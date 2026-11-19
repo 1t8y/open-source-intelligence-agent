@@ -7,7 +7,7 @@
   <h1 class="page-title">{{ report.title }}</h1>
   <p class="meta">
     主题 {{ topic_name }} · 第 {{ report.current_version }} 版
-    {% if report.published_at %}· 发布于 {{ report.published_at.strftime("%Y-%m-%d %H:%M") }} UTC{% endif %}
+    {% if report.published_at %}· 发布于 {{ report.published_at | localdt }}{% endif %}
   </p>
   <p class="hint">这是一份只读分享页，由报告作者主动生成。链接可随时被撤回。</p>
 </section>

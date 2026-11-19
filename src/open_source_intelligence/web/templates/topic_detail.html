@@ -6,7 +6,7 @@
     <h1>{{ topic.name }}</h1>
     <p class="sub">
       #{{ topic.id }} · 由 {{ topic.created_by }} 创建 · 最后更新
-      {{ topic.updated_at.strftime("%Y-%m-%d %H:%M") }}
+      {{ topic.updated_at | localdt }}
     </p>
   </div>
   <div class="head-actions">
@@ -83,5 +83,51 @@
     每日采集按这三个参数从仓库目录里挑候选（<a href="/ui/repositories?topic_id={{ topic.id }}">看这个主题的候选</a>），
     再交给 Agent 研究并产出报告。改这些参数只在<b>下一次</b>采集生效，不会回改已经生成的报告。
   </p>
+</section>
+
+<section class="card">
+  <h2>这个主题的报告</h2>
+  {#
+    主题页过去只有配置表单：从「主题」进来找不到它产出过什么，得另开报告中心再按主题
+    猜。这里列出该主题的报告，并且走与报告中心同一个查询与同一条权限谓词 —— 少一份
+    自己拼的过滤，就少一处看得见但读不了的列表。
+  #}
+  {% if topic_reports.items %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="num">#</th>
+        <th>标题</th>
+        <th>状态</th>
+        <th>报告类型</th>
+        <th class="num">版本</th>
+        <th>生成时间</th>
+        <th>发布时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in topic_reports.items %}
+      <tr>
+        <td class="num">{{ item.id }}</td>
+        <td><a href="/ui/reports/{{ item.id }}">{{ item.title }}</a></td>
+        <td><span class="badge status-{{ item.status }}">{{ item.status | label }}</span></td>
+        <td><span class="badge">{{ topic.report_type | label }}</span></td>
+        <td class="num">v{{ item.current_version }}</td>
+        <td class="mono">{{ item.generated_at | localdt }}</td>
+        <td class="mono">{{ item.published_at | localdt }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">
+    按生成时间倒序，最多显示最近 {{ topic_reports.page_size }} 份（共 {{ topic_reports.total }} 份）。
+    完整列表在 <a href="/ui/reports">报告中心</a>。
+  </p>
+  {% else %}
+  <p class="hint" style="margin:0">
+    这个主题还没有产出报告。每日采集跑完研究后，报告会先出现在这里 —— 状态是草稿或待发布，
+    走完发布策略才会发邮件。
+  </p>
+  {% endif %}
 </section>
 {% endblock %}

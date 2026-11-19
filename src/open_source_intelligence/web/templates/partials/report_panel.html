@@ -25,9 +25,9 @@
   {% if error %}<p class="alert error">{{ error }}</p>{% endif %}
 
   <dl class="facts">
-    <div><dt>生成时间</dt><dd>{{ report.generated_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</dd></div>
-    <div><dt>撤回窗口到期</dt><dd>{{ report.publish_at.strftime("%Y-%m-%d %H:%M:%S %Z") if report.publish_at else "—" }}</dd></div>
-    <div><dt>发布时间</dt><dd>{{ report.published_at.strftime("%Y-%m-%d %H:%M:%S %Z") if report.published_at else "—" }}</dd></div>
+    <div><dt>生成时间</dt><dd>{{ report.generated_at | localdt("%Y-%m-%d %H:%M:%S") }}</dd></div>
+    <div><dt>撤回窗口到期</dt><dd>{{ report.publish_at | localdt("%Y-%m-%d %H:%M:%S") }}</dd></div>
+    <div><dt>发布时间</dt><dd>{{ report.published_at | localdt("%Y-%m-%d %H:%M:%S") }}</dd></div>
     <div><dt>Agent 运行</dt><dd>#{{ report.agent_run_id }}</dd></div>
   </dl>
 
@@ -116,7 +116,7 @@
     <strong class="{{ 'ok-text' if detail.verification.verdict == 'passed' else 'error-text' }}">
       {{ detail.verification.verdict }}
     </strong>
-    · {{ detail.verification.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}
+    · {{ detail.verification.created_at | localdt("%Y-%m-%d %H:%M:%S") }}
   </p>
   <table class="grid">
     <thead><tr><th>结构</th><th>引用</th><th>数字</th><th>敏感内容</th><th>引用覆盖率</th><th>原因码</th></tr></thead>
@@ -174,7 +174,7 @@
         <td>v{{ version.version }}{% if version.version == report.current_version %} <span class="badge">当前</span>{% endif %}</td>
         <td>{{ (version.change_reason | label) if version.change_reason else "—" }}</td>
         <td>{{ version.created_by if version.created_by else "—" }}</td>
-        <td>{{ version.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>
+        <td>{{ version.created_at | localdt("%Y-%m-%d %H:%M:%S") }}</td>
         <td>
           {% if rollbackable and version.version != report.current_version %}
           <form method="post" action="/ui/reports/{{ report.id }}/rollback"
@@ -250,7 +250,7 @@
         <td class="{{ 'ok-text' if push.status == 'sent' else 'error-text' }}">{{ push.status | label }}</td>
         <td>{{ push.attempt }}</td>
         <td>{{ push.error_code or "—" }}</td>
-        <td>{{ push.updated_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>
+        <td>{{ push.updated_at | localdt("%Y-%m-%d %H:%M:%S") }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -298,10 +298,10 @@
     <tbody>
       {% for link in share_links %}
       <tr>
-        <td>{{ link.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
-        <td>{{ link.expires_at.strftime("%Y-%m-%d %H:%M") if link.expires_at else "不过期" }}</td>
+        <td>{{ link.created_at | localdt }}</td>
+        <td>{{ link.expires_at | localdt if link.expires_at else "不过期" }}</td>
         <td>{{ link.access_count }}</td>
-        <td>{{ link.last_accessed_at.strftime("%Y-%m-%d %H:%M") if link.last_accessed_at else "—" }}</td>
+        <td>{{ link.last_accessed_at | localdt }}</td>
         <td>
           {% if link.revoked_at %}<span class="error-text">已撤回</span>
           {% elif link.is_active() %}<span class="ok-text">有效</span>
@@ -338,7 +338,7 @@
         <td>{{ review.decision | label }}</td>
         <td>{{ review.reviewer_id if review.reviewer_id else "—" }}</td>
         <td>{{ review.comment or "—" }}</td>
-        <td>{{ review.created_at.strftime("%Y-%m-%d %H:%M:%S %Z") }}</td>
+        <td>{{ review.created_at | localdt("%Y-%m-%d %H:%M:%S") }}</td>
       </tr>
       {% endfor %}
     </tbody>

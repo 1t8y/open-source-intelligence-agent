@@ -106,7 +106,7 @@
         <td><span class="badge status-{{ push.status }}">{{ push.status | label }}</span></td>
         <td class="num">{{ push.attempt }}</td>
         <td class="mono">
-          {{ (push.sent_at or push.updated_at).strftime("%Y-%m-%d %H:%M") }}
+          {{ (push.sent_at or push.updated_at) | localdt }}
         </td>
         <td class="mono">
           {% if push.error_code %}{{ push.error_code }}{% else %}—{% endif %}
