@@ -57,7 +57,7 @@
       {% for entry in page.items %}
       <tr>
         <td class="mono">{{ entry.id }}</td>
-        <td class="mono">{{ entry.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+        <td class="mono">{{ entry.created_at | localdt("%Y-%m-%d %H:%M:%S") }}</td>
         <td class="num">{{ entry.actor_id if entry.actor_id is not none else "匿名" }}</td>
         {# 动作名与错误码一样是标识符：它是查契约时用的键，译成中文就对不上了。 #}
         <td class="mono">{{ entry.action }}</td>

@@ -27,7 +27,7 @@
         </td>
         <td class="mono">{{ dataset.version }}</td>
         <td class="truncate">{{ dataset.description or "—" }}</td>
-        <td class="mono">{{ dataset.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td class="mono">{{ dataset.created_at | localdt("%Y-%m-%d %H:%M") }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -66,8 +66,8 @@
         {# 评测变体名是标识符不是显示枚举：它是 grep 契约时用的键，译成中文反而对不上。 #}
         <td class="mono">{{ run.target_type }}</td>
         <td><span class="badge status-{{ run.status }}">{{ run.status | label }}</span></td>
-        <td class="mono">{{ run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
-        <td class="mono">{{ run.finished_at.strftime("%Y-%m-%d %H:%M") if run.finished_at else "—" }}</td>
+        <td class="mono">{{ run.started_at | localdt("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
+        <td class="mono">{{ run.finished_at | localdt("%Y-%m-%d %H:%M") if run.finished_at else "—" }}</td>
         <td class="mono">{{ run.error_message | redact if run.error_message else "—" }}</td>
       </tr>
       {% endfor %}

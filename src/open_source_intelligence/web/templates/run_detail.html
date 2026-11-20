@@ -77,9 +77,9 @@
     </div>
   </dl>
   <p class="hint">
-    统计窗口 {{ trace.run.window_start.strftime("%Y-%m-%d %H:%M") }} →
-    {{ trace.run.window_end.strftime("%Y-%m-%d %H:%M") }}（UTC）
-    {% if trace.run.started_at %}· 开始 {{ trace.run.started_at.strftime("%Y-%m-%d %H:%M:%S") }}{% endif %}
+    统计窗口 {{ trace.run.window_start | localdt("%Y-%m-%d %H:%M") }} →
+    {{ trace.run.window_end | localdt("%Y-%m-%d %H:%M") }}
+    {% if trace.run.started_at %}· 开始 {{ trace.run.started_at | localdt("%Y-%m-%d %H:%M:%S") }}{% endif %}
   </p>
 </section>
 
@@ -97,7 +97,7 @@
         <td><span class="badge">{{ review.verdict | label }}</span></td>
         <td>{{ review.comment or "—" }}</td>
         <td>{{ review.reviewer_id if review.reviewer_id else "—" }}</td>
-        <td class="mono">{{ review.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+        <td class="mono">{{ review.created_at | localdt("%Y-%m-%d %H:%M:%S") }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -147,7 +147,7 @@
         <span class="badge">#{{ item.step.step_index }}</span>
         <span class="badge status-{{ item.step.status }}">{{ item.step.step_type | label }} · {{ item.step.status | label }}</span>
         <span class="meta">{{ ms(item.step.latency_ms) }}</span>
-        <span class="meta">{{ item.step.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</span>
+        <span class="meta">{{ item.step.created_at | localdt("%Y-%m-%d %H:%M:%S") }}</span>
       </div>
       {% if item.step.summary %}<p class="trace-summary">{{ item.step.summary | redact }}</p>{% endif %}
       {% if item.tool_calls %}

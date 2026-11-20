@@ -86,7 +86,7 @@
         <td class="num">{{ entry.repository.forks }}</td>
         <td><span class="badge">{{ entry.provider }}</span></td>
         <td>{{ entry.repository.license or "—" }}</td>
-        <td class="mono">{{ entry.repository.last_seen_at.strftime("%Y-%m-%d") }}</td>
+        <td class="mono">{{ entry.repository.last_seen_at | localdt("%Y-%m-%d") }}</td>
         {% if topic_filter %}
         <td class="num">{{ entry.rank if entry.rank is not none else "—" }}</td>
         <td class="num">{{ entry.score if entry.score is not none else "—" }}</td>

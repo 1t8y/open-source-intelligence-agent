@@ -34,8 +34,8 @@
     <div>
       <h1>运维看板</h1>
       <p class="meta">
-        统计窗口 {{ overview.window.start.strftime("%Y-%m-%d %H:%M") }} →
-        {{ overview.window.end.strftime("%Y-%m-%d %H:%M") }}（UTC，{{ overview.window.days }} 天，半开区间）
+        统计窗口 {{ overview.window.start | localdt("%Y-%m-%d %H:%M") }} →
+        {{ overview.window.end | localdt("%Y-%m-%d %H:%M") }}（{{ overview.window.days }} 天，半开区间）
       </p>
     </div>
     <nav class="window-nav">
@@ -270,7 +270,7 @@
           {{ ((run.finished_at - run.started_at).total_seconds() * 1000) | round | int }} ms
           {% else %}<span class="metric-missing">进行中</span>{% endif %}
         </td>
-        <td>{{ run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
+        <td>{{ run.started_at | localdt("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
         <td>{% if run.error_code %}<code>{{ run.error_code }}</code>{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}

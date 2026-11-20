@@ -177,7 +177,7 @@ resolve_citation(session, citation: CitationRef) -> ResolvedCitation
 generate_report(session, *, agent_run_id: int, title: str | None = None, now: datetime | None = None) -> ReportGenerationResult
 ```
 
-CLI 入口为 `python -m open_source_intelligence.reports.cli`，动作为 `--action {generate,verify,publish,review,publish-due,push,push-retry}`（`--agent-run-id` 单独使用等价于 `generate`，保持 T10 入口兼容）。报告只从最新章节草稿合成；六个章节必须齐全且每节至少一条引用，含数字的章节至少一条 `metric` 引用。引用必须解析到 `repo_snapshots`、`repository_contents` 或已发布 `reports`。重复生成相同内容不新增版本，内容变化时递增 `reports.current_version` 并写入 `report_versions`。`push` 额外接受 `--channel {email,webhook} --target-id <id>`，`push-retry` 接受 `--limit <n>`。
+CLI 入口为 `python -m open_source_intelligence.reports.cli`，动作为 `--action {generate,finish,verify,publish,review,publish-due,push,push-retry}`（`--agent-run-id` 单独使用等价于 `generate`，保持 T10 入口兼容）。`finish` 只接受 `--agent-run-id`，内部调 `reports/automation.py:finish_run_report` 把「生成 → 验证 → 发布策略」走完一条边，打印 `{stage,report_id,verdict,publish_at,...}`；草稿编排失败时额外带 `error_code` 并 `exit 1`，而验证不过**不是**失败（报告已在库中等人评审，`stage=verify`）。报告只从最新章节草稿合成；六个章节必须齐全且每节至少一条引用，含数字的章节至少一条 `metric` 引用。引用必须解析到 `repo_snapshots`、`repository_contents` 或已发布 `reports`。重复生成相同内容不新增版本，内容变化时递增 `reports.current_version` 并写入 `report_versions`。`push` 额外接受 `--channel {email,webhook} --target-id <id>`，`push-retry` 接受 `--limit <n>`。
 
 报告分享接口（T26，`reports/sharing.py` 是唯一出入口）：
 

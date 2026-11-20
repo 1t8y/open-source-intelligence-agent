@@ -65,7 +65,7 @@
         <td><span class="badge status-{{ run.status }}">{{ run.status | label }}</span></td>
         <td>{{ pipeline_topic_names.get(run.topic_id, "—") if run.topic_id else "全局" }}</td>
         <td class="num">{{ run.attempt }}</td>
-        <td class="mono">{{ run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
+        <td class="mono">{{ run.started_at | localdt("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
         <td class="num">
           {%- if run.finished_at and run.started_at -%}
             {%- set seconds = (run.finished_at - run.started_at).total_seconds() -%}
@@ -174,14 +174,14 @@
           {% else %}—{% endif %}
         </td>
         <td class="mono">
-          {{ run.window_start.strftime("%m-%d") }} → {{ run.window_end.strftime("%m-%d") }}
+          {{ run.window_start | localdt("%m-%d") }} → {{ run.window_end | localdt("%m-%d") }}
         </td>
         <td class="num">{{ run.loop_count }}</td>
         <td class="num">{{ run.model_call_count }}</td>
         <td class="num">{{ run.tool_call_count }}</td>
         <td class="num">{{ run.prompt_tokens + run.completion_tokens }}</td>
         <td class="num">{{ "%.4f" | format(run.estimated_cost | float) }}</td>
-        <td class="mono">{{ run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
+        <td class="mono">{{ run.started_at | localdt("%Y-%m-%d %H:%M") if run.started_at else "—" }}</td>
         <td class="mono">{{ run.error_code or "—" }}</td>
       </tr>
       {% endfor %}
@@ -236,8 +236,8 @@
         <td class="num">{{ job.pages_completed }} / {{ job.target_pages }} 页</td>
         <td class="num">{{ job.items_collected }}</td>
         <td class="num">{{ job.attempt }}</td>
-        <td class="mono">{{ job.started_at[:16].replace("T", " ") if job.started_at else "—" }}</td>
-        <td class="mono">{{ job.heartbeat_at[:16].replace("T", " ") if job.heartbeat_at else "—" }}</td>
+        <td class="mono">{{ job.started_at | localdt("%Y-%m-%d %H:%M") if job.started_at else "—" }}</td>
+        <td class="mono">{{ job.heartbeat_at | localdt("%Y-%m-%d %H:%M") if job.heartbeat_at else "—" }}</td>
         <td class="mono">{{ job.error_code or "—" }}</td>
       </tr>
       {% endfor %}

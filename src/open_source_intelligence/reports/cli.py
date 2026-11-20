@@ -2,6 +2,12 @@
 
 单独给 `--agent-run-id` 仍然表示「生成」，T10 的入口因此照旧可用；发布链路上后续的每
 个阶段都用 `--action` 指定。
+
+`--action finish` 是「生成 → 验证 → 发布策略」一次走完的那条边。它不多做任何事：内部
+调用的就是 `automation.finish_run_report`，与每日链路的自动成稿共享同一条升级路径，
+因此关卡一道不少。它存在的理由是 `generate` 只走到报告行，`publish_at` 仍是 NULL，而
+到期的清扫只扫 `approved`/`scheduled` —— 手工三步（generate / verify / publish）里漏掉
+最后一步，报告就会安静地停在 `pending_review`，谁也不会再来推进它。
 """
 
 import argparse
@@ -21,6 +27,7 @@ from open_source_intelligence.persistence.session import (
     create_database_engine,
     create_session_factory,
 )
+from open_source_intelligence.reports.automation import finish_run_report
 from open_source_intelligence.reports.composition import generate_report
 from open_source_intelligence.reports.errors import (
     ReportGenerationError,
@@ -34,7 +41,16 @@ from open_source_intelligence.reports.publishing import (
 )
 from open_source_intelligence.reports.verification import verify_report
 
-ACTIONS = ("generate", "verify", "publish", "review", "publish-due", "push", "push-retry")
+ACTIONS = (
+    "generate",
+    "finish",
+    "verify",
+    "publish",
+    "review",
+    "publish-due",
+    "push",
+    "push-retry",
+)
 REVIEW_DECISIONS = ("approve", "reject", "request_changes")
 PUSH_CHANNELS = ("email", "webhook")
 
@@ -85,6 +101,11 @@ def run_action(args: argparse.Namespace, session: Session) -> dict[str, Any]:
             title=args.title,
         )
         return result.to_dict()
+    if args.action == "finish":
+        # 复用自动成稿那条边：同一入口意味着「验证不过就不发布」这类关卡不会分叉。
+        return finish_run_report(
+            session, agent_run_id=_required(args.agent_run_id, "--agent-run-id")
+        )
 
     report_id = _required(args.report_id, "--report-id")
     if args.action == "verify":
@@ -137,6 +158,10 @@ def main() -> None:
         sys.exit(1)
     engine.dispose()
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    if args.action == "finish" and payload.get("error_code"):
+        # 验证不过不算失败（报告已经在库里等人评审），但草稿没能编排出来算：JSON 里
+        # 已经报告了 `stage` 与 `error_code`，退出码让脚本不必解析这段文案。
+        sys.exit(1)
 
 
 if __name__ == "__main__":
